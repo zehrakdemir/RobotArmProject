@@ -468,28 +468,24 @@ Kayıtlı hareketler: `movecobot`'ta bir hareket kaydedince, o ismi (ör. `pick1
 `# >>> movecobot kayitli hareketler (otomatik - elle duzenleme) >>>` bloğuna otomatik
 alias olarak ekliyor — bu blok elle düzenlenmemeli, `movecobot`'un kendisi yönetiyor.
 
-## pymoveit2 Kurulumu (eski/terk edilmiş — artık kullanılmıyor)
+## pymoveit2 (eski/terk edilmiş — kaldırıldı)
 
 Projenin ilk aşamasında `pymoveit2` (üçüncü parti, topic/action tabanlı bir MoveIt2 Python
 sarmalayıcısı) denendi, sonra resmi `moveit_py` API'sine geçildi (bkz. yukarıdaki "Güncel
-Durum" notu) ve movecobot.py dahil tüm güncel araçlar moveit_py üzerine kuruldu. Bu bölüm
-sadece tarihsel referans için tutuluyor.
+Durum" notu) ve movecobot.py dahil tüm güncel araçlar moveit_py üzerine kuruldu.
 
+Buna bağlı kod temizlendi: `~/fairino/client/pymoveit2_test.py` ve
+`~/fairino/client/pymoveit2_pose_test.py` (eklem açısı / Cartesian hedef test script'leri,
+o dönem doğrulanmıştı ama artık kullanılmıyordu) SİLİNDİ. `~/.bashrc`'deki `runpose` alias'ı
+da daha önce kaldırılmıştı (bkz. "Kısayollar" bölümü).
+
+`~/ros2_ws/src/pymoveit2` (vendored ROS2 paketinin kendisi, `AndrejOrsula/pymoveit2`'nin
+klonu) hâlâ workspace'te duruyor — hiçbir güncel araç tarafından import edilmiyor, sadece
+disk alanı kaplıyor. İstenirse şu şekilde tamamen kaldırılabilir:
 ```bash
-cd ~/ros2_ws/src
-git clone https://github.com/AndrejOrsula/pymoveit2.git
-cd ~/ros2_ws
-sudo rosdep init   # zaten kuruluysa hata verir, sorun değil
-rosdep update
-rosdep install -y -r -i --rosdistro humble --from-paths src/pymoveit2
-colcon build --packages-select pymoveit2
-source install/setup.bash
+rm -rf ~/ros2_ws/src/pymoveit2 ~/ros2_ws/build/pymoveit2 ~/ros2_ws/install/pymoveit2 ~/ros2_ws/log
+cd ~/ros2_ws && colcon build   # kalan paketleri yeniden derler
 ```
-
-Test script'leri: `~/fairino/client/pymoveit2_test.py` (eklem açısı hedefi) ve
-`~/fairino/client/pymoveit2_pose_test.py` (Cartesian X,Y,Z + quaternion hedefi). İkisi de
-o dönem doğrulanmıştı, SDK ile okunan gerçek pozisyon hedefle örtüşüyordu — ama artık aktif
-kullanılmıyorlar.
 
 ## Bilinen Tuhaflıklar (SimMachine/Docker)
 - `docker context ls` bazen `default` ve `desktop-linux` diye iki context gösterebiliyor —

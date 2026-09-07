@@ -17,6 +17,9 @@ Python SDK üzerinden) hareket ettiren araçlar.
 - **ROS2/MoveIt2 config değişiklikleri**: [`ros2_config_patches/`](ros2_config_patches/) —
   vendor `frcobot_ros2` reposunun üzerine uygulanacak override'lar (ör. jerk/collision
   false-positive düzeltmesi).
+- **Otomatik robot algılama + kurulum**: [`auto_launch/`](auto_launch/) — `fairino_launch`
+  komutunun çalıştırdığı script'ler: hangi model/sürüm robot bağlıysa otomatik bulur, doğru
+  kaynağı kurar/yamalar/derler, MoveIt2'yi başlatır.
 
 ## Bağımlılıklar (bu repoya dahil DEĞİL — `.gitignore`'a bak)
 
