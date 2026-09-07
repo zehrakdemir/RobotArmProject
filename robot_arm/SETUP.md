@@ -50,12 +50,22 @@ movecobot --clear-fault    # WebApp'te "Clear" hiçbir şey yapmıyormuş gibi g
 Ön koşul: `fairino_launch` (ROS2 move_group + rviz) ayakta olmalı — movecobot kendisi
 başlatmaz, çalışan bir MoveIt sunucusuna bağlanır.
 
+Ana menü (1-9): Kolu hareket ettir / Gripper'i hareket ettir / Şu anki durumu göster /
+Yeni hareket kaydet / **Kayıtlı bir hareketi düzenle** / Kayıtlı bir hareketi oynat /
+Kayıtlı hareketleri listele / Kayıtlı bir hareketi sil / Çıkış.
+
 Öne çıkan tasarım kararları:
 - **Güvenlik ağı**: her planlı hareket zemin çarpışma kontrolü + mesafe-bazlı self-collision
   kontrolünden (12mm eşik, salt "değiyor mu" değil) geçiyor, uygulanmadan önce onay isteniyor,
   uygulandıktan sonra hedefe gerçekten ulaşılıp ulaşılmadığı SDK'dan (ROS2 üzerinden DEĞİL,
   doğrudan) doğrulanıyor. Jodell gripper URDF'de modellenmediği için `wrist3_link`'e sabit
   bir collision kutusu ekleniyor (bkz. `movecobot.py` içindeki `_add_gripper_collision`).
+- **Joint modunda FK önizleme**: eklem açılarıyla jog ederken (mutlak ya da göreceli), "bu
+  hedefe uygulansın mı?" onayından ÖNCE, girilen açıların forward-kinematics ile karşılığı
+  olan X/Y/Z/RX/RY/RZ hesaplanıp ekrana basılıyor (`CobotArm.predict_tcp_pose` +
+  `quat_to_euler_deg`) — RX/RY/RZ'yi Joint modunda AYRICA girdirmek mümkün değil (6 eklem
+  zaten TCP pozunu FK ile tek anlamlı belirliyor, aşırı-belirlenmiş olurdu), bu yüzden hareket
+  etmeden önce nereye/ne yönelime gidileceğini görmek için önizleme eklendi.
 - **Adaptif kavrama**: `gripper.grip()` (bkz. `gripper_controller.py`) nesne büyüklüğüne göre
   gerektiği kadar kapanıp tutuyor (pozisyon olarak değil, "kavra" eylemi olarak kaydediliyor);
   hem `grippergui`'de hem `movecobot`'un hareket kaydında/düzenlemesinde kullanılabiliyor.
@@ -64,8 +74,21 @@ başlatmaz, çalışan bir MoveIt sunucusuna bağlanır.
   kullanılmıyor), tek güvenlik ağı robotun kendi tork-tabanlı algılaması.
 - **Hareket kaydı dayanıklılığı**: her adımdan sonra taslak diske yazılıyor — robot bir fault
   verip launch'ı yeniden başlatman gerekse bile yarım kalan kayıt kaybolmuyor, devam
-  ettirilebiliyor. Aynı arayüzle mevcut kayıtlı bir hareket de sonradan düzenlenebiliyor
-  (adım ekle/sil/listele, bekleme adımı, adım-bazlı hız/ivme).
+  ettirilebiliyor. Aynı taslak mekanizması yarım kalan bir DÜZENLEMEyi de korur.
+- **Kayıtlı bir hareketi düzenleme** (`edit_saved_move`, ana menü 5): mevcut bir kaydı seçip
+  aynı adım-ekleme arayüzüyle (adım ekle/sil/listele, bekleme adımı, adım-bazlı hız/ivme)
+  değiştirip üzerine kaydediyor. Düzenleme sırasında dizi bir DERİN KOPYA üzerinde tutuluyor —
+  `[i] iptal` seçilirse orijinal kayıt hiç değişmeden kalıyor.
+- **Bekleme adımı**: hareket/kavrama içermeyen, sadece oynatma sırasında N saniye bekleyen bir
+  adım tipi (ör. kavrama sonrası nesnenin oturması için).
+- **Adım-bazlı hız/ivme**: her hareket adımı kendi hız/ivme yüzdesini taşıyabiliyor; oynatma
+  sırasında o TEK adım için `moveit.planning.PlanRequestParameters` ile oturumun genel hızı
+  geçici olarak ezilip uygulanıyor (`CobotArm._plan_and_execute`) — eski kayıtlar/jog hareketi
+  bu parametre verilmediğinde eskisi gibi davranmaya devam ediyor (geriye dönük uyumlu).
+- **`gripper_gui.py` — "Pozisyonu Robottan Oku"**: pencere açılışında ve istenildiğinde bu
+  düğmeyle, slider'ın HEDEF değeri gripper'ın GERÇEK pozisyonuyla senkronize ediliyor — eskiden
+  slider hep 0'dan başlıyordu, yani gripper örneğin 80'deyken pencereyi açıp dokunmadan
+  "Uygula"ya basmak onu beklenmedik şekilde 0'a (tam açık) götürebiliyordu.
 
 ### "Shaft collision fault" — kök sebep ve çözüm (ÇÖZÜLDÜ)
 Küçük (10°'nin altında) eklem hareketlerinde bile robotun tork-tabanlı çarpışma algılaması
@@ -100,6 +123,30 @@ WSL2 tarafında DNS çözümlemesi çalışmıyor (`/etc/resolv.conf` yok, `ping
 erişim var. `git clone`/`push` gibi işlemler Windows tarafındaki (Git Bash/PowerShell) git ile
 yapılmalı; WSL'deki dosyalar `\\wsl.localhost\Ubuntu-22.04\...` UNC yolundan Windows'a
 kopyalanabilir.
+
+### ÇÖZÜLDÜ — Manuel mod sırasında `clearfault` işe yaramıyordu
+Manuel (drag-teach) modda robot fault verirse (ör. elle hızlı hareket ettirince "hız limiti
+aşıldı"), AYRI bir terminalde `movecobot --clear-fault` çalıştırmak işe yaramıyordu. Kök
+sebep: o komut `ros2_control`'u YENİDEN AKTİVE ediyor, ama drag-teach zaten `ros2_control`'u
+BİLİNÇLİ olarak inaktif bırakıp robotu SDK'nin kendi `Mode(1)+DragTeachSwitch(1)`'iyle elle-
+itilebilir hale getiriyor — iki kontrol mekanizması çakışıyor, robot ya tekrar elle-itilemez
+oluyor ya hata hemen geri geliyordu.
+
+**Çözüm**: `drag_teach_clear_fault()` — `ros2_control`'a hiç dokunmadan, manuel mod için zaten
+açık olan GEÇİCİ bağlantı üzerinden `ResetAllError()` + `Mode(1)`/`DragTeachSwitch(1)`'i
+yeniden assert ediyor. Manuel moddaki adım-ekleme menüsüne `[c]` seçeneği olarak eklendi —
+launch'ı durdurmaya/movecobot'u yeniden başlatmaya gerek yok, o ana kadar kaydedilen adımlar
+korunuyor.
+
+### BİLİNEN TUZAK — Gripper deaktifken `grip()`/`move()` sessizce başarısız görünüyor
+`enter_drag_teach()`, elle çene açıp kapatabilmek için gripper'ı deaktive ediyor (tutma
+torkunu kesiyor). Fairino SDK'sının garip bir davranışı: gripper deaktifken `MoveGripper()`
+çağrısı hata FIRLATMIYOR, `err=0` (başarılı) dönüyor ama gripper GERÇEKTE HİÇ HAREKET
+ETMİYOR. Canlı testte tam bu yaşandı — "kapandı ama nesne algılanmadı, pozisyon=0" uyarısı
+gelip kullanıcı 'e'ye basınca robot birden kavradı (asıl hareket o an tetiklenmiş oldu).
+**Düzeltme**: `GripperController.grip()` artık başında `is_active()` kontrolü yapıp gerekirse
+otomatik `activate(force=True)` çağırıyor — bu tuzağı bir daha yaşatmıyor, ama SDK'nın bu
+"deaktifken sessizce no-op" davranışı gripper'a dokunan her yeni kod için akılda tutulmalı.
 
 ## SimMachine Container'ı Başlatma
 ```bash
@@ -473,3 +520,24 @@ pozisyonunu kontrol edip yedek bir güvenlik katmanı sağlıyor.
 - Bu iki durumu ayırt edip otomatik düzeltmek için `fixweb` yazıldı, ama **kök sebep**
   (neden bu kadar sık oluyor) hâlâ bilinmiyor — muhtemelen WSL2 kaynak baskısıyla
   (bellek/CPU) ilgili, kesin değil.
+
+## AÇIK SORULAR / DEVAM EDEN İŞLER (gerçek robot, movecobot.py sonrası)
+
+1. **Titreme (vibration)** — kullanıcı hareket sırasında titreme fark etti, henüz
+   incelenmedi/kök sebebi araştırılmadı.
+2. **J6'nın base X eksenine dik durması için gereken açı** — verilen eklem açılarından
+   (J1-J6, FK ile) gripper'ı base'in X eksenine dik yapacak J6 düzeltmesi hesaplandı
+   (94.558°) ve bu hesap robotun kendi raporladığı yönelimle (`rz=86.973°` ≈ hesaplanan
+   86.972°) neredeyse birebir örtüştü — yani FK hesabı doğru. Ama pratikte robotta
+   denendiğinde "3 derece yetmez onu dik yapmaya" geri bildirimi geldi. Bu, hesap hatası
+   değil, flanş ile gripper'ın gerçek çene yönü arasında MODELLENMEMİŞ bir fiziksel montaj
+   ofseti olduğunu düşündürüyor — gerçek offset'i bulmak için kullanıcının gözle tahmin
+   ettiği sapma açısı bekleniyor.
+3. **Collision seviyesi / dual-encoder çarpışma algılama metodu** — `SetAnticollision`
+   (Level×10 = hız yüzdesi kuralı, ör. Level 5 → %50) ve `SetCollisionDetectionMethod`
+   (method 0=tork, 1=çift-enkoder, 2=ikisi birden — FR3 donanımı çift enkoderli)
+   araştırıldı ama HİÇBİR AYAR DEĞİŞTİRİLMEDİ (kullanıcı "önce araştır, hiçbir şey
+   değiştirme" dedi) — ikisi de hâlâ açık, denenmemiş seçenekler olarak duruyor.
+4. **Yayınlanan kod**: bu araçların (client/ + ros2_config_patches/) bir kopyası
+   `github.com/zehrakdemir/robot-arm-simulation` reposunun `huseyin` branch'inde,
+   `robot_arm/` klasörü altında tutuluyor (ana repodaki `vision/` ile paralel).
