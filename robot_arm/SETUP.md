@@ -408,9 +408,10 @@ robot_trajectory, blocking=True)` — `(trajectory, controllers=[])` DEĞİL.
 
 Bu iki dosya moveit_py'nin ilk doğrulama/proof-of-concept aşamasından kalma — o zamandan beri
 `movecobot.py` çok daha olgun bir `CobotArm` sınıfıyla (kendi collision yönetimi, TCP-offset
-telafisi, adım kaydı) aynı temelin üzerine kuruldu ve ana araç oldu. `launch_moveit_py` /
-`gohome_py` alias'ları hâlâ çalışıyor ama günlük akışta `fairino_launch` + `movecobot`
-kullanılıyor.
+telafisi, adım kaydı) aynı temelin üzerine kuruldu ve ana araç oldu. `gohome_py` alias'ı hâlâ
+çalışıyor ama günlük akışta `fairino_launch` + `movecobot` kullanılıyor
+(`launch_moveit_py` alias'ı, yerini `fairino_launch`'a bıraktığı için `.bashrc`'den
+kaldırıldı).
 
 ### Bilinen: RViz'de robot modeli görünmüyor (moveit_py_demo.launch.py'de)
 RViz açılıyor ama robot modeli görünmüyor — çünkü `move_group` olmadığı için `moveit.rviz`
@@ -449,15 +450,18 @@ alias launch_moveit='bash ~/fairino/launch_moveit.sh'   # eski/manuel, SimMachin
 alias visiontest='... python3 ~/fairino/client/vision_integration_example.py'
 ```
 
-Önceki nesil / moveit_py'nin ilk test araçları (hâlâ çalışıyor, movecobot bunları kapsıyor):
+Önceki nesil / moveit_py'nin ilk test araçları (movecobot bunları işlevsel olarak kapsıyor,
+sadece `gohome_py` ve `movegripper` alias'ı kaldı — `movepy` ve `launch_moveit_py` artık
+`.bashrc`'de yok, yerlerini `fairino_launch` + `movecobot` aldı):
 ```bash
-alias movepy='... python3 ~/fairino/client/moveit_py_interactive.py'
 alias movegripper='... python3 gripper_interactive.py'
-alias launch_moveit_py='... ros2 launch ~/fairino/client/moveit_py_demo.launch.py'
 alias gohome_py='... python3 ~/fairino/client/moveit_py_gohome.py'
 ```
+`moveit_py_interactive.py` dosyasının kendisi hâlâ duruyor (`client/` altında), sadece
+`.bashrc`'de kısayolu yok — gerekirse `python3 ~/fairino/client/moveit_py_interactive.py`
+ile doğrudan çalıştırılabilir.
 
-Eski `pymoveit2` tabanlı `runpose` alias'ı da hâlâ `.bashrc`'de duruyor (bkz. "pymoveit2
+Eski `pymoveit2` tabanlı `runpose` alias'ı da `.bashrc`'den kaldırıldı (bkz. "pymoveit2
 Kurulumu" — artık kullanılmıyor, moveit_py'ye geçildi).
 
 Kayıtlı hareketler: `movecobot`'ta bir hareket kaydedince, o ismi (ör. `pick1`) kendisi
@@ -607,11 +611,13 @@ fonksiyonlarında uygulandı; `movecobot.py`'de `CobotArm._add_floor_collision` 
 GÜNCEL ve aktif kullanılan versiyonu bu — her `movecobot`/`fairino_launch` başlatmasında
 otomatik ekleniyor, ayrı bir `add_floor.py` çağrısına gerek yok.
 
-## moveit_py_interactive.py (movepy) — Özellikler
+## moveit_py_interactive.py — Özellikler (movecobot.py'den ÖNCEKİ araç, artık alias'ı yok)
 
-`movecobot.py`'den ÖNCEKİ, kol-only (gripper'sız) interaktif araç — hâlâ `movepy` alias'ıyla
-çalışıyor ama güncel/genişletilmiş işlevsellik (gripper, hareket kaydı, adaptif kavrama,
-manuel mod) sadece `movecobot.py`'de var.
+`movecobot.py`'den ÖNCEKİ, kol-only (gripper'sız) interaktif araç — `.bashrc`'deki `movepy`
+alias'ı kaldırıldı (movecobot bunun işlevini tamamen kapsıyor), dosyanın kendisi hâlâ
+`client/` altında duruyor, gerekirse `python3 ~/fairino/client/moveit_py_interactive.py` ile
+doğrudan çalıştırılabilir. Güncel/genişletilmiş işlevsellik (gripper, hareket kaydı, adaptif
+kavrama, manuel mod) sadece `movecobot.py`'de var.
 
 - Hareket tipi: Joint (eklem açıları) / Cartesian (X,Y,Z+RX,RY,RZ)
 - Cartesian için referans: Base (mutlak) / Tool (mevcut poza göre, basitleştirilmiş) / Wobj
