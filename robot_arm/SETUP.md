@@ -320,15 +320,36 @@ bulamayıp çöküyordu, elle `LD_LIBRARY_PATH` eklemek gerekiyordu. **`V3.0.0_R
 tag'ine geçince bu sorun tamamen ortadan kalktı** — kütüphane artık standart
 `install/fairino_hardware/lib/` yoluna düzgün yerleşiyor, ekstra path'e gerek yok.
 
-### ÇÖZÜLDÜ — RViz görüntü bozukluğu (eski not, artık geçersiz)
+### RViz/Tk görüntü sorunları (WSLg) — LIBGL_ALWAYS_SOFTWARE ileri-geri gidip geldi
 Önceden kamera döndürülünce ekranda iz/karmaşa birikiyordu, çözüm olarak
-`export LIBGL_ALWAYS_SOFTWARE=1` (yazılım render) kullanılıyordu. **Bu satır artık
-KULLANILMIYOR** (`~/auto_fairino_launch.sh`'ta bilinçli olarak kaldırıldı) — güncel WSLg'de
-GPU hızlandırmalı render (OpenGL 4.1, GLSL 4.1) sorunsuz çalışıyor ve yazılım render'ine göre
-çok daha az CPU kullanıyor; yazılım render'i rviz'i ~%190 CPU'da sınırsız FPS ile döndürüp
-pencerenin donmuş/kapanmış gibi görünmesine (WSLg'nin pencereyi düzgün compose edememesine)
-sebep oluyordu. Eski `launch_moveit.sh` script'inde bu satır hâlâ duruyor olabilir ama
-`fairino_launch` bunu kullanmıyor.
+`export LIBGL_ALWAYS_SOFTWARE=1` (yazılım render) kullanılıyordu. Bir ara GPU hızlandırmalı
+render (glamor) sorunsuz çalıştığı için bu satır `~/auto_fairino_launch.sh`'tan kaldırılmıştı
+(yazılım render'i rviz'i ~%190 CPU'da sınırsız FPS ile döndürüp pencerenin donmuş/kapanmış
+gibi görünmesine sebep oluyordu). **Ama sonradan bu makinede glamor/GBM tekrar çalışmaz oldu**
+(`Xwayland glamor: GBM Wayland interfaces not available, falling back to sw` — Windows
+tarafındaki DXG/GPU passthrough'ın kendisi de `dmesg`'de `dxgk: dxgkio_query_adapter_info:
+Ioctl failed` hatası veriyordu) ve RViz/grippergui pencereleri sadece görev çubuğunda
+görünüp içerik render etmez oldu. **`LIBGL_ALWAYS_SOFTWARE=1` bu yüzden GERİ EKLENDİ** ve
+canlı testle doğrulandı. İleride glamor tekrar düzelirse (WSLg/sürücü güncellemesi) ve
+performans sorun olursa, kaldırmadan önce `/mnt/wslg/stderr.log`'da "Xwayland glamor"
+satırını kontrol et.
+
+### ÇÖZÜLDÜ — "[WARN: COPY MODE]", pencereler görev çubuğunda kalıp açılmıyor
+Yukarıdakinden AYRI bir WSLg sorunu — `LIBGL_ALWAYS_SOFTWARE=1` zaten aktifken bile RViz VE
+`gripper_gui.py` (Tkinter) pencereleri hiç render olmadan sadece görev çubuğunda görünmeye
+devam etti, pencere başlığında "[WARN: COPY MODE]" yazıyordu. Bu WSL/WSLg'nin kendi bilinen
+bug'ı ([microsoft/WSL#40618](https://github.com/microsoft/WSL/issues/40618),
+[microsoft/wslg#982](https://github.com/microsoft/wslg/discussions/982)) — RDP normalde
+Linux/Windows arasında paylaşılan bellek (VAIL modu) kullanıyor, `/mnt/shared_memory`
+düzgün mount olamayınca RDP piksel-kopyalama ("COPY") moduna düşüyor, o modda pencere
+içeriği hiç çizilmiyor (weston.log'da tipik hata:
+`rdp_allocate_shared_memory: Failed to open "/mnt/shared_memory/..." with error:
+Input/output error`). **Bizim projemizdeki bir koddan/ayardan KAYNAKLANMIYOR.**
+
+**Çözüm**: Windows tarafında (PowerShell) `wsl --shutdown`, birkaç saniye bekleyip WSL'i
+yeniden başlatmak. Bu, WSL'deki TÜM dağıtımları/oturumları kapatır (dikkat: açık başka
+terminaller varsa onlar da kapanır) ama tek güvenilir düzeltme bu — kalıcı bir kod
+değişikliği değil, tekrar olursa aynı adım tekrar uygulanmalı.
 
 ## launch_moveit.sh (eski/manuel — günlük kullanımda `fairino_launch` kullanılıyor)
 ```bash
