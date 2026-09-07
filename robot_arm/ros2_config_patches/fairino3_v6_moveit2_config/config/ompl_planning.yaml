@@ -1,0 +1,40 @@
+# Bu paketin daha once KENDI ompl_planning.yaml'i yoktu - MoveIt'in
+# moveit_configs_utils/default_configs/ompl_planning.yaml varsayilanini
+# kullaniyordu, o da request_adapters listesinde SADECE
+# AddTimeOptimalParameterization iceriyordu (jerk - ani ivme degisimi -
+# HIC SINIRLANMIYORDU, matematiksel olarak "ani" gecisler olusabiliyordu).
+#
+# Canli testte kucuk (< 10 derece) eklem hareketlerinde bile robotun kendi
+# tork-tabanli carpisma algilama sistemi "Shaft collision fault" verip
+# sertçe durdu (masayi sallayacak kadar) - kullanici hicbir yere
+# CARPMADIGINI dogruladi. Bu, gercek bir carpisma degil, hareketin ANI
+# ivme gecisi (jerk) yuzunden robotun kendi guvenlik sisteminin yanlis
+# pozitif vermesiyle aciklanabilir - bu hipotez hala GECERLI.
+#
+# ILK DENEME (BASARISIZ): AddRuckigTrajectorySmoothing, AddTimeOptimal
+# Parameterization'in YERINE kondu. Adaptor dogru yuklendi ama canli testte
+# "Ruckig trajectory smoothing failed. Ruckig error: -100/0" hatasi alindi -
+# HER buyuklukte (0.1-10 derece), ros-humble-ruckig 0.9.2 VE kaynaktan
+# derlenen 0.14.0 ile de AYNI hata (versiyon sorunu degilmis). Robota
+# HIC HAREKET ETTIREMEDI (zamanlamasiz ham 2 noktali yol donup gercek
+# controller tarafindan reddediliyordu).
+#
+# KOK SEBEP BULUNDU: MoveIt'in resmi zaman-parametreleştirme kilavuzuna
+# gore (moveit.picknik.ai/humble/doc/examples/time_parameterization/...)
+# Ruckig, TOTG'nin YERINE degil ONUNLA BIRLIKTE kullanilmali - TOTG once
+# hiz/ivme parametrelerini hesapliyor, Ruckig SONRA (listede EN BASTA -
+# "should run last, so put it at top of list", adaptor zinciri disaridan
+# iceriye calisir) o zaten-zamanlanmis trajectory uzerine jerk siniri
+# ekliyor. Biz Ruckig'e HAM (zamanlamasiz) bir yol veriyorduk, muhtemelen
+# "invalid input" hatasinin gercek sebebi buydu.
+planning_plugin: ompl_interface/OMPLPlanner
+request_adapters: >-
+    default_planner_request_adapters/AddRuckigTrajectorySmoothing
+    default_planner_request_adapters/AddTimeOptimalParameterization
+    default_planner_request_adapters/ResolveConstraintFrames
+    default_planner_request_adapters/FixWorkspaceBounds
+    default_planner_request_adapters/FixStartStateBounds
+    default_planner_request_adapters/FixStartStateCollision
+    default_planner_request_adapters/FixStartStatePathConstraints
+start_state_max_bounds_error: 0.1
+jiggle_fraction: 0.05

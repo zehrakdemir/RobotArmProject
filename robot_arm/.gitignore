@@ -1,0 +1,16 @@
+# Fairino Python SDK - resmi FAIR-INNOVATION/fairino-python-sdk reposunun bir klonu,
+# ~500MB (Windows/Linux ikili dosyalar dahil) - vendor kodu, burada TEKRAR
+# yayınlanmıyor. Kurulum için SETUP.md'ye bak.
+client/fairino-python-sdk/
+
+client/__pycache__/
+client/.idea/
+client/.random_motion.lock
+
+# movecobot/gripper çalışma zamanı durumu - her çalıştırmada yeniden üretiliyor,
+# taşınabilir/paylaşılabilir veri değil.
+client/.movecobot_state_cache.json
+client/.movecobot_record_draft.json
+
+__pycache__/
+*.pyc
