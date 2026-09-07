@@ -85,6 +85,15 @@ trajectory üzerine jerk sınırı ekliyor. Bkz.
 (`request_adapters` sırası + dosyadaki ayrıntılı yorum). Planlama-only diagnostikte
 (0.1°-10° sweep) ve canlı robotta doğrulandı.
 
+**ÖNEMLİ — TEK modelle sınırlı kalmasın**: `frcobot_ros2`, desteklediği HER Fairino modeli
+için ayrı bir `fairino<N>_v6_moveit2_config` paketi içeriyor ve `movecobot.py` hangi robot
+bağlıysa onu otomatik algılayıp (`detect_robot()`) doğru paketi seçiyor — yani bu düzeltme
+SADECE `fairino3_v6_moveit2_config`'e eklenirse, başka bir model (FR5, FR10, ...) takıldığında
+düzeltmesiz/varsayılan (jerk sınırsız) config'e geri düşülür. Bu yüzden aynı
+`ompl_planning.yaml` bulunan HER `fairino*_v6_moveit2_config/config/` klasörüne kopyalanmalı —
+bkz. `robot_arm/ros2_config_patches/apply_patch.sh` (GitHub reposundaki genel uygulama
+script'i, tüm mevcut model paketlerini tek seferde günceller).
+
 ### WSL'in İnternet Erişimi YOK
 WSL2 tarafında DNS çözümlemesi çalışmıyor (`/etc/resolv.conf` yok, `ping 8.8.8.8` %100 kayıp)
 — GitHub gibi dış servislere WSL içinden ULAŞILAMIYOR, sadece LAN'daki robota (`192.168.57.2`)
