@@ -1,0 +1,72 @@
+# Kullanım:
+#   docker compose run --rm test          # lint + test (ROS2 gerektirmez, hızlı)
+#   docker compose run --rm cobot         # tam ortamda kabuk (deneysel)
+#
+# DESTEKLENEN YOL HÂLÂ NATIVE KURULUM (docs/SETUP.md). "cobot" servisi
+# tekrarlanabilirlik için var ve gerçek robotla henüz doğrulanmadı —
+# ayrıntılar ve bilinen tuzaklar docs/DOCKER.md'de.
+
+services:
+
+  # -------------------------------------------------------------------------
+  # test - CI'nin de kullandığı hedef. ROS2 yok, saniyeler içinde ayağa kalkar.
+  # -------------------------------------------------------------------------
+  test:
+    build:
+      context: .
+      target: dev
+    command: ["bash", "-lc", "ruff check . && pytest -q"]
+
+  # -------------------------------------------------------------------------
+  # cobot - gerçek robotu süren tam ortam
+  # -------------------------------------------------------------------------
+  cobot:
+    build:
+      context: .
+      target: runtime
+    # ÜÇ AYAR DA ZORUNLU - biri eksikse ya robot bulunamaz ya hareket bozulur:
+    #
+    # 1) network_mode: host
+    #    Robota LAN üzerinden (port 20003/20004/20007) ulaşmak ve ROS2 DDS'in
+    #    multicast keşfi için. Bridge ağında DDS düğümleri birbirini görmez.
+    #    NOT: Docker Desktop for Windows'ta host networking Linux'takiyle aynı
+    #    davranmıyor. WSL2 içinde çalışan yerli docker engine ile kullan.
+    network_mode: host
+
+    # 2) SYS_NICE + rtprio
+    #    ros2_control kontrol döngüsünü FIFO gerçek-zamanlı öncelikle çalıştırır.
+    #    Bu izin olmadan döngü gecikip patlama halinde yetişmeye çalışıyor,
+    #    ServoJ akışı düzensizleşiyor ve robot hız limiti faultu verebiliyor.
+    #    Native tarafta aynı sorun "Could not enable FIFO RT scheduling policy"
+    #    olarak görülmüştü; çözümü sudo/PAM üzerinden rtprio 99 almaktı.
+    cap_add:
+      - SYS_NICE
+    ulimits:
+      rtprio: 99
+      memlock: -1
+
+    # 3) X soketi (rviz2, gripper_gui)
+    #    WSLg altında DISPLAY ve /mnt/wslg gerekiyor. Saf Linux'ta /mnt/wslg
+    #    satırını kaldır, /tmp/.X11-unix yeter.
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+      - WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-}
+      - XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/mnt/wslg/runtime-dir}
+      - PULSE_SERVER=${PULSE_SERVER:-}
+      # rviz'in yazılım render'ına düşmesi (WSLg'de glamor/GBM tutarsız).
+      - LIBGL_ALWAYS_SOFTWARE=1
+      # Robotun IP'si verilirse ağ taraması hiç yapılmaz.
+      - FAIRINO_ROBOT_IP=${FAIRINO_ROBOT_IP:-}
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /mnt/wslg:/mnt/wslg:rw
+      # Kayıtlı hareketler container silinince kaybolmasın.
+      - fairino-state:/state
+      # Geliştirirken kaynağı canlı bağla (imajı yeniden derlemeden dene).
+      - ./src:/app/src:ro
+
+    stdin_open: true
+    tty: true
+
+volumes:
+  fairino-state:
