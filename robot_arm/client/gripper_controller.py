@@ -98,12 +98,63 @@ class GripperController:
         (deadlock)."""
         self.index = index
         self._lock = lock if lock is not None else threading.RLock()
+        # Gripper iletisimi tamamen olduyse (bkz. _sdk) True olur; sonraki
+        # cagrilar ANINDA hata verir, bir daha asili thread birakilmaz.
+        self._dead = False
         if sdk is not None:
             self.robot_ip = robot_ip
             self.robot = sdk
         else:
             self.robot_ip = robot_ip or detect_robot_ip()
             self.robot = Robot.RPC(self.robot_ip)
+
+    def _sdk(self, fn, *args, timeout_s=8.0, what="gripper komutu"):
+        """Bir SDK cagrisini ZAMAN ASIMIYLA calistirir.
+
+        NEDEN: gripper komutlari (ActGripper, MoveGripper, GetGripperMotionDone)
+        robota XML-RPC ile gider, robot da bunlari RS485/Modbus uzerinden
+        gripper'a iletir. Gripper cevap vermezse (guc yok, kablo cikmis,
+        yanlis Device ID...) robot da XML-RPC yanitini HIC dondurmuyor ve
+        xmlrpc istemcisinin varsayilan zaman asimi olmadigi icin cagri
+        SONSUZA KADAR asili kaliyor. Canli testte tam bu yasandi: gripper
+        cevapsizken movecobot acilista "Aktive ediliyor..." satirinda
+        kilitlendi ve KOL DA kullanilamaz hale geldi - oysa kol tarafi
+        gayet saglikliydi.
+
+        movecobot'un baslangic kodu gripper hatalarini zaten yakalayip
+        "sadece kol kontrolu" moduna geciyor; sorun cagrinin hata VERMEMESI,
+        asili kalmasiydi. Bu sarmalayici cagriyi ayri bir daemon thread'de
+        calistirip sureyi sinirlar, boylece hata firlatilabilir hale gelir.
+
+        Zaman asiminda thread arka planda asili kalir (daemon, process ile
+        birlikte olur) ve ayni ServerProxy'yi kullanmaya devam ettigi icin
+        sonraki cagrilar guvenli degildir - bu yuzden self._dead isaretlenir
+        ve sonraki cagrilar hic denenmeden hata verir."""
+        if self._dead:
+            raise GripperError(
+                "gripper iletisimi kopuk (onceki bir komut yanitsiz kaldi) - "
+                "gucu/RS485 kablosunu ve WebApp'teki Device ID'yi kontrol edip "
+                "movecobot'u yeniden baslatin")
+        box = {}
+
+        def _run():
+            try:
+                box["v"] = fn(*args)
+            except BaseException as e:  # noqa: BLE001 - thread'e ozel, aynen tasiniyor
+                box["e"] = e
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        t.join(timeout_s)
+        if t.is_alive():
+            self._dead = True
+            raise GripperError(
+                f"{what} {timeout_s:.0f} saniyede yanit vermedi - gripper robota "
+                f"cevap vermiyor (guc, RS485 kablosu veya Device ID={self.index} "
+                f"kontrol edilmeli)")
+        if "e" in box:
+            raise box["e"]
+        return box["v"]
 
     def __enter__(self):
         return self
@@ -127,16 +178,30 @@ class GripperController:
         if self.is_active() and not force:
             return
         with self._lock:
-            try:
-                self.robot.ResetAllError()
-            except Exception:
-                pass
-            err = self.robot.ActGripper(self.index, 0)
+            # DIKKAT: burada eskiden self.robot.ResetAllError() cagriliyordu.
+            # KALDIRILDI. ResetAllError GLOBAL bir robot resetidir ve robotun
+            # SERVO OTURUMUNU (ros2_control'un ServoMoveStart ile kurdugu
+            # akisi) sonlandiriyor. Sonucu: movecobot acilirken gripper
+            # aktive edildigi anda surucunun ServoJ akisi oluyor ve ondan
+            # sonra HER ServoJ ERR_SOCKET_COM_FAILED (-2) donuyor - yani
+            # robot komut almiyor, tek care fairino_launch'i yeniden
+            # baslatmak. "Kendiliginden err=-2 basladi" olarak gozlenen
+            # sorunun kaynagi buydu (zamanlama birebir uyusuyor: movecobot
+            # baslatildiktan ~15-60sn sonra, yani MoveItPy yuklenip gripper
+            # aktivasyonuna gelindigi an). Ayrica canli testte ayni cagri
+            # disaridan elle gonderilerek bu etki dogrudan dogrulandi.
+            #
+            # Zaten opsiyoneldi (try/except pass icindeydi); gripper'in kendi
+            # hata bayraklarini temizleyen asil islem asagidaki rACT 0->1
+            # gecisidir (ActGripper(index,0) -> ActGripper(index,1)).
+            err = self._sdk(self.robot.ActGripper, self.index, 0,
+                            what="Gripper reset (ActGripper 0)")
             if err != 0:
                 raise GripperError(f"ActGripper(reset) basarisiz: err={err}")
         time.sleep(0.5)
         with self._lock:
-            err = self.robot.ActGripper(self.index, 1)
+            err = self._sdk(self.robot.ActGripper, self.index, 1,
+                            what="Gripper aktivasyonu (ActGripper 1)")
             if err != 0:
                 raise GripperError(f"ActGripper(activate) basarisiz: err={err}")
 
@@ -156,7 +221,8 @@ class GripperController:
         dogrulanmali - desteklemiyorsa gripper sadece mevcut pozisyonunda
         kalir, ama pozisyon okumasi (status()) yine de calisir."""
         with self._lock:
-            err = self.robot.ActGripper(self.index, 0)
+            err = self._sdk(self.robot.ActGripper, self.index, 0,
+                            what="Gripper serbest birakma (ActGripper 0)")
         if err != 0:
             raise GripperError(f"ActGripper(reset) basarisiz: err={err}")
 
@@ -170,9 +236,15 @@ class GripperController:
         last_err = None
         for attempt in range(1, retries + 2):
             with self._lock:
-                err = self.robot.MoveGripper(
+                # blocking=True iken MoveGripper hareket bitene kadar donmez,
+                # yani mesru olarak max_time_ms kadar surebilir - zaman asimi
+                # onun UZERINDE olmali, yoksa normal hareketi hata sayariz.
+                err = self._sdk(
+                    self.robot.MoveGripper,
                     self.index, position, speed, force, max_time_ms, block_flag,
                     0, 0, 0, 0,  # type=0 (paralel), rotNum/rotVel/rotTorque kullanilmiyor
+                    timeout_s=(max_time_ms / 1000.0) + 5.0,
+                    what="Gripper hareketi (MoveGripper)",
                 )
             if err == 0:
                 return
@@ -187,6 +259,18 @@ class GripperController:
                 # MoveGripper cagrilarini reddediyor (bu da rastgele/aralikli
                 # bir ariza gibi goruntu veriyordu). ResetAllError() bunu
                 # temizler.
+                # YAN ETKI (bilincli olarak kabul ediliyor): ResetAllError
+                # GLOBAL bir resettir ve kolun SERVO OTURUMUNU da dusurur -
+                # ros2_control'un ServoJ akisi bundan sonra -2 doner ve
+                # surucu "SERVO AKISI KOPTU" hatasi basar (bkz. activate()
+                # icindeki ayrintili yorum; orada bu cagri tam da bu yuzden
+                # kaldirildi). Burada KALIYOR cunku alternatifi yok: bu fault
+                # temizlenmezse gripper tamamen kullanilamaz hale geliyor.
+                # Sadece gripper hareketi BASARISIZ oldugunda (yeniden deneme
+                # yolunda) calisir, normal akista degil.
+                print("UYARI: gripper hatasi temizleniyor (ResetAllError). Bu, kolun "
+                      "servo akisini da dusurur - hareket komutlari calismazsa "
+                      "'clearfault' ile kontrolu geri alin.")
                 with self._lock:
                     try:
                         self.robot.ResetAllError()
@@ -225,6 +309,12 @@ class GripperController:
         if not self.is_active():
             self.activate(force=True)
         self.move(position=100, speed=speed, force=force, max_time_ms=max_time_ms, retries=retries)
+        # MoveGripper() blocking=True ile "hareket bitti" dese bile,
+        # GetGripperCurPosition()'un iç durumu bir sonraki okumaya kadar
+        # bayat kalabiliyor (bugün SDK'nin baska yerlerinde de gorulen bir
+        # kalip) - "kapandi ama pozisyon=0 gosterdi" seklinde canli
+        # gozlemlendi. Kisa bir bekleme ile bu riski azaltiyoruz.
+        time.sleep(0.3)
         st = self.status()
         return {
             "gripped": st["motion_status"] == 2,
@@ -235,7 +325,8 @@ class GripperController:
     def status(self):
         """Debug/log icin okunabilir bir durum ozeti doner."""
         with self._lock:
-            _, motion_pair = self.robot.GetGripperMotionDone()
+            _, motion_pair = self._sdk(self.robot.GetGripperMotionDone,
+                                       what="Gripper durumu (GetGripperMotionDone)")
             fault, motion_status = motion_pair
             _, _, position = self.robot.GetGripperCurPosition()
             _, _, speed = self.robot.GetGripperCurSpeed()

@@ -43,12 +43,22 @@ MOTION_STATUS_TEXT = {
 }
 
 
-def run_gripper_gui(gripper, standalone=True):
+def run_gripper_gui(gripper, standalone=True, busy_event=None):
     """gripper: baglanti kurulmus bir GripperController. standalone=True ise
     pencere kapaninca process de sonlanir (mainloop() cagirir ve doner);
     False ise Toplevel olarak acilir (baska bir Tk uygulamasindan cagirmak
     icin, bu script su an bunu kullanmiyor ama gelecekte movecobot'a
-    gomulmek istenirse hazir)."""
+    gomulmek istenirse hazir).
+
+    busy_event: verilirse (movecobot.py'nin CobotArm.executing'i), arka
+    plan durum sorgulama thread'i bu event set edilmisken KENDI SDK
+    cagrisini atlar - kol GERCEK bir hareketi calistirirken (execute())
+    movecobot'un kendi baglantisindan ES ZAMANLI baska bir istek gitmesin
+    diye. Canli testte, aktif calistirma sirasinda robotun gercek-zamanli
+    komut kanalinin iki farkli baglantidan gelen es zamanli trafigi
+    kaldiramadigi (surekli ServoJ err=14) gozlemlendi - bu, o riski
+    movecobot'un KENDI kontrol edebildigi taraftan (gripper polling)
+    azaltmaya calisir."""
     root = tk.Tk() if standalone else tk.Toplevel()
     root.title(f"Gripper Kontrol - {gripper.robot_ip or 'paylasilan baglanti'}")
     root.geometry("380x500")
@@ -230,6 +240,13 @@ def run_gripper_gui(gripper, standalone=True):
     # --- Arka planda durum sorgulama --------------------------------------
     def poll_status():
         while not stop_polling.is_set():
+            if busy_event is not None and busy_event.is_set():
+                # Kol su an GERCEK bir hareketi calistiriyor - bkz. run_gripper_gui
+                # docstring'i. Bu dongude SDK'ya hic dokunmadan kisa kisa
+                # bekleyip tekrar kontrol ediyoruz (busy_event kapaninca
+                # normal 1sn'lik sorgulamaya geri donulur).
+                stop_polling.wait(timeout=0.2)
+                continue
             try:
                 active = gripper.is_active()
                 status = gripper.status()
