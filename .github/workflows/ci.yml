@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  push:
+    branches: [main, huseyin, "feature/**", "fix/**"]
+  pull_request:
+    branches: [main, huseyin]
+  workflow_dispatch:
+
+# Ayni dala arka arkaya push atilirsa onceki kosuyu iptal et.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # lint + test: ROS2 GEREKTIRMEZ.
+  #
+  # Bu ayrim bilincli: paket ROS2/SDK olmadan da import edilebilir olacak
+  # sekilde yazildi (fairino_cobot/__init__.py alt modulleri import etmez),
+  # boylece CI temiz bir makinede saniyeler icinde anlamli bir sey dogrular.
+  # ---------------------------------------------------------------------------
+  test:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 = ROS2 Humble'in Python'u (asil hedef).
+        # 3.12 = ileriye donuk kirilmalari erken yakalamak icin.
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Bagimliliklari kur
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+          pip install -e .
+
+      - name: Lint (ruff)
+        run: ruff check --output-format=github .
+
+      - name: Test (pytest)
+        run: pytest -q
+
+  # ---------------------------------------------------------------------------
+  # Kabuk betikleri
+  # ---------------------------------------------------------------------------
+  shellcheck:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          # SC1091: source edilen ROS2 setup.bash dosyalari CI makinesinde yok.
+          shellcheck --severity=warning --exclude=SC1091 scripts/*.sh docker/*.sh
+
+  # ---------------------------------------------------------------------------
+  # Docker: sadece dev hedefi build edilir.
+  #
+  # runtime hedefi BILEREK build EDILMIYOR - MoveIt2 (moveit_py) ve Fairino
+  # surucusunun derlenmesini iceriyor, GitHub runner'inda cok uzun surer ve
+  # zaman asimina girer. O imaj yerel olarak build edilir (docs/DOCKER.md).
+  # ---------------------------------------------------------------------------
+  docker:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: dev imajini build et ve testleri icinde kostur
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: dev
+          push: false
+          load: true
+          tags: fairino-cobot:dev
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Imaj icinde testler
+        run: docker run --rm fairino-cobot:dev pytest -q
+
+  # ---------------------------------------------------------------------------
+  # ROS2 yamalarinin gercek vendor agacina uygulanabildigini dogrula.
+  #
+  # Yama bir .patch dosyasi; vendor kaynagi degistiginde SESSIZCE uyumsuz hale
+  # gelir ve bunu ancak robotu calistirmaya calisirken fark ederdik.
+  # ---------------------------------------------------------------------------
+  ros2-patches:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - run: pip install -r requirements.txt
+
+      - name: Vendor surucusunu klonla
+        run: |
+          git clone --depth 1 --branch V3.0.0_RobotV3.9.3 \
+            https://github.com/FAIR-INNOVATION/frcobot_ros2.git /tmp/frcobot_ros2
+
+      - name: Yamalar uygulanabiliyor mu (dry-run)
+        run: python3 tools/apply_ros2_patches.py --frcobot /tmp/frcobot_ros2 --dry-run
+
+      - name: Gercekten uygula ve sonucun gecerli YAML oldugunu dogrula
+        run: |
+          python3 tools/apply_ros2_patches.py --frcobot /tmp/frcobot_ros2
+          python3 - <<'PY'
+          import glob
+          import sys
+
+          import yaml
+
+          paketler = sorted(glob.glob("/tmp/frcobot_ros2/fairino*_v6_moveit2_config"))
+          assert paketler, "hic model paketi bulunamadi"
+
+          for pkg in paketler:
+              ompl = yaml.safe_load(open(f"{pkg}/config/ompl_planning.yaml"))
+              gruplar = [k for k in ompl if k.endswith("_group")]
+              assert len(gruplar) == 1, f"{pkg}: beklenen tek grup, bulunan {gruplar}"
+              assert ompl[gruplar[0]]["longest_valid_segment_fraction"] == 0.005
+
+              ctl = yaml.safe_load(open(f"{pkg}/config/ros2_controllers.yaml"))
+              adlar = [k for k in ctl if k.endswith("_controller")]
+              kis = ctl[adlar[0]]["ros__parameters"]["constraints"]
+              assert kis["goal_time"] == 2.0
+              assert kis["j1"]["goal"] == 0.05
+
+              print(f"OK {pkg.split('/')[-1]:32s} {gruplar[0]:22s} {adlar[0]}")
+
+          print(f"\n{len(paketler)} paket dogrulandi.")
+          PY
