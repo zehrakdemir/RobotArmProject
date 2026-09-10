@@ -705,7 +705,7 @@ kavrama, manuel mod) sadece `movecobot.py`'de var.
 5. **`joint_limits.yaml` ivme düzeltmesi** sadece `fairino3` ve `fairino5` paketlerinde —
    diğer modeller (`fairino10/16/20/30/3mt`) için henüz uygulanmadı, gerekirse aynı mantıkla
    (`ompl_planning.yaml` düzeltmesinde yapıldığı gibi) tüm modellere genellenebilir.
-6. **Yayınlanan kod**: `github.com/huseyinai/fairino-cobot`, `main` dalı.
+6. **Yayınlanan kod**: `github.com/zehrakdemir/RobotArmProject`, `huseyin` dalı.
    Kaynak `src/fairino_cobot/`, yamalar `ros2/patches/`, betikler `scripts/`, belgeler
    `docs/` altında (bkz. yukarıdaki "Dosya Konumları").
 

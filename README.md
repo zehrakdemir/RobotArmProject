@@ -1,4 +1,4 @@
-# fairino-cobot — Fairino FR3 kol kontrolü
+# RobotArmProject — Fairino FR3 kol kontrolü
 
 Fairino FR3 iş birlikçi kolunu **ROS2 Humble + MoveIt2** üzerinden süren araçlar: hareket
 öğretme/kaydetme/oynatma, adaptif kavrama yapan gripper sürücüsü ve MoveIt Task Constructor
@@ -46,11 +46,11 @@ ROS2/MoveIt2 kurulumunun tamamı: **[`docs/SETUP.md`](docs/SETUP.md)**.
 ## Kurulum
 
 ```bash
-git clone https://github.com/huseyinai/fairino-cobot.git
+git clone https://github.com/zehrakdemir/RobotArmProject.git
 ```
 
 ```bash
-cd fairino-cobot && bash scripts/install.sh
+cd RobotArmProject && git checkout huseyin && bash scripts/install.sh
 ```
 
 `install.sh` paketi kurar, `.env` dosyasını oluşturur ve çözülen yolları (SDK, durum dizini,
