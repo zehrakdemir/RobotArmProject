@@ -104,9 +104,17 @@ movecobot
 docker compose run --rm test
 ```
 
-Tam çalışma ortamı (ROS2 + MoveIt2 + sürücü) da var ama **desteklenen yol native kurulumdur**;
-container tarafı gerçek robotla henüz doğrulanmadı. Gerekçeler ve zorunlu host ayarları
-(host network, RT önceliği, X soketi): [`docs/DOCKER.md`](docs/DOCKER.md).
+Tam çalışma ortamı da var: ROS2 + MoveIt2 + MTC + **yamalı** Fairino sürücüsü + SDK. Ortamın
+doğru kurulduğunu robota hiç dokunmadan doğrular:
+
+```bash
+docker compose run --rm verify
+```
+
+İmaj derlendi ve içi doğrulandı (sürücü tam yamamızla derleniyor, `moveit_py`/MTC/SDK ve
+uygulama modülleri yükleniyor), ama **kolu container'dan sürmek henüz denenmedi** — şimdilik
+desteklenen yol native kurulum. Zorunlu host ayarları (host network, RT önceliği, X soketi)
+ve gerekçeleri: [`docs/DOCKER.md`](docs/DOCKER.md).
 
 ## Geliştirme
 

@@ -1,10 +1,16 @@
 # Kullanım:
-#   docker compose run --rm test          # lint + test (ROS2 gerektirmez, hızlı)
-#   docker compose run --rm cobot         # tam ortamda kabuk (deneysel)
+#   docker compose run --rm test     # lint + test (ROS2 gerektirmez, saniyeler)
+#   docker compose run --rm verify   # tam ortam sağlıklı mı (robot gerekmez)
+#   docker compose run --rm cobot    # tam ortamda kabuk
 #
-# DESTEKLENEN YOL HÂLÂ NATIVE KURULUM (docs/SETUP.md). "cobot" servisi
-# tekrarlanabilirlik için var ve gerçek robotla henüz doğrulanmadı —
-# ayrıntılar ve bilinen tuzaklar docs/DOCKER.md'de.
+# "verify" ile "cobot" aynı imajı kullanır. Önce verify'ı çalıştır: ortamın
+# doğru kurulduğunu robota hiç dokunmadan söyler.
+#
+# NE DOĞRULANDI: imaj derleniyor; sürücü bizim TAM yamamızla (UDP servo
+# kanalı, ölçülen cmdT, hız sınırlayıcı, boşta servo çıkışı) derleniyor;
+# moveit_py, MTC, Fairino SDK ve uygulama modüllerinin hepsi yükleniyor.
+# NE DOĞRULANMADI: container'dan GERÇEK ROBOT sürmek. Native kurulum
+# çalışıyor ve şimdilik desteklenen yol o. Ayrıntı: docs/DOCKER.md
 
 services:
 
@@ -16,6 +22,19 @@ services:
       context: .
       target: dev
     command: ["bash", "-lc", "ruff check . && pytest -q"]
+
+  # -------------------------------------------------------------------------
+  # verify - tam ortam doğru kuruldu mu? Robota BAĞLANMAZ.
+  #
+  # İmaj "başarıyla" derlenip işe yaramaz çıkabiliyor: gerçek bir örnekte
+  # colcon, seçilen paketi bulamayınca uyarı verip 0 ile çıkmıştı — build
+  # yeşil, install/ boş, robot hiç sürülemez. Bu servis onu yakalar.
+  # -------------------------------------------------------------------------
+  verify:
+    build:
+      context: .
+      target: runtime
+    command: ["bash", "/app/scripts/verify_container.sh"]
 
   # -------------------------------------------------------------------------
   # cobot - gerçek robotu süren tam ortam
