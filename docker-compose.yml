@@ -1,0 +1,44 @@
+services:
+  valiz-olcum:
+    build: .
+    container_name: valiz-olcum-robot
+    ports:
+      - "8501:8501"
+    # .env icindeki TUM degiskenler (SGBM_*, WLS_*, TILT_THRESHOLD_DEG, ...)
+    # konteynira aktarilir. Yeniden build gerekmez: `docker compose up -d` yeter.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # --- YOLO ---
+      SEG_WEIGHTS: ${SEG_WEIGHTS:-yolo26s-seg.pt}
+      SEG_WEIGHTS_FALLBACK: ${SEG_WEIGHTS_FALLBACK:-yolov8s-seg.pt}
+      YOLO_CONF_THRESHOLD: ${YOLO_CONF_THRESHOLD:-0.25}
+      YOLO_DEVICE: ${YOLO_DEVICE:-cpu}
+      # --- Robot (varsayilan: KAPALI / dry-run) ---
+      ROBOT_ENABLED: ${ROBOT_ENABLED:-false}
+      ROBOT_IP: ${ROBOT_IP:-192.168.58.2}
+    volumes:
+      - ./models:/app/models          # kendi yolo26s-seg.pt agirliginizi buraya koyun
+      - ./src/calibration:/app/src/calibration  # stereo_calib.yaml + base_T_cam.yaml
+      - ./calib_shots:/app/calib_shots          # kalibrasyon kareleri (tools/)
+      - ./snaps:/app/snaps                      # cam_web / canli onizleme cekimleri
+      - ./cam_probe:/app/cam_probe              # tools.list_cameras onizlemeleri
+      - yolo_cache:/root/.config/Ultralytics
+    networks:
+      - default
+      - fairino-net          # FR3 SimMachine (192.168.58.2) ile ayni ag
+    restart: unless-stopped
+
+# HUCRE MODU (2 USB kamera + FR3): bu dosya WSL-uyumlu kalir (kamera gecmez).
+# Gercek hucre icin NATIVE UBUNTU'da override ile calistirin:
+#   docker compose -f docker-compose.yml -f docker-compose.cell.yml up -d --build
+# Ayrintili adimlar: DEPLOY_CELL.md
+
+networks:
+  default:
+  fairino-net:
+    external: true          # `docker network create fairino-net` ile onceden olusturulmus
+
+volumes:
+  yolo_cache:

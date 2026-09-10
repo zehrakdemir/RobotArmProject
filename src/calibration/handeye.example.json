@@ -1,0 +1,10 @@
+{
+  "_aciklama": "Kamera -> Fairino FR3 TABAN cercevesi el-goz (hand-eye) donusumu. Bu dosyayi 'handeye.json' olarak kopyalayin ve KENDI kalibrasyonunuzla doldurun. R: 3x3 rotasyon matrisi (kamera ekseninden robot taban eksenine). t_mm: oteleme (mm). camera_units: pipeline'in image_to_robot_frame() fonksiyonuna verdigi 3B noktanin birimi ('cm' onerilir). Bu dosya YOKSA robot komutu yine uretilir ama kavrama pozu bos kalir (operator manuel jog ile tamamlar).",
+  "R": [
+    [1.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0],
+    [0.0, 0.0, 1.0]
+  ],
+  "t_mm": [0.0, 0.0, 0.0],
+  "camera_units": "cm"
+}

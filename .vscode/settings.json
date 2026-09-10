@@ -1,0 +1,26 @@
+{
+  "python.testing.pytestEnabled": true,
+  "python.testing.pytestArgs": ["tests"],
+
+  // Bagimliliklar Docker imajinda; Windows host'ta kurulu DEGIL. Bu yuzden
+  // Pylance "import cv2/numpy/streamlit/torch/ultralytics cozulemedi" derdi.
+  // Bunlar GERCEK HATA DEGIL - kodu konteynerde calisiyor. Asagisi o
+  // kirmizi cizgileri susturur (disk sisirmeden).
+  "python.analysis.typeCheckingMode": "off",
+  "python.analysis.diagnosticSeverityOverrides": {
+    "reportMissingImports": "none",
+    "reportMissingModuleSource": "none",
+    "reportAttributeAccessIssue": "none"
+  },
+  "python.analysis.extraPaths": ["."],
+  "python.languageServer": "Pylance",
+
+  "editor.formatOnSave": false,
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/.pytest_cache": true
+  },
+  "[python]": {
+    "editor.rulers": [100]
+  }
+}

@@ -1,0 +1,25 @@
+# HUCRE MODU override - SADECE FR3'un oldugu NATIVE UBUNTU makinede kullanin.
+# (WSL2'de USB kamera gorunmez; bu dosyayi WSL'de kullanmayin.)
+#
+#   docker compose -f docker-compose.yml -f docker-compose.cell.yml up -d --build
+#
+# Once host'ta hangi /dev/video* oldugunu bulun:
+#   docker compose run --rm valiz-olcum python -m tools.list_cameras   # (gecici: base compose ile)
+#   veya host'ta:  v4l2-ctl --list-devices
+# Sonra .env'ye yazin:
+#   CAM_LEFT_DEV=/dev/video0
+#   CAM_RIGHT_DEV=/dev/video2
+
+services:
+  valiz-olcum:
+    # Host'taki iki kamerayi konteynerde SABIT /dev/video0 (sol) ve /dev/video1 (sag) yap.
+    devices:
+      - "${CAM_LEFT_DEV:?once .env icine CAM_LEFT_DEV=/dev/videoN yazin}:/dev/video0"
+      - "${CAM_RIGHT_DEV:?once .env icine CAM_RIGHT_DEV=/dev/videoN yazin}:/dev/video1"
+    group_add:
+      - video
+    environment:
+      CAM_LEFT_INDEX: "0"     # konteyner ici sabit
+      CAM_RIGHT_INDEX: "1"
+    # FR3 konteynere GERI baglanmasi gerekiyorsa (nadiren) host agi acin:
+    # network_mode: host

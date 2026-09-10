@@ -1,0 +1,24 @@
+# --- Cekirdek goruntu isleme ---
+# ximgproc (WLS disparite filtresi) icin contrib SART. opencv-python ile
+# BIRLIKTE kurmayin - cakisirlar.
+opencv-contrib-python==4.10.0.84
+numpy>=1.24,<2.3
+scipy>=1.10
+
+# --- YOLO26-seg tespit ---
+ultralytics>=8.3.0
+# torch: CPU tekeri icin  ->  pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch>=2.2
+torchvision>=0.17
+
+# --- Arayuz + gorsellestirme ---
+streamlit>=1.36
+plotly>=5.22
+pillow>=10.0
+
+# --- Opsiyonel: Fairino FR3 SDK ---
+# Resmi paket adi degisebilir; robot kolu kullanacaksaniz ekleyin:
+# fairino-python-sdk
+
+# --- Test ---
+pytest>=8.0
