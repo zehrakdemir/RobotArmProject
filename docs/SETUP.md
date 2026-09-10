@@ -16,21 +16,56 @@ sonra mutlaka yepyeni bir terminal penceresi aç**, aksi halde saatlerce "neden 
 diye debug edebilirsin.
 
 ## Dosya Konumları
-- SimMachine docker image tar'ı: `~/fairino/simmachine/FAIRINOSimMachine.tar`
-- Python SDK + demo script'ler + moveit_py test script'leri: `~/fairino/client/`
+
+> **Dizin düzeni değişti.** Kodlar artık dağınık şekilde `~/fairino/client/` ve `~/` altında
+> değil, repo içinde sorumluluklarına göre duruyor ve kurulabilir bir paket (`fairino_cobot`).
+> Aşağıdaki tablo eski → yeni eşlemesi; bu dosyanın geri kalanındaki tarihsel anlatı hâlâ
+> eski isimleri kullanıyor olabilir.
+>
+> | Eski | Yeni |
+> |---|---|
+> | `~/fairino/client/movecobot.py` (ve kardeşleri) | `src/fairino_cobot/` |
+> | `~/fairino/client/fairino_controller.py`, `fairino_params.py` | `src/fairino_cobot/legacy/` |
+> | `~/fairino/client/` içindeki demo/örnekler | `examples/` |
+> | `~/detect_robot.py`, `~/setup_fairino_target.py` | `src/fairino_cobot/detect_robot.py`, `setup_target.py` |
+> | `~/auto_fairino_launch.sh` | `scripts/fairino_launch.sh` |
+> | `~/fairino/*.sh`, `clearcobot.sh` | `scripts/` |
+> | `robot_arm/ros2_config_patches/` | `ros2/patches/` + `tools/apply_ros2_patches.py` |
+> | `DURUM_*.md` | `docs/journal/` |
+>
+> Kurulum: `bash scripts/install.sh` → `movecobot`, `konumcobot`, `gripper-gui`,
+> `detect-robot` komutları PATH'e gelir.
+
+Repo içi düzen:
+
+- `src/fairino_cobot/` — çalışan kütüphane ve komut satırı araçları
   - `movecobot.py` — ana birleşik kontrol/kayıt aracı (bkz. aşağıdaki "Güncel Durum")
+  - `pickplace.py` — MoveIt Task Constructor ile pick & place aşamaları
   - `gripper_controller.py` — Jodell EPG40-050 gripper sürücüsü (adaptif `grip()` dahil)
   - `gripper_gui.py` — gripper için Tkinter arayüzü (movecobot içinden de otomatik açılıyor)
   - `konumcobot.py` — movecobot çalışırken robota ikinci bağlantı açmadan durum okuyan
     hafif "sadece göster" aracı
-  - `fairino_controller.py`, `fairino_params.py` — düşük seviye SDK yardımcıları
-  - `vision_integration_example.py` — vision tarafının (bkz. GitHub'daki `vision/` klasörü)
+  - `detect_robot.py`, `setup_target.py` — otomatik robot algılama + doğru kaynağı kurma
+    (bkz. "fairino_launch — Otomatik Robot Algılama ve Kurulum" bölümü)
+  - `paths.py` — SDK, workspace ve durum dosyalarının yerini tek yerden çözer; hepsi
+    `.env` ile değiştirilebilir (bkz. `.env.example`)
+  - `legacy/` — artık alias'ı olmayan eski düşük seviye SDK yardımcıları
+- `examples/` — tek seferlik demo script'leri
+  - `vision_integration_example.py` — vision tarafının (bkz. `main` dalındaki `vision/`)
     tespit ettiği 6D pozu `FairinoController.move_to_pose()`'a nasıl vereceğini gösteren
     entegrasyon iskeleti (şu an uydurma/stub veriyle)
-- Otomatik robot algılama + kurulum script'leri: `~/detect_robot.py`, `~/setup_fairino_target.py`
-  — bkz. "fairino_launch — Otomatik Robot Algılama ve Kurulum" bölümü
-- Başlat/durdur/launch script'leri: `~/fairino/run_simmachine.sh`, `~/fairino/stop_simmachine.sh`, `~/fairino/launch_moveit.sh`, `~/auto_fairino_launch.sh`
+- `scripts/` — `install.sh`, `fairino_launch.sh`, `clearcobot.sh`, SimMachine başlat/durdur
+- `ros2/patches/` + `tools/apply_ros2_patches.py` — vendor `frcobot_ros2` üzerine
+  uygulanan override'lar (bkz. [`../ros2/README.md`](../ros2/README.md))
+- `docs/journal/` — günlük çalışma notları
+
+Repo dışında kalanlar (makineye özgü, `.env` ile bildirilir):
+
+- SimMachine docker image tar'ı: `~/fairino/simmachine/FAIRINOSimMachine.tar`
+- Fairino Python SDK: ayrıca klonlanır (`FAIRINO_SDK_DIR`)
 - ROS2 workspace: `~/ros2_ws/src/frcobot_ros2/` — **`V3.0.0_RobotV3.9.3` tag'inde** (bkz. aşağı)
+- Kayıtlı hareketler ve durum önbelleği: `~/.local/state/fairino-cobot/`
+  (`FAIRINO_STATE_DIR`)
 
 ## GÜNCEL DURUM: Gerçek Robot (FR3, movecobot.py) — Ana Çalışma Şekli
 
@@ -125,9 +160,11 @@ için ayrı bir `fairino<N>_v6_moveit2_config` paketi içeriyor ve `movecobot.py
 bağlıysa onu otomatik algılayıp (`detect_robot()`) doğru paketi seçiyor — yani bu düzeltme
 SADECE `fairino3_v6_moveit2_config`'e eklenirse, başka bir model (FR5, FR10, ...) takıldığında
 düzeltmesiz/varsayılan (jerk sınırsız) config'e geri düşülür. Bu yüzden aynı
-`ompl_planning.yaml` bulunan HER `fairino*_v6_moveit2_config/config/` klasörüne kopyalanmalı —
-bkz. `robot_arm/ros2_config_patches/apply_patch.sh` (GitHub reposundaki genel uygulama
-script'i, tüm mevcut model paketlerini tek seferde günceller).
+`ompl_planning.yaml` bulunan HER `fairino*_v6_moveit2_config/config/` klasörüne uygulanmalı —
+bunu `tools/apply_ros2_patches.py` yapıyor (tüm model paketlerini tek seferde günceller,
+idempotent, `--dry-run` destekli). Araç ayrıca **modele özgü** isimleri her paketin kendi
+SRDF/yaml dosyasından okuyor (`fairino3_v6_group:`, `fairino3_controller:` gibi) — tek bir
+dosyayı kopyalamak bu yüzden yetmiyor. Ayrıntı: [`../ros2/README.md`](../ros2/README.md).
 
 ### ÇÖZÜLDÜ — "command speed... exceeds the limit" hatası (joint_limits.yaml ivme eksikliği)
 `joint_limits.yaml`'da (her model paketi için) tüm eklemlerde `has_acceleration_limits: false`
@@ -667,6 +704,12 @@ kavrama, manuel mod) sadece `movecobot.py`'de var.
 5. **`joint_limits.yaml` ivme düzeltmesi** sadece `fairino3` ve `fairino5` paketlerinde —
    diğer modeller (`fairino10/16/20/30/3mt`) için henüz uygulanmadı, gerekirse aynı mantıkla
    (`ompl_planning.yaml` düzeltmesinde yapıldığı gibi) tüm modellere genellenebilir.
-6. **Yayınlanan kod**: bu araçların (client/ + ros2_config_patches/) bir kopyası
-   `github.com/zehrakdemir/robot-arm-simulation` reposunun `huseyin` branch'inde,
-   `robot_arm/` klasörü altında tutuluyor (ana repodaki `vision/` ile paralel).
+6. **Yayınlanan kod**: `github.com/zehrakdemir/robot-arm-simulation`, `huseyin` dalı.
+   Artık `robot_arm/` altında tek yığın değil — kaynak `src/fairino_cobot/`, yamalar
+   `ros2/patches/`, betikler `scripts/`, belgeler `docs/` altında (bkz. yukarıdaki
+   "Dosya Konumları").
+
+   **DİKKAT:** `huseyin` dalı, `main`'deki `vision/` klasörünü ve kök `Dockerfile`/`README.md`'yi
+   SİLEN commit'ler içeriyor (`f5650de`, `f017d9b`, `562bf0c`). Bu dal `main`'e olduğu gibi
+   birleştirilirse vision tarafı silinir. Birleştirmeden önce o üç commit'in etkisi geri
+   alınmalı ya da birleştirme dosya bazında yapılmalı.
