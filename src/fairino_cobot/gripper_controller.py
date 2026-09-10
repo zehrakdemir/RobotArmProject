@@ -20,7 +20,6 @@ Kullanim (modul olarak):
 Kullanim (dogrudan test):
     python3 gripper_controller.py
 """
-import os
 import re
 import subprocess
 import sys

@@ -20,18 +20,15 @@ from fairino_cobot import paths
 paths.ensure_sdk_on_path()
 
 import rclpy
-from rclpy.node import Node
-from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.executors import MultiThreadedExecutor
-
-from moveit.planning import MoveItPy
-from moveit.core.robot_state import RobotState
-from moveit_configs_utils import MoveItConfigsBuilder
-from geometry_msgs.msg import PoseStamped, Pose
-from moveit_msgs.msg import CollisionObject
-from shape_msgs.msg import SolidPrimitive
-
 from fairino import Robot
+from geometry_msgs.msg import Pose, PoseStamped
+from moveit.core.robot_state import RobotState
+from moveit.planning import MoveItPy
+from moveit_configs_utils import MoveItConfigsBuilder
+from moveit_msgs.msg import CollisionObject
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.node import Node
+from shape_msgs.msg import SolidPrimitive
 
 JOINT_NAMES = ["j1", "j2", "j3", "j4", "j5", "j6"]
 TIP_LINK = "wrist3_link"
@@ -307,7 +304,9 @@ def main():
 
     rclpy.init()
     node = Node("moveit_py_interactive")
-    callback_group = ReentrantCallbackGroup()
+    # (Eskiden burada bir ReentrantCallbackGroup olusturuluyordu ama hicbir
+    # yere verilmiyordu - olu koddu, kaldirildi. Executor zaten cok is
+    # parcacikli.)
     executor = MultiThreadedExecutor(2)
     executor.add_node(node)
     executor_thread = threading.Thread(target=executor.spin, daemon=True)

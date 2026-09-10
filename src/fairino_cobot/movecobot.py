@@ -33,7 +33,6 @@ Kullanim:
 """
 import json
 import math
-import os
 import re
 import shutil
 import subprocess
@@ -49,6 +48,7 @@ from fairino_cobot import paths
 paths.ensure_sdk_on_path()
 
 from fairino import Robot
+
 from fairino_cobot.gripper_controller import GripperController, GripperError
 
 JOINT_NAMES = ["j1", "j2", "j3", "j4", "j5", "j6"]
@@ -455,12 +455,12 @@ def wait_for_live_joint_reading(sdk, sdk_lock, max_wait_s=1.5, poll_interval_s=0
 class CobotArm:
     def __init__(self, robot_ip, model_num, speed_pct, accel_pct, node_name="movecobot"):
         import rclpy
-        from rclpy.node import Node
-        from rclpy.executors import MultiThreadedExecutor
+        from geometry_msgs.msg import Pose
         from moveit.planning import MoveItPy
         from moveit_configs_utils import MoveItConfigsBuilder
-        from geometry_msgs.msg import Pose
-        from moveit_msgs.msg import CollisionObject, AttachedCollisionObject
+        from moveit_msgs.msg import AttachedCollisionObject, CollisionObject
+        from rclpy.executors import MultiThreadedExecutor
+        from rclpy.node import Node
         from shape_msgs.msg import SolidPrimitive
 
         self.robot_ip = robot_ip
@@ -762,7 +762,7 @@ class CobotArm:
     # ve wrist3 ile temasi touch_links ile izinli kilinir.
     def attach_grasped_object(self, width_m, depth_m, height_m):
         from geometry_msgs.msg import Pose
-        from moveit_msgs.msg import CollisionObject, AttachedCollisionObject
+        from moveit_msgs.msg import AttachedCollisionObject, CollisionObject
         from shape_msgs.msg import SolidPrimitive
         try:
             ox, oy, oz = self.tcp_offset_m
@@ -792,7 +792,7 @@ class CobotArm:
                   f"planlama tasidigin nesneden HABERSIZ olacak, dikkatli ol.")
 
     def detach_object(self):
-        from moveit_msgs.msg import CollisionObject, AttachedCollisionObject
+        from moveit_msgs.msg import AttachedCollisionObject, CollisionObject
         if not getattr(self, "_object_attached", False):
             return
         try:

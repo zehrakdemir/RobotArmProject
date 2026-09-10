@@ -6,14 +6,14 @@ OTOMATIK öğrenir. Hiçbir IP hardcoded değil.
 Kullanım:
   python3 detect_robot.py
 """
-import sys
-import subprocess
+import ipaddress
 import re
 import socket
-import ipaddress
+import subprocess
+import sys
 import threading
-from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 from fairino_cobot import paths
 

@@ -18,7 +18,7 @@ def ask_int(prompt, default, lo=0, hi=100):
         try:
             val = int(raw)
         except ValueError:
-            print(f"  Gecersiz sayi, tekrar gir.")
+            print("  Gecersiz sayi, tekrar gir.")
             continue
         if not (lo <= val <= hi):
             print(f"  {lo}-{hi} araliginda olmali, tekrar gir.")

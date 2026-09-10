@@ -64,8 +64,26 @@ extend-exclude = ["vendor", "examples"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]
 ignore = [
-    "E501",  # satir uzunlugu: mevcut dosyalarda uzun aciklama yorumlari var
-    "B008",  # cagri-varsayilani: mevcut kodda bilincli kullanimlar var
+    # Satir uzunlugu. Dosyalar uzun aciklama yorumlari iceriyor (hangi
+    # kararin NEDEN alindigini anlatan); bunlari bolmek okunurlugu bozar.
+    "E501",
+
+    # "Module level import not at top of file". BU KOD TABANINDA KACINILMAZ:
+    # `from fairino import Robot` ancak paths.ensure_sdk_on_path() SDK'yi
+    # sys.path'e ekledikten SONRA calisir. Ayni sekilde pickplace.py, MTC'nin
+    # namespace golgelemesini duzelttikten sonra import ediyor. Import'lari
+    # yukari almak modulleri KIRAR - kural bilerek kapali.
+    "E402",
+
+    # "zip() without explicit strict=". Cagrilarin cogu eklem adlarini eklem
+    # degerleriyle esliyor; strict=True gercekten faydali olurdu (uzunluk
+    # uyusmazligi gercek bir hata olurdu) AMA calisma zamani davranisini
+    # degistiriyor. Bu, canli robotta test edilmeden yapilacak bir degisiklik
+    # degil - ayri bir is olarak ele alinmali.
+    "B905",
+
+    # Cagri-varsayilani olarak fonksiyon cagrisi: mevcut kodda bilincli.
+    "B008",
 ]
 
 [tool.ruff.lint.per-file-ignores]

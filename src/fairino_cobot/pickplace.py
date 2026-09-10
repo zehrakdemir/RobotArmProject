@@ -73,9 +73,9 @@ class PickPlace:
                 "ros-humble-moveit-task-constructor-capabilities")
         self.core, self.stages = mtc
 
-        from moveit_configs_utils import MoveItConfigsBuilder
         import rclcpp
         from geometry_msgs.msg import PoseStamped
+        from moveit_configs_utils import MoveItConfigsBuilder
 
         self.group = group_name
         self.tip = tip_link
@@ -228,9 +228,9 @@ class PickPlace:
 
     def _nesne_msg(self, boyut_mm, tcp_offset_m):
         """Kavranan nesnenin CollisionObject'i - cenelerin arasinda (TCP'de)."""
+        from geometry_msgs.msg import Pose
         from moveit_msgs.msg import CollisionObject
         from shape_msgs.msg import SolidPrimitive
-        from geometry_msgs.msg import Pose
         co = CollisionObject()
         co.header.frame_id = self.tip
         co.id = "grasped_object"

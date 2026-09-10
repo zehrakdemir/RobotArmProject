@@ -11,11 +11,9 @@ beklemek istemedigin durumlar icin.
 Kullanim: konumcobot
 """
 import json
-import os
 import subprocess
 import sys
 import time
-from pathlib import Path
 
 from fairino_cobot import paths
 
@@ -23,6 +21,7 @@ from fairino_cobot import paths
 paths.ensure_sdk_on_path()
 
 from fairino import Robot
+
 from fairino_cobot.gripper_controller import (
     GripperController,
     GripperError,
