@@ -156,3 +156,55 @@ def test_env_example_var():
 @pytest.mark.parametrize("ad", ["README.md", "pyproject.toml", "requirements.txt", "Dockerfile"])
 def test_temel_dosyalar_var(ad):
     assert (REPO_ROOT / ad).exists(), f"{ad} yok"
+
+
+# ---------------------------------------------------------------------------
+# Surucu yamasi
+# ---------------------------------------------------------------------------
+
+# Bu dort parca robotun DUZGUN hareket etmesinin sarti; yamada biri eksik
+# kalirsa robot sicramali calisir ve "axis N command speed exceeds the limit"
+# faultu verebilir. Gerekceler: ros2/README.md ve docs/journal/2026-09-09.md
+KRITIK_YAMA_PARCALARI = {
+    "_servo_com_type": "UDP servo kanali (comType=1, port 20007)",
+    "SERVOJ_CMDT": "cmdT olculen kontrol periyodundan geliyor",
+    "MAX_SAFE_JOINT_VEL_DEG_S": "eklem hizi sinirlayici",
+    "IDLE_EXIT_S": "bosta servo modundan cikis (gripper komutlari icin)",
+    "robot_ip": "robot_ip donanim parametresi",
+}
+
+
+def test_surucu_yamasi_tum_kritik_parcalari_iceriyor():
+    """Yama yeniden uretilirken parcalardan biri dusebilir ve bunu ancak
+    robot sicramaya basladiginda fark ederiz. Burada yakalaniyor."""
+    yama = REPO_ROOT / "ros2" / "patches" / "fairino_hardware_interface.patch"
+    assert yama.exists(), "surucu yamasi yok"
+    metin = yama.read_text(encoding="utf-8")
+
+    eksik = [f"{k} ({a})" for k, a in KRITIK_YAMA_PARCALARI.items() if k not in metin]
+    assert not eksik, "yamada eksik parca:\n  " + "\n  ".join(eksik)
+
+
+def test_setup_target_kendi_kismi_yamasini_TEK_BASINA_kullanmiyor():
+    """setup_target eskiden SADECE robot_ip blogunu ekleyen kendi yamasini
+    calistiriyordu; temiz bir makinede surucu kritik duzeltmeler olmadan
+    derleniyordu. Artik once tam yama (ros2/patches) uygulanmali,
+    patch_on_init yalnizca yedek yol olmali."""
+    kaynak = (PKG_DIR / "setup_target.py").read_text(encoding="utf-8")
+    agac = ast.parse(kaynak)
+
+    cagiranlar = {
+        d.name
+        for d in ast.walk(agac)
+        if isinstance(d, ast.FunctionDef)
+        and any(
+            isinstance(c, ast.Call)
+            and isinstance(c.func, ast.Name)
+            and c.func.id == "patch_on_init"
+            for c in ast.walk(d)
+        )
+    }
+    assert cagiranlar == {"apply_hardware_patch"}, (
+        "patch_on_init yalnizca apply_hardware_patch icinden (yedek yol olarak) "
+        f"cagrilmali; cagiranlar: {sorted(cagiranlar)}"
+    )

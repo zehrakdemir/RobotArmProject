@@ -37,6 +37,11 @@ COPY tools/ ./tools/
 COPY ros2/ ./ros2/
 COPY examples/ ./examples/
 COPY .env.example ./
+# Testler reponun temel dosyalarının varlığını da doğruluyor
+# (tests/test_kaynak_saglik.py). Bunlar kopyalanmazsa imaj içindeki test
+# koşusu host'takinden FARKLI sonuç verir — ki CI tam olarak imajın içinde
+# koşuyor. Küçük dosyalar; imajın repoyu sadık temsil etmesi için varlar.
+COPY Dockerfile docker-compose.yml ./
 
 RUN pip install --no-cache-dir -e .
 

@@ -126,6 +126,55 @@ def find_config_source(model_num):
     return MIRROR / f"fairino{model_num}_v6_moveit2_config"
 
 
+def apply_hardware_patch(frcobot_dir: Path, cpp_path: Path):
+    """Surucunun TAM yamasini uygular (ros2/patches/*.patch).
+
+    NEDEN BOYLE: burada eskiden patch_on_init() vardi ve SADECE robot_ip
+    blogunu ekliyordu. Temiz bir makinede sira "fairino_launch ->
+    setup_target -> derle" oldugu icin sonuc su oluyordu: UDP servo kanali,
+    olculen cmdT, hiz sinirlayici ve bosta servo modundan cikis HIC
+    uygulanmamis bir surucu. Robot sicramali calisir, "axis N command speed
+    exceeds the limit" faultu verebilirdi. Ustelik sonradan tam yamayi
+    uygulamak da MUMKUN OLMUYORDU: robot_ip blogu eklendigi icin patch'in
+    baglami kayiyor ve yama tutmuyordu.
+
+    Artik tek kaynak var. Yama dosyasi bulunamazsa eski davranisa (yalniz
+    robot_ip) duesuluyor - hicbir sey yapmamaktansa iyi, ama yuksek sesle
+    uyariliyor.
+    """
+    try:
+        yama = paths.patches_dir() / "fairino_hardware_interface.patch"
+    except paths.PathError as e:
+        yama = None
+        print(f"  UYARI: yama klasoru bulunamadi ({e.args[0].splitlines()[0]})")
+
+    if yama is None or not yama.exists():
+        print("  UYARI: TAM surucu yamasi uygulanamiyor - sadece robot_ip blogu")
+        print("         eklenecek. UDP servo kanali, olculen cmdT, hiz sinirlayici")
+        print("         ve bosta servo cikisi DEVREDE OLMAYACAK; robot sicramali")
+        print("         calisabilir. Bkz. ros2/README.md")
+        patch_on_init(cpp_path)
+        return
+
+    if "_servo_com_type" in cpp_path.read_text():
+        print("  Surucu yamasi zaten uygulanmis.")
+        return
+
+    r = subprocess.run(
+        ["patch", "-p1", "--forward", "--batch", "-i", str(yama)],
+        cwd=str(frcobot_dir), capture_output=True, text=True,
+    )
+    if r.returncode == 0:
+        print("  Surucu yamasi uygulandi (UDP servo kanali, olculen cmdT,")
+        print("  hiz sinirlayici, bosta servo cikisi, robot_ip parametresi).")
+        return
+
+    print(f"  UYARI: surucu yamasi uygulanamadi (rc={r.returncode}).")
+    print(f"  {(r.stdout + r.stderr).strip()[:300]}")
+    print("  Yedek olarak sadece robot_ip blogu ekleniyor.")
+    patch_on_init(cpp_path)
+
+
 def patch_on_init(cpp_path: Path):
     text = cpp_path.read_text()
     if 'hardware_parameters.count("robot_ip")' in text:
@@ -295,8 +344,13 @@ def main():
     model_num, maj, minr, min2, robot_ip = sys.argv[1:6]
 
     if not MIRROR.exists():
-        die(f"{MIRROR} bulunamadı. fairino_official_mirror.tar.gz'i indirip açtın mı?\n"
-            f"  cd ~ && tar -xzf fairino_official_mirror.tar.gz")
+        die(f"{MIRROR} bulunamadı.\n"
+            f"Bu klasör frcobot_ros2'nin V3.0.0_RobotV3.9.9 tag'idir — içinde\n"
+            f"fairino_hardware'in v3.8.2.11'den v3.9.9'a kadar tüm sürümleri var.\n"
+            f"İndirmek için:\n"
+            f"  git clone --depth 1 --branch V3.0.0_RobotV3.9.9 \\\n"
+            f"      https://github.com/FAIR-INNOVATION/frcobot_ros2.git {MIRROR}\n"
+            f"Başka bir yerdeyse .env içinde FAIRINO_MIRROR_DIR ile bildir.")
 
     print(f"=== FR{model_num}, sürüm {maj}.{minr}.{min2} için kaynak aranıyor ===")
     hw_src = find_hardware_source(maj, minr, min2)
@@ -341,7 +395,7 @@ def main():
 
         cpp_file = hw_target / "src" / "fairino_hardware_interface.cpp"
         if cpp_file.exists():
-            patch_on_init(cpp_file)
+            apply_hardware_patch(hw_target.parent, cpp_file)
         else:
             print(f"  UYARI: {cpp_file} yok, yama atlanıyor (belki eski kaynak zaten yamalı).")
 

@@ -198,13 +198,49 @@ def ros2_ws() -> Path:
 
 
 def mirror_dir() -> Path:
-    """Resmi Fairino kaynak surumlerinin yerel aynasi (setup_target.py bundan
-    dogru surumu secip kuruyor)."""
+    """Resmi Fairino kaynak surumlerinin yerel aynasi.
+
+    Bu "ayna" ozel bir sey DEGIL: frcobot_ros2'nin V3.0.0_RobotV3.9.9 tag'i,
+    icinde fairino_hardware_v3_8_2_11'den v3_9_9'a kadar butun surumleri
+    tasiyor. Yani herkes indirebilir:
+
+        git clone --depth 1 --branch V3.0.0_RobotV3.9.9 \\
+            https://github.com/FAIR-INNOVATION/frcobot_ros2.git
+
+    setup_target.py robotun bildirdigi surume uyan klasoru buradan secip
+    workspace'e kuruyor.
+    """
     return _env_path("FAIRINO_MIRROR_DIR") or (HOME / "fairino_official_mirror")
 
 
 def moveit_ws() -> Path:
     return _env_path("FAIRINO_MOVEIT_WS") or (HOME / "ws_moveit2")
+
+
+def patches_dir() -> Path:
+    """Vendor surucusune uygulanan yamalarimizin klasoru.
+
+    TEK KAYNAK OLMASI KRITIK: hem tools/apply_ros2_patches.py hem
+    setup_target.py buradan okuyor. Eskiden setup_target'in KENDI kucuk
+    yamasi vardi (yalnizca robot_ip blogunu ekliyordu) ve temiz bir makinede
+    once o calisiyordu. Sonucu: UDP servo kanali, olculen cmdT, hiz
+    sinirlayici ve bosta servo cikisi HIC uygulanmiyordu - robot sicramali
+    calisir, "axis N command speed exceeds the limit" faultu verebilirdi.
+    Ustelik sonradan tam yamayi uygulamak da MUMKUN OLMUYORDU: robot_ip
+    blogu eklendigi icin patch'in baglami kayiyor ve yama tutmuyordu.
+    """
+    env = _env_path("FAIRINO_PATCHES_DIR")
+    if env and env.is_dir():
+        return env
+    aday = REPO_ROOT / "ros2" / "patches"
+    if aday.is_dir():
+        return aday
+    raise PathError(
+        "ros2/patches klasoru bulunamadi.\n"
+        f"Bakilan: {aday}\n"
+        "Paket kaynak agacindan ('pip install -e .') kurulmus olmali, ya da "
+        "FAIRINO_PATCHES_DIR ile yeri bildirilmeli."
+    )
 
 
 def last_target_file() -> Path:
