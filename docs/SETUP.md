@@ -51,7 +51,8 @@ Repo içi düzen:
     `.env` ile değiştirilebilir (bkz. `.env.example`)
   - `legacy/` — artık alias'ı olmayan eski düşük seviye SDK yardımcıları
 - `examples/` — tek seferlik demo script'leri
-  - `vision_integration_example.py` — vision tarafının (bkz. `main` dalındaki `vision/`)
+  - `vision_integration_example.py` — vision tarafının (ayrı repo:
+    `zehrakdemir/robot-arm-simulation`)
     tespit ettiği 6D pozu `FairinoController.move_to_pose()`'a nasıl vereceğini gösteren
     entegrasyon iskeleti (şu an uydurma/stub veriyle)
 - `scripts/` — `install.sh`, `fairino_launch.sh`, `clearcobot.sh`, SimMachine başlat/durdur
@@ -704,12 +705,16 @@ kavrama, manuel mod) sadece `movecobot.py`'de var.
 5. **`joint_limits.yaml` ivme düzeltmesi** sadece `fairino3` ve `fairino5` paketlerinde —
    diğer modeller (`fairino10/16/20/30/3mt`) için henüz uygulanmadı, gerekirse aynı mantıkla
    (`ompl_planning.yaml` düzeltmesinde yapıldığı gibi) tüm modellere genellenebilir.
-6. **Yayınlanan kod**: `github.com/zehrakdemir/robot-arm-simulation`, `huseyin` dalı.
-   Artık `robot_arm/` altında tek yığın değil — kaynak `src/fairino_cobot/`, yamalar
-   `ros2/patches/`, betikler `scripts/`, belgeler `docs/` altında (bkz. yukarıdaki
-   "Dosya Konumları").
+6. **Yayınlanan kod**: `github.com/huseyinai/fairino-cobot`, `main` dalı.
+   Kaynak `src/fairino_cobot/`, yamalar `ros2/patches/`, betikler `scripts/`, belgeler
+   `docs/` altında (bkz. yukarıdaki "Dosya Konumları").
 
-   **DİKKAT:** `huseyin` dalı, `main`'deki `vision/` klasörünü ve kök `Dockerfile`/`README.md`'yi
-   SİLEN commit'ler içeriyor (`f5650de`, `f017d9b`, `562bf0c`). Bu dal `main`'e olduğu gibi
-   birleştirilirse vision tarafı silinir. Birleştirmeden önce o üç commit'in etkisi geri
-   alınmalı ya da birleştirme dosya bazında yapılmalı.
+   Kol projesi 10 Eylül 2026'da **kendi reposuna taşındı**. Önceden
+   `zehrakdemir/robot-arm-simulation` reposunun `huseyin` dalındaydı ve görüntü işleme
+   tarafıyla (`vision/`) aynı repoyu paylaşıyordu. İki proje birbirinden bağımsız olduğu
+   için ayrıldılar; görüntü işleme tarafı eski reposunda kaldı.
+
+   Taşırken `vision/` klasörü **tüm geçmişten** çıkarıldı (`git filter-branch`), bu yüzden
+   depo 77 MB yerine 368 KB. Commit geçmişi korundu — eski repodaki commit'lerin hash'leri
+   ise değişti (geçmiş yeniden yazıldığı için), yani iki repo arasında commit hash'iyle
+   çapraz atıf yapılamaz.

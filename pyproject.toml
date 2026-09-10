@@ -41,7 +41,7 @@ fairino-setup-target = "fairino_cobot.setup_target:main"
 moveit-interactive = "fairino_cobot.moveit_py_interactive:main"
 
 [project.urls]
-Repository = "https://github.com/zehrakdemir/robot-arm-simulation"
+Repository = "https://github.com/huseyinai/fairino-cobot"
 
 [tool.setuptools]
 package-dir = { "" = "src" }

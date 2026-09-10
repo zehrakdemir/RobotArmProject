@@ -1,11 +1,14 @@
-# robot-arm-simulation — Fairino FR3 kol kontrolü
+# fairino-cobot — Fairino FR3 kol kontrolü
 
 Fairino FR3 iş birlikçi kolunu **ROS2 Humble + MoveIt2** üzerinden süren araçlar: hareket
 öğretme/kaydetme/oynatma, adaptif kavrama yapan gripper sürücüsü ve MoveIt Task Constructor
 tabanlı pick & place.
 
-Bu dal (`huseyin`) projenin **kol** tarafıdır; görüntü işleme tarafı `main` dalındaki
-`vision/` klasöründedir.
+Görüntü işleme tarafı ayrı bir projede
+([zehrakdemir/robot-arm-simulation](https://github.com/zehrakdemir/robot-arm-simulation)).
+Bu repo yalnızca **kol** tarafıdır; ikisi
+[`examples/vision_integration_example.py`](examples/vision_integration_example.py) üzerinden
+konuşur.
 
 ```
 Robot algılama  ──►  ROS2 sürücü + MoveIt2  ──►  movecobot  ──►  gripper (Modbus RTU)
@@ -43,11 +46,11 @@ ROS2/MoveIt2 kurulumunun tamamı: **[`docs/SETUP.md`](docs/SETUP.md)**.
 ## Kurulum
 
 ```bash
-git clone https://github.com/zehrakdemir/robot-arm-simulation.git
+git clone https://github.com/huseyinai/fairino-cobot.git
 ```
 
 ```bash
-cd robot-arm-simulation && git checkout huseyin && bash scripts/install.sh
+cd fairino-cobot && bash scripts/install.sh
 ```
 
 `install.sh` paketi kurar, `.env` dosyasını oluşturur ve çözülen yolları (SDK, durum dizini,

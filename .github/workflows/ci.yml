@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, huseyin, "feature/**", "fix/**"]
+    branches: [main, "feature/**", "fix/**"]
   pull_request:
-    branches: [main, huseyin]
+    branches: [main]
   workflow_dispatch:
 
 # Ayni dala arka arkaya push atilirsa onceki kosuyu iptal et.
