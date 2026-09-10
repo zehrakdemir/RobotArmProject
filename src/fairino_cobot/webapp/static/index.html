@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>movecobot</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div id="overlay">
+  <div class="spin"></div>
+  <div id="ovtitle">Robota bağlanılıyor…</div>
+  <pre id="ovlog"></pre>
+</div>
+
+<header>
+  <h1>movecobot</h1>
+  <span class="pill"><span class="dot" id="d-conn"></span><span id="t-conn">bağlanıyor</span></span>
+  <span class="pill"><span class="dot" id="d-fault"></span><span id="t-fault">fault ?</span></span>
+  <span class="pill"><span class="dot" id="d-busy"></span><span id="t-busy">boşta</span></span>
+  <span class="pill" id="t-robot">—</span>
+  <span class="sep"></span>
+  <button id="estop">ACİL DUR</button>
+</header>
+
+<main>
+
+  <!-- ---------------- sol sütun ---------------- -->
+  <div>
+    <section>
+      <h2>Durum</h2>
+      <div class="body">
+        <div class="grid6" id="joints"></div>
+        <div style="height:10px"></div>
+        <div class="grid6" id="tcp"></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Gripper</h2>
+      <div class="body">
+        <div class="grid6" id="gstat"></div>
+        <div style="height:10px"></div>
+        <div class="row">
+          <label class="field"><span>Hız %</span><input type="number" id="g-speed" value="50" min="1" max="100"></label>
+          <label class="field"><span>Kuvvet %</span><input type="number" id="g-force" value="50" min="1" max="100"></label>
+        </div>
+        <div class="row3">
+          <button data-g="open">Aç</button>
+          <button data-g="close">Kapat</button>
+          <button data-g="grip" class="primary">Kavra</button>
+        </div>
+        <div class="note">
+          <b>Kavra</b> nesne büyüklüğünü bilmez — basınçtan anlar. Kayıtlarda da
+          sabit pozisyon değil, “kavra” eylemi saklanır.
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ---------------- orta sütun ---------------- -->
+  <div>
+    <section>
+      <h2>Eklem jog</h2>
+      <div class="body">
+        <label class="field"><span>Adım (derece)</span>
+          <input type="number" id="jstep" value="5" step="0.5"></label>
+        <div id="jog"></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>TCP jog (araç eksenleri, mm)</h2>
+      <div class="body">
+        <label class="field"><span>Adım (mm)</span>
+          <input type="number" id="tstep" value="10" step="1"></label>
+        <div class="jogrow"><span class="lbl">X</span>
+          <button data-t="x" data-s="-1">− X</button><button data-t="x" data-s="1">+ X</button></div>
+        <div class="jogrow"><span class="lbl">Y</span>
+          <button data-t="y" data-s="-1">− Y</button><button data-t="y" data-s="1">+ Y</button></div>
+        <div class="jogrow"><span class="lbl">Z</span>
+          <button data-t="z" data-s="-1">− Z</button><button data-t="z" data-s="1">+ Z</button></div>
+        <div class="note">
+          Bu hareketler zemin ve self-collision kontrolünden geçer; güvenli
+          değilse robot hiç hareket etmez.
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Mutlak eklem hedefi</h2>
+      <div class="body">
+        <div class="row3" id="abs"></div>
+        <div style="height:8px"></div>
+        <div class="row3">
+          <button id="abs-now">Şu anki</button>
+          <button id="abs-preview">Önizle (FK)</button>
+          <button id="abs-go" class="primary">Git</button>
+        </div>
+        <div id="abs-out" class="note"></div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ---------------- sağ sütun ---------------- -->
+  <div>
+    <section>
+      <h2>Kayıtlı hareketler</h2>
+      <div class="body">
+        <div class="row">
+          <label class="field"><span>Hız %</span><input type="number" id="p-speed" placeholder="kayıtlı" min="1" max="100"></label>
+          <label class="field"><span>İvme %</span><input type="number" id="p-accel" placeholder="kayıtlı" min="1" max="100"></label>
+        </div>
+        <div class="row">
+          <label class="field"><span>Gripper hız %</span><input type="number" id="p-gspeed" placeholder="kayıtlı" min="1" max="100"></label>
+          <label class="field"><span>Gripper kuvvet %</span><input type="number" id="p-gforce" placeholder="kayıtlı" min="1" max="100"></label>
+        </div>
+        <div id="moves"></div>
+        <div class="note">Boş bırakılan alanlar kaydın kendi değerini kullanır.</div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Günlük</h2>
+      <div class="body">
+        <div id="log"></div>
+        <div style="height:10px"></div>
+        <button id="clearfault" class="danger wide">Fault temizle</button>
+        <div class="note warn">
+          Fault temizleme <b>global</b> bir reset — kolun servo oturumunu düşürür.
+          Sonrasında <code>fairino_launch</code> yeniden başlatılmalı.
+        </div>
+      </div>
+    </section>
+  </div>
+
+</main>
+
+<div id="modal">
+  <div class="card">
+    <h3 id="m-title">Onay</h3>
+    <div class="msg" id="m-msg"></div>
+    <div class="btns">
+      <button id="m-no">Vazgeç</button>
+      <button id="m-yes" class="primary">Uygula</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

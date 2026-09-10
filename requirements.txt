@@ -4,3 +4,8 @@
 # geometry_msgs, moveit_msgs) ve Fairino Python SDK pip ile KURULMAZ -
 # kurulumlari docs/SETUP.md icinde anlatiliyor.
 PyYAML>=6.0
+
+# Web arayuzu (movecobot-web). Sadece arayuz calistirilinca
+# import ediliyor; ROS2 gerektirmeyen testler bunlara dokunmuyor.
+fastapi>=0.110
+uvicorn[standard]>=0.27

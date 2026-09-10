@@ -22,6 +22,10 @@ keywords = ["robotics", "ros2", "moveit2", "fairino", "cobot"]
 # Asagidakiler pip ile gercekten kurulabilen tek bagimliliklardir.
 dependencies = [
     "PyYAML>=6.0",
+    # Web arayuzu (movecobot-web). Yalnizca arayuz calistirilinca import
+    # ediliyor; ROS2 gerektirmeyen testler bunlara dokunmuyor.
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
 ]
 
 [project.optional-dependencies]
@@ -33,6 +37,7 @@ dev = [
 
 [project.scripts]
 movecobot = "fairino_cobot.movecobot:main"
+movecobot-web = "fairino_cobot.webapp.server:main"
 konumcobot = "fairino_cobot.konumcobot:main"
 gripper-gui = "fairino_cobot.gripper_gui:main"
 gripper-cli = "fairino_cobot.gripper_interactive:main"
@@ -48,6 +53,11 @@ package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+# Arayuzun HTML/CSS/JS dosyalari pakete dahil olmali - yoksa kurulumdan
+# sonra sunucu bos sayfa doner.
+fairino_cobot = ["webapp/static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

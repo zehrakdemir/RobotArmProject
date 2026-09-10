@@ -1,0 +1,247 @@
+"""Robot oturumu: CobotArm + GripperController'i tek yerden yonetir.
+
+TASARIM KARARLARI ve NEDENLERI
+
+1. TEK OTURUM, TEK BAGLANTI.
+   Fairino'nun gercek-zamanli durum soketi tek-tuketicili; ayni robota iki
+   ayri surecten SDK ile baglanmak ikisini de kilitleyebiliyor (canli testte
+   yasandi). Bu yuzden web sunucusu SDK baglantisini bir kez acar ve butun
+   istekler bu tek oturum uzerinden gider.
+
+2. HAREKETLER SIRAYA GIRER.
+   Iki tarayici sekmesi ayni anda "git" derse robota ayni anda iki hedef
+   gitmemeli. Butun hareketler tek bir kilidin arkasinda; kilit mesgulken
+   gelen istek beklemez, HEMEN "mesgul" doner - kullanici ne oldugunu bilir.
+
+3. HAREKETLER OLAY DONGUSUNU BLOKLAMAZ.
+   Bir hareket saniyeler surebiliyor. Hepsi ayri bir is parcaciginda
+   kosuyor, boylece telemetri akmaya ve acil durdurma calismaya devam eder.
+
+4. confirm HER ZAMAN False.
+   CobotArm.move_*(confirm=True) terminalde input() ile soruyor; web
+   sunucusunda stdin yok, oyle bir cagri sonsuza kadar asilirdi. Onay
+   arayuzde aliniyor. DIKKAT: guvenlik kontrolleri (zemin carpismasi,
+   self-collision, hareket sonrasi dogrulama) confirm'den BAGIMSIZ,
+   her zaman calisiyor - onay atlanmasi guvenligi azaltmiyor.
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Any
+
+from fairino_cobot import paths
+
+paths.ensure_sdk_on_path()
+
+
+class Busy(RuntimeError):
+    """Baska bir hareket surerken yeni hareket istendi."""
+
+
+@dataclass
+class Job:
+    """Suren ya da bitmis bir is (hareket, oynatma, kavrama...)."""
+
+    id: int
+    kind: str
+    label: str
+    started_at: float
+    finished_at: float | None = None
+    ok: bool | None = None
+    detail: str = ""
+    log: list[str] = field(default_factory=list)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "kind": self.kind,
+            "label": self.label,
+            "running": self.finished_at is None,
+            "ok": self.ok,
+            "detail": self.detail,
+            "log": self.log[-40:],
+            "seconds": round((self.finished_at or time.time()) - self.started_at, 1),
+        }
+
+
+class RobotSession:
+    """Kola ve gripper'a tek giris noktasi."""
+
+    def __init__(self, speed_pct: float = 10.0, accel_pct: float = 10.0):
+        self.speed_pct = speed_pct
+        self.accel_pct = accel_pct
+
+        self.arm = None
+        self.gripper = None
+        self.robot_ip: str | None = None
+        self.model_num: str | None = None
+
+        self.ready = False
+        self.startup_error: str | None = None
+        self.startup_log: list[str] = []
+
+        self._motion_lock = threading.Lock()
+        self._job_seq = 0
+        self._job: Job | None = None
+        self._job_lock = threading.Lock()
+
+    # -- baslangic ---------------------------------------------------------
+
+    def start(self) -> None:
+        """Robotu algila, kola ve gripper'a baglan. Uzun surer (MoveItPy),
+        bu yuzden sunucu bunu arka planda cagirir; arayuz o sirada
+        'hazirlaniyor' gosterir."""
+
+        def log(msg: str) -> None:
+            self.startup_log.append(msg)
+
+        try:
+            from fairino_cobot.gripper_controller import GripperController
+            from fairino_cobot.movecobot import CobotArm, detect_robot
+
+            log("Robot algilaniyor...")
+            info = detect_robot()
+            self.robot_ip = info["ROBOT_IP"]
+            self.model_num = info["ROBOT_MODEL_NUM"]
+            log(f"FR{self.model_num} bulundu: {self.robot_ip}")
+
+            log("MoveIt baglantisi kuruluyor (birkac saniye surer)...")
+            self.arm = CobotArm(
+                robot_ip=self.robot_ip,
+                model_num=self.model_num,
+                speed_pct=self.speed_pct,
+                accel_pct=self.accel_pct,
+                node_name="movecobot_web",
+            )
+            log("Kol hazir.")
+
+            # Gripper KOLUN SDK baglantisini paylasiyor - ikinci bir baglanti
+            # acmamak icin (bkz. modul basligi, tek-tuketicili durum soketi).
+            self.gripper = GripperController(
+                robot_ip=self.robot_ip, sdk=self.arm.sdk, lock=self.arm.sdk_lock
+            )
+            try:
+                if not self.gripper.is_active():
+                    log("Gripper aktive ediliyor...")
+                    self.gripper.activate()
+                log("Gripper hazir.")
+            except Exception as e:  # gripper yoksa kol yine de kullanilabilir
+                log(f"UYARI: gripper hazirlanamadi ({e}). Kol calismaya devam eder.")
+
+            self.ready = True
+            log("Hazir.")
+        except Exception as e:
+            self.startup_error = f"{type(e).__name__}: {e}"
+            log(f"HATA: {self.startup_error}")
+
+    def shutdown(self) -> None:
+        if self.arm is not None:
+            try:
+                self.arm.shutdown()
+            except Exception:
+                pass
+
+    # -- durum -------------------------------------------------------------
+
+    def telemetry(self) -> dict[str, Any]:
+        """Arayuzun surekli okudugu canli durum. Hicbir zaman istisna
+        firlatmaz - tek bir okuma hatasi arayuzu karartmamali."""
+        out: dict[str, Any] = {
+            "ready": self.ready,
+            "startup_error": self.startup_error,
+            "startup_log": self.startup_log[-12:],
+            "robot_ip": self.robot_ip,
+            "model": f"FR{self.model_num}" if self.model_num else None,
+            "speed_pct": self.speed_pct,
+            "accel_pct": self.accel_pct,
+            "busy": self._motion_lock.locked(),
+            "job": self.job_dict(),
+        }
+        if not self.ready or self.arm is None:
+            return out
+        try:
+            st = self.arm.get_current_state()
+            out["joints_deg"] = st.get("joints_deg")
+            out["tcp_pose"] = st.get("tcp_pose")
+        except Exception as e:
+            out["state_error"] = str(e)
+        try:
+            with self.arm.sdk_lock:
+                pkg = self.arm.sdk.robot_state_pkg
+                out["fault"] = {"main_code": pkg.main_code, "sub_code": pkg.sub_code}
+                out["gripper_active"] = pkg.gripper_active
+        except Exception:
+            pass
+        return out
+
+    def gripper_status(self) -> dict[str, Any]:
+        if self.gripper is None:
+            return {"error": "gripper yok"}
+        try:
+            return self.gripper.status()
+        except Exception as e:
+            return {"error": str(e)}
+
+    # -- isler -------------------------------------------------------------
+
+    def job_dict(self) -> dict[str, Any] | None:
+        with self._job_lock:
+            return self._job.as_dict() if self._job else None
+
+    def run_job(self, kind: str, label: str, fn: Callable[[Job], Any]) -> Job:
+        """fn'i ayri bir is parcaciginda calistirir. Kilit mesgulse Busy
+        firlatir - kuyruga alip beklemek yerine hemen soylemek daha iyi,
+        cunku kullanici robotun ne yaptigini gormek istiyor."""
+        if not self._motion_lock.acquire(blocking=False):
+            raise Busy("Baska bir hareket suruyor.")
+
+        with self._job_lock:
+            self._job_seq += 1
+            job = Job(id=self._job_seq, kind=kind, label=label, started_at=time.time())
+            self._job = job
+
+        def runner() -> None:
+            try:
+                sonuc = fn(job)
+                if isinstance(sonuc, dict) and "success" in sonuc:
+                    job.ok = bool(sonuc["success"])
+                    if not job.ok:
+                        job.detail = sonuc.get("details") or sonuc.get("reason") or "basarisiz"
+                else:
+                    job.ok = True
+            except Exception as e:
+                job.ok = False
+                job.detail = f"{type(e).__name__}: {e}"
+                job.log.append(job.detail)
+            finally:
+                job.finished_at = time.time()
+                self._motion_lock.release()
+
+        threading.Thread(target=runner, daemon=True, name=f"job-{job.id}").start()
+        return job
+
+    # -- acil durdurma -----------------------------------------------------
+
+    def stop(self) -> dict[str, Any]:
+        """Acil durdurma. Hareket kilidini BEKLEMEZ - zaten amaci suren
+        hareketi kesmek. Once ROS tarafindaki yorunge iptal edilir, sonra
+        SDK'nin kendi durdurma komutu gonderilir."""
+        sonuc: dict[str, Any] = {}
+        try:
+            self.arm.stop_trajectory()  # varsa
+            sonuc["ros"] = "iptal edildi"
+        except AttributeError:
+            sonuc["ros"] = "yok"
+        except Exception as e:
+            sonuc["ros"] = f"hata: {e}"
+        try:
+            with self.arm.sdk_lock:
+                rc = self.arm.sdk.StopMotion()
+            sonuc["sdk"] = f"StopMotion rc={rc}"
+        except Exception as e:
+            sonuc["sdk"] = f"hata: {e}"
+        return sonuc

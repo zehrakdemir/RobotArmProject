@@ -351,7 +351,23 @@ def main():
 
     if not candidates:
         log("HATA: Port 20003 açık hiçbir cihaz bulunamadı.")
-        log("Robot açık mı / ağa bağlı mı? SimMachine ayakta mı?")
+        # Container icinde tarama ZATEN calisamaz; bunu ayrica soyle.
+        # Robotun agi (or. 192.168.57.0/24) container'da yerel bir ag degil,
+        # yonlendirilmis bir ag - "ip route get" ile gorulur. Native tarafta
+        # bu bilgi Windows'un arayuzlerinden (ipconfig.exe) geliyor;
+        # container'dan o erisim yok, dolayisiyla taranacak aralik
+        # bulunamiyor. Tek cozum IP'yi acikca vermek.
+        if Path("/.dockerenv").exists():
+            log("")
+            log("Container içindesin: robotun ağı burada YEREL DEĞİL (yönlendirilmiş),")
+            log("bu yüzden tarama ile bulunamaz. Robotun IP'sini vermen gerekiyor:")
+            log("")
+            log("  .env dosyasına:   FAIRINO_ROBOT_IP=192.168.x.y")
+            log("  ya da:            docker run -e FAIRINO_ROBOT_IP=192.168.x.y ...")
+            log("")
+            log("IP'yi bilmiyorsan native tarafta 'detect-robot' çalıştırıp öğrenebilirsin.")
+        else:
+            log("Robot açık mı / ağa bağlı mı? SimMachine ayakta mı?")
         sys.exit(1)
 
     log(f"Aday IP'ler (port 20003 açık): {candidates}")

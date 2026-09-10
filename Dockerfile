@@ -133,8 +133,28 @@ RUN source /opt/ros/humble/setup.bash \
 
 # --- Fairino Python SDK ----------------------------------------------------
 # PyPI'de yok, klonlanıyor. paths.py bunu FAIRINO_SDK_DIR üzerinden buluyor.
-RUN git clone --depth 1 https://github.com/FAIR-INNOVATION/fairino-python-sdk.git \
-        /opt/fairino-python-sdk
+#
+# SÜRÜM SABİT OLMAK ZORUNDA. Sabitlemeden klonlanınca en yeni sürüm geliyor ve
+# o sürüm robotun durum verisini CNDE üzerinden, **port 20005**'ten okuyor.
+# Ama sürücü (ros2_control_node) zaten 20005'i tutuyor; ikinci bağlantı
+# zaman aşımına uğruyor:
+#
+#   CNDE配置超时 / SendCNDEOutputConfig rtn is -3
+#   RPC连接失败 (CNDE:False, XML-RPC:True)
+#
+# Sonuç: launch ayakta iken movecobot robota hiç bağlanamıyor.
+#
+# v2.2.3 ve v2.2.4 durum verisini **20004**'ten okuyor, yani sürücüyle
+# çakışmıyor. v2.2.5 ve sonrası CNDE'ye geçmiş. Aşağıdaki tag, native
+# kurulumda çalışan Robot.py ile BİREBİR AYNI (md5 doğrulandı).
+ARG SDK_TAG=v2.2.3_robot3.9.3
+RUN git clone --depth 1 --branch ${SDK_TAG} \
+        https://github.com/FAIR-INNOVATION/fairino-python-sdk.git \
+        /opt/fairino-python-sdk \
+    # Durum portu 20004 mü? CNDE'li bir sürüm gelirse sürücüyle çakışır ve
+    # bunu ancak robota bağlanmaya çalışırken fark ederiz - build'de yakala.
+    && grep -q "ROBOT_REALTIME_PORT = 20004" /opt/fairino-python-sdk/linux/fairino/Robot.py \
+    && ! grep -q "CNDE_FRAME_HEAD" /opt/fairino-python-sdk/linux/fairino/Robot.py
 
 # --- Vendor kaynak aynası --------------------------------------------------
 RUN git clone --depth 1 --branch ${FRCOBOT_TAG} \
@@ -197,4 +217,8 @@ RUN mkdir -p /state
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["bash"]
+
+# Container ayağa kalkınca ROS2 yığını + web arayüzü birlikte başlar.
+# Sadece kabuk isteyen: docker run ... fairino-cobot:runtime bash
+EXPOSE 8088
+CMD ["bash", "/app/scripts/start_all.sh"]
