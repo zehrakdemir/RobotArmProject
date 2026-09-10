@@ -15,11 +15,13 @@ import threading
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from fairino_cobot import paths
+
 HOME = Path.home()
 RPC_PORT = 20003
 SCAN_TIMEOUT = 0.25
 MAX_WORKERS = 100
-STATE_FILE = HOME / ".fairino_last_target"
+STATE_FILE = paths.last_target_file()
 CACHE_PORT_TIMEOUT = 0.5
 CACHE_RPC_TIMEOUT = 2.0
 # Tek denemede RPC cevap vermemesi (gecici yavaslik/yuk) gercek robotun
@@ -34,18 +36,13 @@ def log(msg):
 
 
 def find_sdk_path():
+    """SDK'nin yeri. Arama mantigi paths.sdk_dir()'e tasindi - once
+    FAIRINO_SDK_DIR, sonra bilinen konumlar, son care ev dizini taramasi."""
     try:
-        out = subprocess.run(
-            ["find", str(HOME), "-type", "d", "-path", "*fairino-python-sdk/linux"],
-            capture_output=True, text=True, timeout=30
-        ).stdout
-    except Exception:
-        out = ""
-    for line in out.splitlines():
-        line = line.strip()
-        if line and "build" not in line and "install" not in line:
-            return line
-    return None
+        return str(paths.sdk_dir())
+    except paths.PathError as e:
+        log(str(e))
+        return None
 
 
 def get_windows_host_subnets():
@@ -324,6 +321,20 @@ def main():
     except Exception as e:
         log(f"HATA: fairino SDK import edilemedi: {e}")
         sys.exit(1)
+
+    # Robotun IP'si makineye/aga ozgu bir deger. Kodun icinde sabit
+    # DEGIL; .env icindeki FAIRINO_ROBOT_IP ile verilebilir. Verilirse
+    # tum ag taramasi atlanir (ve --full bile taramaya zorlamaz -
+    # kullanici acikca hangi robotu istedigini soylemis olur).
+    forced_ip = paths.robot_ip_override()
+    if forced_ip:
+        log(f"FAIRINO_ROBOT_IP={forced_ip} verildi - ag taramasi atlaniyor.")
+        info = probe(forced_ip, Robot)
+        if not info:
+            log(f"HATA: {forced_ip} adresindeki robota ulasilamadi.")
+            sys.exit(1)
+        emit_result(info)
+        return
 
     if "--full" in sys.argv:
         log("--full verildi: onbellek atlanip her zaman tam ag taramasi yapiliyor.")

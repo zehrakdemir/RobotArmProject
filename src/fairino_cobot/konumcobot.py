@@ -17,19 +17,24 @@ import sys
 import time
 from pathlib import Path
 
-CLIENT_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(CLIENT_DIR, "fairino-python-sdk/linux"))
-sys.path.insert(0, CLIENT_DIR)
+from fairino_cobot import paths
+
+# SDK'nin yeri makineye gore degisiyor - tek yerden cozuluyor (paths.py).
+paths.ensure_sdk_on_path()
 
 from fairino import Robot
-from gripper_controller import GripperController, GripperError, detect_robot_ip
+from fairino_cobot.gripper_controller import (
+    GripperController,
+    GripperError,
+    detect_robot_ip,
+)
 
 JOINT_NAMES = ["j1", "j2", "j3", "j4", "j5", "j6"]
 
 # movecobot.py ile AYNI dosya (bkz. movecobot.py STATE_CACHE_FILE) - movecobot
 # calisirken en son okudugu durumu buraya yazar, konumcobot da (movecobot
 # calisiyorsa) robota IKINCI bir baglanti acmak yerine bunu okur.
-STATE_CACHE_FILE = Path(CLIENT_DIR) / ".movecobot_state_cache.json"
+STATE_CACHE_FILE = paths.state_cache_file()
 
 # Fairino robotu ayni anda pratikte TEK bir SDK baglantisini (Robot.RPC)
 # destekliyor - port 20004 realtime durum soketi tek-tuketicili. Bu

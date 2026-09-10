@@ -1,0 +1,6 @@
+# Calisma zamani bagimliliklari (pip ile kurulabilenler).
+#
+# ROS2 Humble / MoveIt2 tarafi (rclpy, moveit_py, moveit_configs_utils,
+# geometry_msgs, moveit_msgs) ve Fairino Python SDK pip ile KURULMAZ -
+# kurulumlari docs/SETUP.md icinde anlatiliyor.
+PyYAML>=6.0

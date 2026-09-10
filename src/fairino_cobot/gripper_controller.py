@@ -27,7 +27,10 @@ import sys
 import threading
 import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "fairino-python-sdk/linux"))
+from fairino_cobot import paths
+
+# SDK'nin yeri makineye gore degisiyor - tek yerden cozuluyor (paths.py).
+paths.ensure_sdk_on_path()
 
 from fairino import Robot
 
@@ -39,9 +42,7 @@ def detect_robot_ip():
     ROBOT_IP'yi doner. Boylece IP hicbir yerde sabit kodlanmiyor - simulator
     (127.0.0.1) calisiyor olsa bile detect_robot.py gercek LAN robotunu
     onceliklendirip onu doner (bkz. discover_candidates() oncelik siralamasi)."""
-    script_path = os.path.expanduser("~/detect_robot.py")
-    if not os.path.exists(script_path):
-        raise RuntimeError(f"{script_path} bulunamadi.")
+    script_path = str(paths.detect_robot_script())
 
     result = subprocess.run(
         [sys.executable, script_path],

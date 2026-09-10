@@ -14,7 +14,10 @@ import subprocess
 import sys
 import threading
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "fairino-python-sdk/linux"))
+from fairino_cobot import paths
+
+# SDK'nin yeri makineye gore degisiyor - tek yerden cozuluyor (paths.py).
+paths.ensure_sdk_on_path()
 
 import rclpy
 from rclpy.node import Node
@@ -37,7 +40,7 @@ FLOOR_Z_M = 0.0
 
 
 def detect_robot():
-    script_path = os.path.expanduser("~/detect_robot.py")
+    script_path = str(paths.detect_robot_script())
     if not os.path.exists(script_path):
         print(f"HATA: {script_path} bulunamadi.")
         sys.exit(1)

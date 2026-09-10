@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fairino-cobot"
+version = "0.2.0"
+description = "Fairino FR3 kolunu ROS2 Humble + MoveIt2 uzerinden suren kontrol araclari"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "huseyinai", email = "hmerde10@gmail.com" }]
+keywords = ["robotics", "ros2", "moveit2", "fairino", "cobot"]
+
+# BURADA OLMAYANLARA DIKKAT:
+#   - fairino SDK: PyPI'de YOK. FAIR-INNOVATION/fairino-python-sdk deposundan
+#     ayrica klonlanir; yeri .env icindeki FAIRINO_SDK_DIR ile bildirilir
+#     (paths.py otomatik de arar). Bkz. docs/SETUP.md.
+#   - rclpy, moveit_py, moveit_configs_utils, geometry_msgs, moveit_msgs:
+#     ROS2 Humble / MoveIt2 kurulumundan gelir (apt veya kaynaktan derleme),
+#     pip ile kurulamaz. Bkz. docs/SETUP.md.
+# Asagidakiler pip ile gercekten kurulabilen tek bagimliliklardir.
+dependencies = [
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+gui = []          # gripper_gui tkinter kullanir: apt install python3-tk
+dev = [
+    "pytest>=7.4",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+movecobot = "fairino_cobot.movecobot:main"
+konumcobot = "fairino_cobot.konumcobot:main"
+gripper-gui = "fairino_cobot.gripper_gui:main"
+gripper-cli = "fairino_cobot.gripper_interactive:main"
+detect-robot = "fairino_cobot.detect_robot:main"
+fairino-setup-target = "fairino_cobot.setup_target:main"
+moveit-interactive = "fairino_cobot.moveit_py_interactive:main"
+
+[project.urls]
+Repository = "https://github.com/zehrakdemir/robot-arm-simulation"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Robot ortami olmayan makinede (CI dahil) donanim gerektiren testler
+# atlanabilsin diye:
+markers = ["hardware: gercek robot veya ROS2 kurulumu gerektirir"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+# Vendor kodu ve ornekler denetlenmiyor.
+extend-exclude = ["vendor", "examples"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = [
+    "E501",  # satir uzunlugu: mevcut dosyalarda uzun aciklama yorumlari var
+    "B008",  # cagri-varsayilani: mevcut kodda bilincli kullanimlar var
+]
+
+[tool.ruff.lint.per-file-ignores]
+# legacy/ artik bakimi yapilmayan eski araclar - bicimsel kurallardan muaf.
+"src/fairino_cobot/legacy/*" = ["E", "F", "W", "I", "UP", "B"]

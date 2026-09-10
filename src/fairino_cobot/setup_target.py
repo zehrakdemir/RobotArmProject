@@ -23,11 +23,15 @@ import subprocess
 import sys
 from pathlib import Path
 
+from fairino_cobot import paths
+
 HOME = Path.home()
-ROS2_WS = HOME / "ros2_ws"
-MIRROR = HOME / "fairino_official_mirror"
+# Bu agaclarin yeri .env ile degistirilebilir (FAIRINO_ROS2_WS,
+# FAIRINO_MIRROR_DIR) - eskiden ev dizinine sabitlenmisti.
+ROS2_WS = paths.ros2_ws()
+MIRROR = paths.mirror_dir()
 LEGACY_SOURCES = HOME / "fairino_hardware_sources"
-STATE_FILE = HOME / ".fairino_last_target"
+STATE_FILE = paths.last_target_file()
 HASH_DIR = HOME / ".fairino_build_hashes"
 
 

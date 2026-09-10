@@ -43,12 +43,13 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-CLIENT_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(CLIENT_DIR, "fairino-python-sdk/linux"))
-sys.path.insert(0, CLIENT_DIR)
+from fairino_cobot import paths
+
+# SDK'nin yeri makineye gore degisiyor - tek yerden cozuluyor (paths.py).
+paths.ensure_sdk_on_path()
 
 from fairino import Robot
-from gripper_controller import GripperController, GripperError
+from fairino_cobot.gripper_controller import GripperController, GripperError
 
 JOINT_NAMES = ["j1", "j2", "j3", "j4", "j5", "j6"]
 TIP_LINK = "wrist3_link"
@@ -142,7 +143,7 @@ GRIPPER_STROKE_M = 0.040
 # Kavranan nesnenin planlama sahnesindeki kimligi (bkz. attach_grasped_object).
 GRASPED_OBJECT_ID = "grasped_object"
 
-MOVES_FILE = Path(CLIENT_DIR) / "movecobot_moves.json"
+MOVES_FILE = paths.moves_file()
 # Hareket kaydi SIRASINDA (record_new_move/drag_teach_add_steps) eklenen her
 # adimdan sonra buraya yazilir. Manuel modda robot bir fault verirse (ör.
 # "hiz limiti asildi") kullanicinin launch'i durdurup WebApp'ten temizleyip
@@ -150,14 +151,14 @@ MOVES_FILE = Path(CLIENT_DIR) / "movecobot_moves.json"
 # kadar eklenen TUM adimlari kaybettiriyordu. Simdi her adim eklendiginde
 # taslak buraya kaydediliyor, movecobot yeniden acildiginda "yarim kalan
 # kaydi devam ettir" diye sorup kaldigi yerden devam ettiriyor.
-DRAFT_FILE = Path(CLIENT_DIR) / ".movecobot_record_draft.json"
+DRAFT_FILE = paths.draft_file()
 # konumcobot (ayri, hafif bir "durum goster" araci) ile movecobot AYNI ANDA
 # calisirken robota IKINCI bir SDK baglantisi ACMAMASI icin - Fairino'nun
 # gercek zamanli durum soketi (port 20004) tek-tuketicili, iki ayri surecten
 # baglanmaya calismak ikisini de kilitleyebiliyor (canli testte yasandi).
 # Bunun yerine movecobot, en son okudugu durumu buraya yazar; konumcobot da
 # (movecobot calisiyorsa) robota hic baglanmadan bunu okur.
-STATE_CACHE_FILE = Path(CLIENT_DIR) / ".movecobot_state_cache.json"
+STATE_CACHE_FILE = paths.state_cache_file()
 BASHRC = Path.home() / ".bashrc"
 ALIAS_MARK_START = "# >>> movecobot kayitli hareketler (otomatik - elle duzenleme) >>>"
 ALIAS_MARK_END = "# <<< movecobot kayitli hareketler <<<"
@@ -187,9 +188,10 @@ class GoBack(Exception):
 # ---------------------------------------------------------------------------
 
 def detect_robot():
-    script_path = os.path.expanduser("~/detect_robot.py")
-    if not os.path.exists(script_path):
-        print(f"HATA: {script_path} bulunamadi.")
+    try:
+        script_path = str(paths.detect_robot_script())
+    except paths.PathError as e:
+        print(f"HATA: {e}")
         sys.exit(1)
 
     print("Robot algilaniyor (ag taramasi)...")
@@ -2306,7 +2308,7 @@ def record_pick_and_place(arm, gripper):
     hazir stage'leri yapar - bkz. pickplace.py."""
     print("\n--- Pick & place ---")
     try:
-        from pickplace import load_mtc
+        from fairino_cobot.pickplace import load_mtc
     except Exception as e:
         print(f"HATA: pickplace modulu yuklenemedi ({e}).")
         return
@@ -2421,7 +2423,7 @@ def run_pick_place(arm, gripper, cfg, sor=False):
     calistirmadan once SORULUR; kayitli degerler varsayilan olarak gelir.
     Girilen degerler KAYDI DEGISTIRMEZ, sadece bu calistirma icin gecerlidir.
     Alias ile dogrudan calistirmada (sor=False) kayitli degerler kullanilir."""
-    from pickplace import PickPlace
+    from fairino_cobot.pickplace import PickPlace
 
     if "pre_pick_joints" not in cfg or "pre_place_joints" not in cfg:
         print("HATA: bu kayit ESKI bicimde (on-pozlar yok). Menuden [5] ile ayni "

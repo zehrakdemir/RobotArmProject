@@ -7,7 +7,7 @@ Kullanim: movegripper (alias) veya: python3 gripper_interactive.py
 """
 import sys
 
-from gripper_controller import GripperController, GripperError
+from fairino_cobot.gripper_controller import GripperController, GripperError
 
 
 def ask_int(prompt, default, lo=0, hi=100):

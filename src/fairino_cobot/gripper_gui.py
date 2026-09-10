@@ -34,7 +34,7 @@ import time
 import tkinter as tk
 from tkinter import ttk
 
-from gripper_controller import GripperController, GripperError
+from fairino_cobot.gripper_controller import GripperController, GripperError
 
 MOTION_STATUS_TEXT = {
     0: "hareket devam ediyor",
