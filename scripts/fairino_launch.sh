@@ -57,6 +57,7 @@ if [ ! -f "$STATE_FILE" ]; then
     echo "HATA: $STATE_FILE oluşmadı, setup_fairino_target.py başarısız olmuş olabilir."
     exit 1
 fi
+# shellcheck source=/dev/null
 source "$STATE_FILE"
 
 echo ""

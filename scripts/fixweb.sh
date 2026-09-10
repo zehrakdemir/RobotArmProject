@@ -1,8 +1,16 @@
 #!/bin/bash
+# SimMachine simulatorunun WebApp'ini tekrar ayaga kaldirir.
+# (Gercek robotla calisirken gerekmez - o zaman WebApp robotun kendi
+# IP'sinde, port 80'de.)
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 if ! docker ps > /dev/null 2>&1; then
   echo "Docker daemon calismiyor, baslatiliyor..."
   sudo -v || { echo "HATA: sudo yetkilendirme basarisiz."; exit 1; }
-  sudo dockerd > /tmp/dockerd.log 2>&1 &
+  # Yonlendirme sudo'dan ETKILENMEZ - dosya cagiran kullanicinin haklariyla
+  # acilir. Log'u root'un acmasi icin komutun tamami sudo'nun icinde.
+  sudo sh -c 'dockerd > /tmp/dockerd.log 2>&1' &
 
   echo "Docker daemon hazir olmasi bekleniyor..."
   for i in $(seq 1 30); do
@@ -28,9 +36,10 @@ if docker ps -a --format '{{.Names}}' | grep -q '^fairino-simmachine$'; then
   docker restart fairino-simmachine
 else
   echo "Container yok, sifirdan olusturuluyor..."
-  bash ~/fairino/run_simmachine.sh
+  bash "$SCRIPT_DIR/run_simmachine.sh"
 fi
 
 sleep 10
 echo "WebApp kontrol ediliyor..."
+# Port YOK - WebApp 80'de. (Bir ara 8080 sanilmisti, oyle degil.)
 curl -sI http://127.0.0.1
