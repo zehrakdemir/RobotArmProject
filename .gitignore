@@ -216,3 +216,64 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ===========================================================================
+# Bu projeye ozel
+# ===========================================================================
+
+# --- Gizli / makineye ozel ayarlar -----------------------------------------
+# Robot IP'si, SDK ve workspace yollari burada durur. ASLA commit edilmez -
+# ornek sablon icin .env.example'a bak.
+.env
+.env.local
+.env.*.local
+
+# --- Vendor kodu ------------------------------------------------------------
+# Fairino Python SDK: FAIR-INNOVATION/fairino-python-sdk reposunun bir klonu,
+# ~500MB (Windows/Linux ikili dosyalari dahil). Burada TEKRAR yayinlanmiyor;
+# kurulumu docs/SETUP.md'de.
+vendor/
+fairino-python-sdk/
+
+# --- ROS2 / colcon derleme ciktilari ----------------------------------------
+build/
+install/
+log/
+*.colcon_*
+
+# --- Calisma zamani durumu --------------------------------------------------
+# movecobot/gripper her calistirmada bunlari yeniden uretiyor; makineye ozgu,
+# tasinabilir veri degil. Artik XDG state dizininde tutuluyorlar (paths.py),
+# ama eski konumda kalmis olabilirler.
+.movecobot_state_cache.json
+.movecobot_record_draft.json
+movecobot_state_cache.json
+movecobot_record_draft.json
+.random_motion.lock
+.fairino_last_target
+
+# Kullanicinin kendi ogrettigi hareketler makineye ozgu. Repoda ornek olarak
+# examples/movecobot_moves.example.json duruyor.
+movecobot_moves.json
+
+# --- IDE / editor -----------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+
+# --- Derleme / ikili ciktilar -----------------------------------------------
+*.o
+*.so
+*.a
+*.exe
+*.bin
+bin/
+dist/
+
+# --- Yedekler ---------------------------------------------------------------
+*.bak
+*.bak_orijinal
+*.orig
+*.rej
