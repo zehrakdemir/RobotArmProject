@@ -1,0 +1,500 @@
+--- a/fairino_hardware/src/fairino_hardware_interface.cpp	2026-09-10 11:52:44.847835832 +0300
++++ b/fairino_hardware/src/fairino_hardware_interface.cpp	2026-09-10 11:52:44.850986532 +0300
+@@ -1,7 +1,17 @@
+ #include "fairino_hardware/fairino_hardware_interface.hpp"
++#include <chrono>
++#include <algorithm>
++#include <cmath>
+ 
+ namespace fairino_hardware{
+ 
++// Servo komutlarinin hangi kanaldan gidecegi: 0 = XML-RPC, 1 = UDP (port 20007).
++// on_activate() icinde belirlenir (once UDP denenir, olmazsa XML-RPC'ye donulur),
++// write() ve on_deactivate() ayni degeri kullanir - bkz. on_activate icindeki
++// ayrintili yorum.
++static int _servo_com_type = 0;
++
++
+ hardware_interface::CallbackReturn FairinoHardwareInterface::on_init(const hardware_interface::HardwareInfo& sysinfo){
+     if (hardware_interface::SystemInterface::on_init(sysinfo) != hardware_interface::CallbackReturn::SUCCESS) {
+         return hardware_interface::CallbackReturn::ERROR;
+@@ -61,6 +71,11 @@
+         // }
+ 
+     }
++    if (info_.hardware_parameters.count("robot_ip")) {
++        _controller_ip = info_.hardware_parameters.at("robot_ip");
++        RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"),
++                    "robot_ip parametresi kullanılıyor: %s", _controller_ip.c_str());
++    }
+     return hardware_interface::CallbackReturn::SUCCESS;
+ }//end on_init
+ 
+@@ -118,7 +133,20 @@
+     }
+     _control_mode = 0;//默认是位置控制,0-位置控制，1-扭矩控制 2-速度控制
+     errno_t returncode = _ptr_robot->RPC(_controller_ip.c_str());//建立xmlrpc连接
+-    rclcpp::sleep_for(200ms);//等待一段时间让控制器的rpc连接建立完毕
++    // ONEMLI: 200ms -> 1000ms. Fairino SDK'sinin bilinen bir davranisi -
++    // RPC baglantisi kurulduktan hemen sonra GetActualJointPosDegree()
++    // cagirilirsa, arka plandaki gercek-zamanli durum thread'i (port 20004)
++    // henuz ilk gercek paketi almamis olabilir ve ESKI/varsayilan bir deger
++    // donebilir (returncode YINE DE 0/basarili doner, SDK bu farki kendisi
++    // ayirt etmiyor). Asagidaki yorum bunun tehlikesini zaten kendisi
++    // belirtiyor ("hatali geri bildirim pozisyonu ilk komut pozisyonunda
++    // ciddi sapmaya ve kazaya yol acar") ama eski 200ms bu riski tam
++    // gidermeye yetmiyordu - ayni projede (movecobot.py) bu riskle
++    // karsilasilan diger yerlerde 1000ms kullaniliyor, burada da ona
++    // esitlendi. Canli robotta "fairino_launch baslar baslamaz" alinan
++    // "Joint command exceeds the limit" hatasinin kok sebebi olarak
++    // tespit edildi.
++    rclcpp::sleep_for(1000ms);//等待一段时间让控制器的rpc连接建立完毕
+     if(returncode != 0){
+         RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"), "机械臂SDK连接失败！请检查端口时候被占用");
+         return hardware_interface::CallbackReturn::ERROR;
+@@ -137,7 +165,91 @@
+             _jnt_position_command[j] = jntpos.jPos[j]/180.0*M_PI;
+         }
+         RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"),"初始指令位置: %f,%f,%f,%f,%f,%f",_jnt_position_command[0],\
+-        _jnt_position_command[1],_jnt_position_command[2],_jnt_position_command[3],_jnt_position_command[4],_jnt_position_command[5]);    
++        _jnt_position_command[1],_jnt_position_command[2],_jnt_position_command[3],_jnt_position_command[4],_jnt_position_command[5]);
++        // KRITIK: ServoJ() dongudeki write()'ta cagriliyor ama servo-akis
++        // modu HIC baslatilmiyordu (ServoMoveStart() eksikti). Fairino
++        // SDK'nin TUM resmi ServoJ ornekleri (servo.py, TestMotionCommand.py,
++        // test0625.py, test1015.py - istisnasiz) ServoJ dongusune girmeden
++        // ONCE ServoMoveStart() cagiriyor - "配合ServoJ、ServoCart指令使用"
++        // (ServoJ/ServoCart ile BIRLIKTE kullanilir) SDK dokumantasyonunun
++        // kendi ifadesi. Bu eksikken robot, servo-akis modunda olmadigi
++        // icin gelen ServoJ komutlarini farkli (daha kati, nokta-nokta/
++        // LIN tipi) bir yoldan isliyor olabilir - canli robotta "fairino_
++        // launch baslar baslamaz" (hicbir hareket komutu verilmeden)
++        // alinan "Joint command issued by LIN/ARC exceeds the limit"
++        // hatasinin kok sebebi olarak tespit edildi.
++        //
++        // CANLI TESTTE BULUNAN GERCEK KOK SEBEP: ServoMoveStart() err=14
++        // ("Interface execution failed") ile basarisiz oluyordu. SDK hata
++        // tablosunda kod 14 "web arayuzu/durum geri bildirimi fault
++        // rapor ediyor mu kontrol et" diyor, ve kod 101 "robot enable
++        // edilmemis - once robotu enable et" diyor. Onceki bir fault
++        // (shaft collision, hiz limiti...) robotu "Stopped" durumuna
++        // dusurunce enable durumu da dusuyor gibi gorunuyor - on_activate()
++        // ise robotu HIC yeniden enable etmiyor/fault temizlemiyordu,
++        // dogrudan ServoMoveStart deniyordu. Cozum: ServoMoveStart'tan
++        // ONCE ResetAllError() + Mode(0)/auto + RobotEnable(1) ile robotu
++        // bilinen-iyi bir duruma getir (movecobot.py'deki
++        // drag_teach_clear_fault() ile ayni desen).
++        errno_t reset_rc = _ptr_robot->ResetAllError();
++        RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"), "ResetAllError rc=%d", reset_rc);
++        rclcpp::sleep_for(300ms);
++        errno_t mode_rc = _ptr_robot->Mode(0);
++        RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"), "Mode(0) rc=%d", mode_rc);
++        rclcpp::sleep_for(300ms);
++        errno_t enable_rc = _ptr_robot->RobotEnable(1);
++        RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"), "RobotEnable(1) rc=%d", enable_rc);
++        rclcpp::sleep_for(300ms);
++        // ====================================================================
++        // comType=1 (UDP, robot portu 20007) - ASIL KOK SEBEP DUZELTMESI
++        // ====================================================================
++        // SDK basligi (libfairino/include/robot.h):
++        //   @param [in] comType 指令下发类型；0-xmlrpc；1-UDP(对应机器人20007端口)
++        //   yani: 0 = XML-RPC, 1 = UDP (robot 20007 portu)
++        //
++        // Surucu bugune kadar varsayilan comType=0 kullaniyordu; yani 100Hz'lik
++        // SERVO AKISI XML-RPC (HTTP + XML) uzerinden gonderiliyordu. Bu temelden
++        // yanlis:
++        //  - Her ServoJ bir HTTP istek/yanit + XML ayristirma demek. Kontrol
++        //    dongusunun ag hizina takilmasinin (write() cagrisinin ~7-10ms
++        //    surmesinin) sebebi bu.
++        //  - SDK'nin ServoJ icin onerdigi cmdT araligi [0.001~0.0016] (625-1000Hz)
++        //    - bu tempo XML-RPC uzerinden ZATEN imkansiz; o parametre UDP icin
++        //    tasarlanmis.
++        //  - Canli testte surucunun port 20003 (XML-RPC) TCP baglantisi
++        //    kendiliginden dusuyordu ve ServoJ sonsuza kadar
++        //    ERR_SOCKET_COM_FAILED (-2) donuyordu. UDP'de kopacak bir baglanti
++        //    yok, bu basarisizlik sinifi tamamen ortadan kalkiyor.
++        //
++        // GUVENLI GERI DONUS: firmware UDP'yi desteklemezse ServoMoveStart(1)
++        // hata doner; o zaman eski (comType=0) yontemine donuyoruz.
++        errno_t servo_start_rc = _ptr_robot->ServoMoveStart(1);
++        if(servo_start_rc == 0){
++            _servo_com_type = 1;
++            RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"),
++                "Servo akisi UDP (comType=1, port 20007) uzerinden baslatildi.");
++        }else{
++            RCLCPP_WARN(rclcpp::get_logger("FairinoHardwareInterface"),
++                "ServoMoveStart(UDP/comType=1) basarisiz (err=%d) - XML-RPC'ye (comType=0) donuluyor.",
++                servo_start_rc);
++            servo_start_rc = _ptr_robot->ServoMoveStart(0);
++            _servo_com_type = 0;
++            if(servo_start_rc != 0){
++                RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"), "ServoMoveStart basarisiz, err=%d", servo_start_rc);
++                return hardware_interface::CallbackReturn::ERROR;
++            }
++        }
++        // ServoMoveStart() rc=0 (basarili) donuyor ama canli testte HEMEN
++        // ardindan gelen ServoJ() cagrilari yine de surekli err=14 ile
++        // basarisiz olmaya devam etti (~70ms sonra baslayip SONSUZA KADAR
++        // tekrar etti) - yani rc=0 "istek kabul edildi" anlamina geliyor,
++        // robotun GERCEKTEN servo moduna gecmesi/hazir olmasi daha uzun
++        // surebiliyor (ayni RPC baglantisi/realtime durum thread'i
++        // gecikmesi gibi, bu SDK'da defalarca karsilasilan bir kalip).
++        // write() ise on_activate() SUCCESS donunce ~70ms icinde baslamaya
++        // basliyor - bu ek bekleme, ServoMoveStart'in fiilen etkili
++        // olmasina firsat taniyor.
++        rclcpp::sleep_for(1000ms);
+         RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"), "机械臂硬件启动成功!");
+         return hardware_interface::CallbackReturn::SUCCESS;
+     }else{
+@@ -151,6 +263,7 @@
+ hardware_interface::CallbackReturn FairinoHardwareInterface::on_deactivate(const rclcpp_lifecycle::State& previous_state)
+ {
+     RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"), "Stopping ...please wait...");
++    _ptr_robot->ServoMoveEnd(_servo_com_type);//servo-akis modunu duzgunce kapat, ACILISTAKI kanalla (bkz. on_activate)
+     _ptr_robot->StopMotion();//停止机器人
+     _ptr_robot->CloseRPC();//销毁实例，连接断开
+     _ptr_robot.release();
+@@ -193,9 +306,342 @@
+         }
+         //RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"), "ServoJ下发位置:%f,%f,%f,%f,%f,%f",\
+             cmd.jPos[0],cmd.jPos[1],cmd.jPos[2],cmd.jPos[3],cmd.jPos[4],cmd.jPos[5]);
+-        int returncode = _ptr_robot->ServoJ(&cmd,&extcmd,0,0,0.008,0,0);
++        // GECMIS: cmdT once sabit 0.008 idi (SDK'nin kendi varsayilani).
++        // period.seconds() (~0.01, controller'in GERCEK cagri araligi)
++        // denendi, HEMEN ardindan LIN/ARC hatasi cikti, geri alindi ve
++        // "0.008 kanitlanmis calisiyor" sonucuna varildi. AMA sonradan
++        // ortaya cikti ki 0.008 ile de calisma sirasinda ("axis 2 exceeds
++        // limit" vb.) hatalar tekrarladi - yani 0.008 hicbir zaman
++        // GERCEKTEN saglam degildi, sadece bekleme sureleri/ServoMoveStart
++        // eklenene kadar baska hatalar onu maskeliyordu.
++        //
++        // KOK SEBEP (SDK'nin KENDI resmi ornegiyle dogrulandi): fairino-
++        // python-sdk/*/example/servo.py, HER ServoJ() cagrisindan hemen
++        // sonra tam olarak `time.sleep(cmdT)` yapiyor - yani cmdT, robota
++        // verilen "bu pozisyon farkini bu sürede kat edeceksin" taahhudu,
++        // ve SDK ornegi bunu gercek sleep ile birebir tutturuyor. Bizim
++        // write() fonksiyonumuz ise controller_manager tarafindan
++        // ros2_controllers.yaml'daki update_rate:100 (yani GERCEKTE ~10ms)
++        // hizinda cagriliyor, ama cmdT hala 0.008 (8ms) - robot her
++        // seferinde "bu pozisyon farki 8ms'de mi oldu" sanip hizi
++        // gercekte olandan ~%25 FAZLA hesapliyor - bu da tam olarak
++        // "eksen X komut hizi limiti asiyor" hatasini aciklar.
++        //
++        // Peki period.seconds() denemesi neden HEMEN LIN/ARC hatasi
++        // verdi? Cunku o an ham/anlik period kullanildi - on_activate()
++        // icinde art arda 300+300+300+1000ms'lik BLOKLAYAN sleep_for
++        // cagrilari var; controller_manager'in donguyu olcen saati o
++        // sure boyunca ilerlemeye devam ediyor olabilir, yani
++        // activate'ten sonraki ILK write() cagrisinda olculen period
++        // anormal (cok buyuk/cok kucuk) cikabilir - ham period'u
++        // DOGRUDAN cmdT olarak kullanmak bu ilk-cagri anomalisini
++        // dogrudan robota tasiyordu.
++        //
++        // DUZELTME v1 (SABIT 0.01): canli testte idle/bosta MUKEMMEL calisti
++        // (30/30 cagri err=0) AMA GERCEK bir hareket calistirinca "axis 1
++        // exceeds limit" hatasi yine cikti - TANI loglarina bakinca sebep
++        // ortaya cikti: aktif calistirma SIRASINDA write() cagri periyodu
++        // ~10ms DEGIL, ~3ms olarak olculuyor (controller_manager RT
++        // zamanlamasi WSL2'de FIFO/RT scheduling ALAMIYOR - loglarda
++        // "Could not enable FIFO RT scheduling policy: Operation not
++        // permitted" - bu yuzden CPU yuku altinda [ki movecobot'un kendi
++        // MoveItPy sureci TAM O ANDA hareketi izlerken CPU'yu yogun
++        // kullaniyor] duzenli 100Hz yerine "gecikip sonra patlama halinde
++        // yetismeye calisma" davranisi sergiliyor olabilir). SABIT 0.01
++        // kullanmak, gercekte 3ms'de bir gelen komutlari robota "bu 10ms'de
++        // oldu" diye soyluyor - robot GERCEK periyottan ~3.3 KAT YAVAS
++        // sanip, kendi ic yorumlamasinda (ozellikle art arda cakisan/
++        // yeniden baslayan interpolasyonlarda) olmasi gerekenden yuksek bir
++        // ic hiz/ivme uretebiliyor - "axis exceeds limit" faultunun sebebi
++        // muhtemelen bu.
++        //
++        // DUZELTME v2: cmdT'yi HER cagrida GERCEK period.seconds()'a esitle
++        // (idle'da ~0.01, aktif calistirmada ~0.003 - HANGISI GERCEKSE) AMA
++        // makul bir aralikla (0.0005-0.05s) SINIRLA - bu araligin disina
++        // cikarsa (ör. activate sonrasi ilk cagridaki olculen-period
++        // anomalisi, ONCEDEN LIN/ARC hatasina yol acan durum) SABIT 0.01'e
++        // don. Boylece hem gercek (degisken) hiza sadik kalinir hem de ilk-
++        // cagri anomalisi robota tasinmaz.
++        // ============================================================
++        // DUZELTME v3 - GERCEK ZAMANLI TEMPO KORUMASI (asil kok sebep)
++        // ============================================================
++        // Fairino dokumantasyonu: ServoJ komutlari 1-16ms araliklarla
++        // gonderilmeli, ve "hedef pozisyon ile mevcut pozisyon komutu
++        // arasindaki sapma cok buyukse robot eklem asiri hiz hatasi verir".
++        // SDK'nin KENDI resmi ornegi (servo.py) her ServoJ'den sonra
++        // time.sleep(cmdT) yaparak bu tempoyu GARANTI ALTINA ALIYOR.
++        //
++        // Bizim write()'imizde bunu garanti eden HICBIR SEY yoktu: cagri
++        // temposunu tamamen ros2_control'un dongusu belirliyordu. Ve
++        // ros2_control'un BELGELENMIS davranisi su: dongu gecikirse
++        // (overrun - ki read()/write() ROBOTA AG UZERINDEN cagri yaptigi
++        // icin 10ms'lik butce cok kolay asiliyor) kacirilan dongulerı
++        // ARKA ARKAYA PATLATARAK yetismeye calisiyor.
++        //
++        // Canli logda tam olarak bu goruldu: raw_period_s=0.003 (yani
++        // ~320Hz), ayarlanan 100Hz'in 3+ kati. Sonuc: trajektorinin
++        // ~30ms'lik hareketi robota ~1ms icinde emir olarak gidiyor ->
++        // robotun gordugu ANLIK komut hizi gercek trajektori hizinin
++        // KATLARI oluyor -> "axis N command speed exceeds limit" faultu.
++        // Fault sonrasi ise robot her ServoJ'yi reddettigi icin err=14
++        // seli basliyor (max_delta_deg=0.0000, yani HIC hareket
++        // komutu olmayan cagrilarda bile - canli logda dogrulandi).
++        //
++        // COZUM: ServoJ'leri GERCEK ZAMANDA seyrelt. Iki ServoJ arasinda
++        // en az MIN_SERVOJ_INTERVAL_S gecmemisse bu cagriyi HIC gonderme.
++        // ServoJ MUTLAK pozisyon komutu oldugu icin ara noktalari atlamak
++        // guvenli ve dogru: robot her zaman EN GUNCEL hedefi alir.
++        static std::chrono::steady_clock::time_point _last_servoj_tp{};
++        static bool _have_last_servoj_tp = false;
++        const double MIN_SERVOJ_INTERVAL_S = 0.008; // SDK varsayilani; belgelenen 1-16ms araligi icinde
++        auto _now_tp = std::chrono::steady_clock::now();
++        double _since_last_s = _have_last_servoj_tp
++            ? std::chrono::duration<double>(_now_tp - _last_servoj_tp).count()
++            : MIN_SERVOJ_INTERVAL_S;
++        // NOT (v4): Once burada "8ms'den erken geldiyse HIC gonderme"
++        // seklinde bir seyreltme vardi. KALDIRILDI - canli testte hareket
++        // "sicraya sicraya" gitti, cunku trajektorinin ara noktalari
++        // dusuruluyordu. Ayrica tekrar analiz edince patlamanin (burst)
++        // tek basina asiri hiz URETMEDIGI goruldu: ros2_control patlama
++        // yaptiginda period de kuculuyor (3ms), yani JTC trajektoriyi de
++        // sadece 3ms ilerletiyor - komutlar sik ama KUCUK adimlar halinde
++        // gidiyor, gercek hiz degismiyor. Asil koruma asagidaki hiz
++        // sinirlayici. Komutlari tam cozunurlukte gondermek hareketi
++        // yumusatiyor.
++        _last_servoj_tp = _now_tp;
++        _have_last_servoj_tp = true;
++
++        // cmdT artik GERCEKTEN gecen sureye esit (seyreltme sayesinde bu
++        // ~0.008 civarinda ve KARARLI olacak) - ayrica dokumantasyonun
++        // belirttigi gecerli aralikta (1-16ms) tutuluyor.
++        double _tani_raw_period = _since_last_s;
++        const double SERVOJ_CMDT = std::min(0.016, std::max(0.001, _since_last_s));
++
++        // ====================================================================
++        // BOSTAYKEN SERVO MODUNDAN CIK (gripper'in calisabilmesi icin)
++        // ====================================================================
++        // OLCULEN KISIT: robot SERVO MODUNDAYKEN (ServoMoveStart aktif ve
++        // ServoJ akarken) hicbir GRIPPER KOMUTU gecmiyor - ActGripper ve
++        // MoveGripper (blocking de, non-blocking da) sonsuza kadar asili
++        // kaliyor. Gripper OKUMALARI ise sorunsuz calisiyor. Yani uc-eksen
++        // RS485 hatti acik, tikali olan robotun HAREKET KOMUT KUYRUGU:
++        // gripper aktuasyonu da o kuyruktan geciyor ve servo akisi kuyrugu
++        // surekli mesgul tutuyor. Canli olcum: bilesen inaktif yapilinca
++        // ayni MoveGripper 0.03 saniyede tamamlandi.
++        //
++        // Bu, "gripper eskiden calisiyordu" durumunu da acikliyor: eskiden
++        // servo akisi bozuktu (surekli err=-2/err=14), yani kuyruk bostu.
++        // Akis duzelince kuyruk gercekten doldu ve gripper bloke oldu.
++        //
++        // COZUM: kol HAREKET ETMIYORKEN servo modunda kalmanin bir anlami
++        // yok - surekli ayni pozisyonu 100Hz gonderiyoruz. Komut pozisyonu
++        // bir sure degismediyse ServoMoveEnd ile moddan cikiyoruz; kuyruk
++        // bosaliyor ve gripper komutlari normal calisiyor. Yeni bir hedef
++        // gelince ServoMoveStart ile geri giriyoruz. Kullanici gripper'i
++        // zaten kol dururken kullandigi icin (tut -> tasi -> birak) bu,
++        // hicbir bekleme yaratmadan sorunu ortadan kaldiriyor.
++        // Hiz sinirlayicinin referansi - asagida kullaniliyor ama servo
++        // moduna geri donerken de gercek pozisyona esitlenmesi gerektigi
++        // icin bildirimi buraya alindi.
++        static double _last_sent_deg[6];
++        static bool _have_last_sent = false;
++
++        static bool _servo_stream_on = true;   // on_activate ServoMoveStart yapmis durumda
++        static double _idle_ref_deg[6] = {0,0,0,0,0,0};
++        static bool _have_idle_ref = false;
++        static double _idle_seconds = 0.0;
++        const double IDLE_EXIT_S = 0.5;        // bu kadar hareketsizlikten sonra moddan cik
++        const double IDLE_EPS_DEG = 1e-4;      // bunun altindaki fark "hareket yok" sayilir
++
++        double _idle_delta = 0.0;
++        if(_have_idle_ref){
++            for(int j=0;j<6;j++){
++                double d = std::fabs(cmd.jPos[j]-_idle_ref_deg[j]);
++                if(d > _idle_delta) _idle_delta = d;
++            }
++        }
++        for(int j=0;j<6;j++){ _idle_ref_deg[j] = cmd.jPos[j]; }
++        _have_idle_ref = true;
++
++        if(_idle_delta < IDLE_EPS_DEG){
++            _idle_seconds += _since_last_s;
++        }else{
++            _idle_seconds = 0.0;
++        }
++
++        if(_servo_stream_on && _idle_seconds > IDLE_EXIT_S){
++            errno_t _end_rc = _ptr_robot->ServoMoveEnd(_servo_com_type);
++            _servo_stream_on = false;
++            RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"),
++                "Kol bosta - servo modundan cikildi (ServoMoveEnd rc=%d). Gripper komutlari "
++                "artik calisabilir; yeni hedef gelince mod kendiliginden geri acilacak.", _end_rc);
++        }
++
++        if(!_servo_stream_on){
++            if(_idle_delta < IDLE_EPS_DEG){
++                return hardware_interface::return_type::OK;  // hala bosta, komut gonderme
++            }
++            // Yeni hedef geldi - servo moduna geri don.
++            // GUVENLIK: bosta iken robot ELLE oynatilmis olabilir (drag-teach).
++            // O durumda kontrolcunun hedefi ESKI pozisyondur ve mod acilir
++            // acilmaz robot oraya gitmeye calisir. Gercek pozisyonla komut
++            // arasindaki fark buyukse OTOMATIK devam ETMIYORUZ.
++            JointPos _actual;
++            bool _read_ok = (_ptr_robot->GetActualJointPosDegree(1,&_actual) == 0);
++            double _gap = 0.0;
++            if(_read_ok){
++                for(int j=0;j<6;j++){
++                    double d = std::fabs(cmd.jPos[j]-_actual.jPos[j]);
++                    if(d > _gap) _gap = d;
++                }
++            }
++            const double MAX_RESUME_GAP_DEG = 2.0;
++            if(_read_ok && _gap > MAX_RESUME_GAP_DEG){
++                RCLCPP_ERROR_THROTTLE(rclcpp::get_logger("FairinoHardwareInterface"),
++                    *rclcpp::Clock::make_shared(), 5000,
++                    "Servo modu GERI ACILMADI: kontrolcunun hedefi robotun gercek pozisyonundan "
++                    "%.1f derece uzakta (sinir %.1f). Bosta iken robot elle oynatilmis olabilir - "
++                    "otomatik devam etmek sicramaya yol acardi. 'clearfault' ile kontrolu guvenle "
++                    "geri alin.", _gap, MAX_RESUME_GAP_DEG);
++                return hardware_interface::return_type::OK;
++            }
++            errno_t _start_rc = _ptr_robot->ServoMoveStart(_servo_com_type);
++            _servo_stream_on = true;
++            _idle_seconds = 0.0;
++            // Sinirlayicinin referansini gercek pozisyona esitle - moddan
++            // cikis/girisi arasinda kucuk bir kayma olduysa ilk komut
++            // sicrama olmasin.
++            if(_read_ok){
++                for(int j=0;j<6;j++){ _last_sent_deg[j] = _actual.jPos[j]; }
++            }
++            RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"),
++                "Yeni hedef geldi - servo moduna geri donuldu (ServoMoveStart rc=%d, fark=%.2f derece).",
++                _start_rc, _gap);
++        }
++
++        // ---- HIZ SINIRLAYICI (slew limiter) ----
++        // Seyreltme "cok HIZLI gonderme" tarafini cozuyor ama "cok GEC
++        // gonderme" tarafini cozmuyor: dongu takilirsa iki gonderim arasi
++        // 16ms'yi asabiliyor, cmdT 0.016'ya kirpildigi icin robota "bu
++        // buyuk fark 16ms'de oldu" denmis oluyor -> robot hizi OLDUGUNDAN
++        // YUKSEK hesaplayip yine "axis exceeds limit" verebilir. Bu yuzden
++        // komut farkini da sinirliyoruz: bir gonderimdeki pozisyon
++        // degisimi, guvenli eklem hizinin (limitin ~%60'i) cmdT suresinde
++        // kat edecegi mesafeyi ASLA gecemez. Normal calismada (10% hizda
++        // ~16 derece/sn) devreye girmez, sadece anormal gecikmelerde korur.
++        // Tavan, joint_limits.yaml'daki gercek eklem limitine (j1-j3 icin
++        // 3.15 rad/sn = ~180 derece/sn) YAKIN secilmeli.
++        //
++        // ONCE 108 (limitin %60'i) idi ve YANLISTI: %80 hizda calistirilan
++        // bir harekette sinirlayici 40 kez devreye girdi (istenen ~1.08-1.16
++        // derece/dongu = ~116 derece/sn, izin verilen ~1.08). Yani MESRU
++        // hareket kisiliyor, sonra yakalamaya calisiliyordu - kullanicinin
++        // gordugu "sallanma" tam olarak buydu.
++        //
++        // Sinirlayicinin isi normal hareketi kismak DEGIL, zamanlama
++        // anomalisinden dogan SICRAMAYI yakalamak (oyle bir sicrama limitin
++        // katlari olur, bu tavana takilir). Bu yuzden limitin hemen altina
++        // cekildi.
++        const double MAX_SAFE_JOINT_VEL_DEG_S = 170.0; // ~limitin %94'u
++        static int _clamp_count = 0;
++        if(_have_last_sent){
++            double max_step_deg = MAX_SAFE_JOINT_VEL_DEG_S * SERVOJ_CMDT;
++            for(int j=0;j<6;j++){
++                double delta = cmd.jPos[j] - _last_sent_deg[j];
++                if(delta > max_step_deg || delta < -max_step_deg){
++                    // TANI: sinirlayici gercekten devreye giriyor mu, ne
++                    // siklikta, ne kadar buyuk bir istek geliyor? (Hareket
++                    // "sicramali" ise sebebi bu olabilir - o zaman istenen
++                    // hizlar gercekten limit ustu demektir, ve sorun daha
++                    // yukarida, trajektori/JTC tarafinda aranmali.)
++                    _clamp_count++;
++                    if(_clamp_count <= 40 || _clamp_count % 100 == 0){
++                        RCLCPP_WARN(rclcpp::get_logger("FairinoHardwareInterface"),
++                            "SINIRLAYICI devrede #%d: eklem j%d istenen_delta=%.4f derece, "
++                            "izin_verilen=%.4f derece (cmdT=%.4f -> istenen_hiz=%.1f derece/sn)",
++                            _clamp_count, j+1, delta, max_step_deg, SERVOJ_CMDT,
++                            delta/SERVOJ_CMDT);
++                    }
++                }
++                if(delta > max_step_deg){ cmd.jPos[j] = _last_sent_deg[j] + max_step_deg; }
++                else if(delta < -max_step_deg){ cmd.jPos[j] = _last_sent_deg[j] - max_step_deg; }
++            }
++        }
++        for(int j=0;j<6;j++){ _last_sent_deg[j] = cmd.jPos[j]; }
++        _have_last_sent = true;
++
++        static int _tani_call_count = 0;
++        static double _tani_prev_cmd_deg[6] = {0,0,0,0,0,0};
++        _tani_call_count++;
++        double _tani_max_delta_deg = 0.0;
++        for(int j=0;j<6;j++){
++            double d = std::fabs(cmd.jPos[j]-_tani_prev_cmd_deg[j]);
++            if(d > _tani_max_delta_deg) _tani_max_delta_deg = d;
++        }
++        double _tani_implied_vel = (_tani_raw_period > 1e-6) ? (_tani_max_delta_deg/_tani_raw_period) : 0.0;
++        // comType (son parametre) icin bkz. on_activate icindeki aciklama:
++        // 1 = UDP/port 20007 (tercih edilen), 0 = XML-RPC (geri donus).
++        int returncode = _ptr_robot->ServoJ(&cmd,&extcmd,0,0,SERVOJ_CMDT,0,0,0,_servo_com_type);
++        if(returncode != 0 || _tani_call_count <= 30){
++            RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"),
++                "TANI call=%d raw_period_s=%.5f max_delta_deg=%.4f implied_vel_deg_s=%.2f cmdT=%.4f err=%d",
++                _tani_call_count,_tani_raw_period,_tani_max_delta_deg,_tani_implied_vel,SERVOJ_CMDT,returncode);
++        }
++        for(int j=0;j<6;j++) _tani_prev_cmd_deg[j] = cmd.jPos[j];
++
++        // ============================================================
++        // SERVO AKISINI KENDI KENDINE TOPARLAMA (v5)
++        // ============================================================
++        // ServoMoveStart() sadece on_activate()'te BIR KEZ cagriliyordu.
++        // Ama robot servo oturumunu kendi basina sonlandirabiliyor:
++        //  - MANUEL moda (drag-teach) gecilip auto'ya donuldugunde
++        //    (canli testte tam bu yasandi: kullanici sadece manuele
++        //    gecip geri dondu, sonrasinda HER ServoJ err=-2 dondu)
++        //  - Bir fault olusup WebApp'ten "Clear"a basildiginda
++        // Bu durumlarda kimse ServoMoveStart'i YENIDEN cagirmadigi icin
++        // ServoJ sonsuza kadar hata veriyor ve tek care fairino_launch'i
++        // komple yeniden baslatmakti.
++        //
++        // OTOMATIK TOPARLAMA BILEREK YAPILMIYOR (guvenlik):
++        // Bir ara burada "ServoJ ust uste basarisiz olursa ServoMoveStart'i
++        // kendin yeniden cagir" seklinde bir kurtarma vardi. KALDIRILDI,
++        // cunku TEHLIKELI: manuel modda robot ELLE oynatilmis olabilir ve
++        // kontrolcunun (JTC) hafizasindaki hedef hala ESKI pozisyondur -
++        // komut akisini kendiliginden geri acmak, operatorun elleri hala
++        // robotun uzerindeyken robotun kendiliginden eski pozisyonuna
++        // donmeye baslamasi demektir. Asagidaki hiz sinirlayici bunu
++        // sadece YAVASLATIR, ENGELLEMEZ. Ayni sekilde gercek bir carpisma
++        // sonrasi kullanici sadece durumu incelemek icin "Clear"a bastiginda
++        // da hareket kendiliginden devam ederdi.
++        //
++        // Komut pozisyonunu burada robotun gercek pozisyonuna esitlemek de
++        // cozmuyor: JTC bir sonraki dongude kendi hedefini geri yaziyor -
++        // yani "toparlandi ama hareket etmiyor" garantisi bu katmandan
++        // VERILEMEZ. Motor yetkisinin geri gelmesi INSAN karari olmali.
++        //
++        // Bunun yerine durumu ACIKCA bildiriyoruz. Guvenli toparlama yolu
++        // zaten mevcut: 'clearfault' (movecobot --clear-fault) donanimi
++        // deactivate/activate ederek on_activate()'i yeniden calistirir -
++        // orada hem ServoMoveStart yeniden cagrilir HEM DE komut pozisyonu
++        // robotun gercek pozisyonuna senkronlanir (sicrama olmaz).
++        static int _consecutive_servoj_err = 0;
+         if(returncode != 0){
+-            RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"), "ServoJ指令下发错误,错误码:%d",returncode);
++            _consecutive_servoj_err++;
++            if(_consecutive_servoj_err == 50){ // ~0.5sn kesintisiz hata: BIR KEZ uyar
++                RCLCPP_ERROR(rclcpp::get_logger("FairinoHardwareInterface"),
++                    "SERVO AKISI KOPTU (ServoJ ust uste %d kez basarisiz, son err=%d). "
++                    "Robot komut ALMIYOR. Sebep genelde: manuel/drag-teach moduna gecilmesi "
++                    "ya da bir fault. Cozum: (varsa) WebApp'ten Clear'a basin, sonra "
++                    "'clearfault' calistirin - guvenlik icin kontrol KENDILIGINDEN geri "
++                    "verilmez, bu adimi siz baslatmalisiniz.",
++                    _consecutive_servoj_err, returncode);
++            }
++        }else{
++            if(_consecutive_servoj_err >= 50){
++                RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"),
++                    "Servo akisi geri geldi, robot tekrar komut aliyor.");
++            }
++            _consecutive_servoj_err = 0;
+         }
+     }else if(_control_mode == 1){//扭矩控制模式
+         if (std::any_of(&_jnt_torque_command[0], &_jnt_torque_command[5],\

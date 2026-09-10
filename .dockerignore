@@ -1,0 +1,30 @@
+# Build context'i kucuk tut - buradakiler imaja HIC girmemeli.
+
+.git/
+.github/
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Gizli degerler: imaja gomulmesi bir sizinti olurdu. Container'a calisma
+# zamaninda environment/env_file ile verilir.
+.env
+.env.*
+!.env.example
+
+# Vendor ve derleme ciktilari - imaj bunlari kendisi klonluyor/derliyor.
+vendor/
+build/
+install/
+log/
+dist/
+*.egg-info/
+
+# Belgeler ve gunluk notlari calisma zamaninda gerekmiyor.
+docs/
+*.md
+!README.md
+
+.idea/
+.vscode/
