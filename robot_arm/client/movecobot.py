@@ -59,22 +59,26 @@ FLOOR_Z_M = 0.0
 # fairino_description'daki URDF'de HIC modellenmemis (wrist3_link son link,
 # bkz. fairino_description/urdf/fairino{N}_v6.urdf) - yani MoveIt'in kendi
 # self-collision kontrolu bu geometriler eklenmeden gripper'in var oldugundan
-# habersizdir. Govde 40x24x87mm (kaynak: fairino.info/accessories/gripper-
-# epg40-050 + welectron.com urun sayfasi, DOGRULANMADI - gercek CAD/olcum
-# degil). XY icin genis (govdenin ~2 kati) bir pay bilinclii tercih edildi -
-# kullanici onayi: guvenlik once, gerekirse (baslangic pozunda sahte
-# carpisma/kilitlenme yasanirsa) kutu asagi cekilir (55x50mm denendi, gerekirse
-# tekrar denenebilir). Kilitlenme riski _add_gripper_collision'daki
-# baslangic-durumu kontrolu ile karsilaniyor (colliding ise kullaniciya sorup
-# gerekirse korumayi o oturum icin kapatiyor). Uzunluk icin ise gercek olcum
-# olan tcp_offset_m kullanilir (sabit 87mm yerine - boylece kalibrasyon neyi
-# olcerse kutu da onu kapsar).
-GRIPPER_WIDTH_M = 0.075
-GRIPPER_DEPTH_M = 0.04
-# Flanstan itibaren korunan TOPLAM mesafe 120mm olsun diye pay 0'a cekildi -
-# bkz. asagidaki GRIPPER_LENGTH_FLOOR_M (120mm zaten kullanicinin belirledigi
-# nihai deger, ustune ekstra pay istenmedi).
-GRIPPER_LENGTH_MARGIN_M = 0.0
+# habersizdir. Taban 40x24mm DEGERI KULLANICININ KENDI OLCTUGU deger (ilk
+# yorumda yanlislikla "urun sayfasindan govde-only" denmisti, DUZELTILDI) -
+# ceneler ACIKKEN alinan olcuye zaten bir pay eklenerek belirlenmisti (ham
+# acik-cene olcusu DEGIL, ustune pay eklenmis hali). Kilitlenme riski
+# _add_gripper_collision'daki baslangic-durumu
+# kontrolu ile karsilaniyor (colliding ise kullaniciya sorup gerekirse
+# korumayi o oturum icin kapatiyor). Uzunluk icin ise gercek olcum olan
+# tcp_offset_m kullanilir (sabit bir deger yerine - boylece kalibrasyon
+# neyi olcerse kutu da onu kapsar).
+# ÇARPMA YAŞANDI: planli (jog/replay) bir hareket sirasinda gripper kola
+# gercekten carpti - yani koruma AKTIFTI ama kutu gercek gripperi yeterince
+# kapsamiyordu. Kullanici talebiyle SADECE GRIPPER icin (MIN_CLEARANCE_M'e
+# DOKUNULMADI) HER YONDE +1cm pay eklendi: XY (genislik/derinlik) her
+# yandan +10mm (toplam +20mm), uzunluk ucundan +10mm (GRIPPER_LENGTH_
+# MARGIN_M ile).
+GRIPPER_WIDTH_M = 0.095
+GRIPPER_DEPTH_M = 0.06
+# Flanstan itibaren korunan TOPLAM mesafe 120mm + kullanicinin istedigi
+# +1cm ekstra pay (bkz. yukaridaki not - canli carpma sonrasi eklendi).
+GRIPPER_LENGTH_MARGIN_M = 0.01
 # Gripper uzunlugu icin guvenlik tabani. TCP offset (GetTCPOffset(), canli
 # testte 100mm) collision boyutu icin GUVENILIR bir kaynak DEGIL - TCP bir
 # kinematik/kontrol referans noktasi (cogu paralel gripper'da cenelerin
@@ -108,6 +112,35 @@ GRIPPER_LENGTH_FLOOR_M = 0.120
 # noktasi arasina (gercek tehlike=9.54mm / guvenli-ama-yapisal-yakin=16.7mm)
 # cekildi.
 MIN_CLEARANCE_M = 0.012
+
+# MIN_CLEARANCE_M artik SADECE plandan SONRA kontrol edilen bir esik degil -
+# MoveIt'in link padding mekanizmasiyla PLANLAMAYA da veriliyor (bkz.
+# CobotArm.__init__). Her govde bu kadar "sismis" sayildigi icin iki govde
+# arasindaki gercek bosluk 2*LINK_PADDING_M olur; hedeflenen 12mm'yi
+# tutturmak icin padding bunun YARISI.
+#
+# DIKKAT: padding devredeyken carpisma kontrollerinin dondurdugu mesafe
+# SISMIS govdeler arasindaki mesafedir. Yani "gercek bosluk" =
+# olculen_mesafe + 2*LINK_PADDING_M ve "sismis govdeler degiyor" demek
+# zaten "gercek bosluk < MIN_CLEARANCE_M" demektir - bu yuzden kontrollerde
+# ayrica mesafe esigi UYGULANMAZ, yoksa pay iki kez sayilir.
+LINK_PADDING_M = MIN_CLEARANCE_M / 2.0
+
+# Gripper cenelerinin TAM ACIK aciklig (strok). Kavrama sirasinda okunan
+# pozisyon yuzdesinden (0=tam acik, 100=tam kapali) nesnenin cene arasi
+# GENISLIGINI turetmek icin kullanilir:
+#     genislik = (100 - pozisyon) / 100 * GRIPPER_STROKE_M
+# Kamera olmadigi icin nesnenin varligini ve genisligini BASINCTAN
+# (gripper'in kuvvet geri bildirimiyle nerede durdugundan) cikariyoruz -
+# ureticinin "grip feedback and object detection" olarak belirttigi ozellik.
+#
+# DEGER KAYNAGI (uretici/satici teknik verileri): Jodell EPG40-050 ->
+# strok 40 mm, kuvvet 2-50 N/parmak, tasima 0.8 kg, agirlik 0.36 kg.
+# Model adindaki "EPG40-050" = 40 mm strok + 50 N kuvvet demek.
+GRIPPER_STROKE_M = 0.040
+
+# Kavranan nesnenin planlama sahnesindeki kimligi (bkz. attach_grasped_object).
+GRASPED_OBJECT_ID = "grasped_object"
 
 MOVES_FILE = Path(CLIENT_DIR) / "movecobot_moves.json"
 # Hareket kaydi SIRASINDA (record_new_move/drag_teach_add_steps) eklenen her
@@ -288,7 +321,7 @@ def write_moveit_cpp_yaml(path, max_vel, max_accel):
   wait_for_initial_state_timeout: 10.0
 
 planning_pipelines:
-  pipeline_names: ["ompl"]
+  pipeline_names: ["ompl", "pilz_industrial_motion_planner"]
 
 plan_request_params:
   planning_attempts: 1
@@ -345,9 +378,71 @@ def check_trajectory_for_self_collision(scene, trajectory, group_name):
         # mesafe esiginde birlestirmek yanlis pozitiflere yol acar (canli
         # testte tam bunu yasadik - bkz. MIN_CLEARANCE_M yorumu).
         scene.check_self_collision(req, res, state)
-        if res.collision or res.distance < MIN_CLEARANCE_M:
-            violations.append((i, res.distance))
+        # PADDING DEVREDE: govdeler zaten LINK_PADDING_M kadar sismis
+        # sayiliyor, dolayisiyla "sismis govdeler degiyor" = "gercek bosluk
+        # MIN_CLEARANCE_M'in altinda". Buraya AYRICA mesafe esigi koymak payi
+        # IKI KEZ saymak olurdu (ör. gercekte 16.7mm acik olan guvenli bir poz,
+        # sismis olcumde 4.7mm gorunur ve yanlislikla reddedilirdi).
+        # Raporlanan mesafe okunabilir olsun diye GERCEK bosluga cevriliyor.
+        if res.collision:
+            violations.append((i, res.distance + 2 * LINK_PADDING_M))
     return violations
+
+
+# ---------------------------------------------------------------------------
+# ONEMLI - DURUM OKUMA HANGI KANALDAN YAPILMALI
+# ---------------------------------------------------------------------------
+# Bu dosyada durum okumalari SDK SARMALAYICISI uzerinden yapilir:
+#     sdk.GetActualJointPosDegree()[1]      (DOGRU)
+# ASLA ham XML-RPC uc noktasi uzerinden DEGIL:
+#     sdk.robot.GetActualJointPosDegree(0)  (YANLIS - "sdk.robot" ham proxy)
+#
+# Sebep: SDK sarmalayicisi (fairino/Robot.py) bu fonksiyonlarda XML-RPC'ye HIC
+# gitmiyor - dogrudan arka plandaki gercek-zamanli durum paketinden okuyor
+# (robot_state_pkg, port 20004); XML-RPC yolu SDK kaynaginda yorum satirinda.
+# Ham "sdk.robot.*" cagrisi ise gercek bir XML-RPC istegi (port 20003) yapar ve
+# ROBOT SERVO MODUNDAYKEN (ros2_control ServoMoveStart ile akis gonderirken)
+# BU ISTEKLER YANITLANMIYOR - cagri sonsuza kadar asili kaliyor (xmlrpc
+# istemcisinin varsayilan zaman asimi da yok). Canli testte movecobot tam
+# burada, "ilk durum okunuyor" adiminda kilitlendi; fairino_launch calisirken
+# her seferinde tekrarladi.
+#
+# Sarmalayicinin donus bicimi farkli: (0, [6 deger]) - yani [1] ile listeye
+# eriliyor, ham proxy'deki gibi [1:7] dilimlemesi DEGIL.
+# ---------------------------------------------------------------------------
+
+def wait_for_live_joint_reading(sdk, sdk_lock, max_wait_s=1.5, poll_interval_s=0.1):
+    """Taze acilan (veya yeniden acilan) bir SDK baglantisinda, arka plandaki
+    realtime-durum thread'i (port 20004) ilk gercek paketi alana kadar
+    GetActualJointPosDegree() eski/varsayilan bir deger (6 eksenin HEPSI tam
+    olarak 0.0) dondurebiliyor - bu fonksiyon hep err=0 doner, SDK bu farki
+    kendisi ayirt etmiyor. Onceden bu yaris durumu sabit bir time.sleep(1.0)
+    ile "azaltiliyordu" ama bu sadece bir tahmindi - baglanti bu sureden
+    daha uzun surerse (ör. ayni anda ros2_control_node de kendi baglanti/
+    reset/enable/ServoMoveStart akisiyla robotu mesgul ediyorsa) sessizce
+    sifir degerler dondurulup baslangic durumu olarak kullanilabiliyordu
+    (canli testte tam bu yasandi: kol durumu TAMAMEN 0.000 gosterdi).
+
+    6 eksenin HEPSININ ayni anda tam 0.000 olmasi gercek bir FR3 pozu icin
+    pratikte imkansiz (TCP de dunya orijininde olamaz) - bu yuzden bu durumu
+    "henuz gercek veri gelmedi" isareti olarak guvenilir sekilde kullanip,
+    gercek (sifir olmayan) veri gelene ya da zaman asimina ugrayana kadar
+    kisa araliklarla tekrar tekrar okuyoruz."""
+    deadline = time.time() + max_wait_s
+    last = None
+    while True:
+        with sdk_lock:
+            last = sdk.GetActualJointPosDegree()[1]
+        if any(abs(v) > 1e-9 for v in last):
+            return last
+        if time.time() >= deadline:
+            print(f"UYARI: {max_wait_s:.0f}s icinde robottan GERCEK eklem verisi "
+                  "alinamadi (hep 0.000 donuyor) - baglanti kurulmus olabilir ama "
+                  "realtime durum akisi hala baslamamis olabilir. Gosterilen "
+                  "degerlere GUVENME, WebApp'ten kontrol et ya da movecobot'u "
+                  "yeniden baslat.")
+            return last
+        time.sleep(poll_interval_s)
 
 
 # ---------------------------------------------------------------------------
@@ -382,11 +477,52 @@ class CobotArm:
         # dokunan HER YER bu kilidi kullanmali (RLock - ic ice cagrilar var,
         # ör. GripperController.activate() -> is_active()).
         self.sdk_lock = threading.RLock()
+        # execute() calisirken (ros2_control_node, AYRI bir process/baglanti
+        # uzerinden, ServoJ akisini gonderirken) movecobot'un KENDI SDK
+        # baglantisindan (ör. grippergui'nin arka plan durum sorgulama
+        # thread'i - bkz. interactive_main) ES ZAMANLI baska bir istek
+        # robota gitmesin diye - canli testte, GERCEK bir hareket
+        # calistirilirken ServoJ'nin SUREKLI err=14 ile basarisiz oldugu
+        # gozlemlendi (baslangicta/bosta degil, SADECE aktif calistirma
+        # sirasinda) - robotun gercek-zamanli komut kanalinin, AYNI ANDA
+        # IKI FARKLI baglantidan (ros2_control'un kendi + movecobot'un
+        # kendi) gelen trafigi kaldiramadigi teorisiyle tutarli. Bu
+        # Event, _plan_and_execute() icinde execute() etrafinda set/clear
+        # edilir; grippergui'nin poll_status()'u bunu kontrol edip aktif
+        # calistirma sirasinda kendi SDK sorgusunu ATLAR.
+        self.executing = threading.Event()
+        # ASAGIDAKI zaman-damgali print'ler SADECE tanisal amacli - __init__
+        # icinde MoveItPy() gibi dogasi geregi yavas (planlama pipeline'lari,
+        # robot modeli, kinematik eklentileri yukleyen) adimlar var ve
+        # ONCEDEN hicbiri ekrana bir sey basmiyordu - kullanici bu sessizlik
+        # yuzunden "movecobot cok bekletiyor/kitleniyor" diye dusunmustu,
+        # oysa NEREDE zaman gectigi hicbir zaman gorunur degildi. Bu
+        # printler robotu/planlamayi DEGISTIRMIYOR, sadece hangi asamanin ne
+        # kadar surdugunu gosteriyor.
+        _t0 = time.time()
+        def _tlog(msg):
+            print(f"  [+{time.time()-_t0:5.1f}s] {msg}")
+        _tlog("Robota SDK baglantisi kuruluyor...")
         self.sdk = Robot.RPC(robot_ip)
+        _tlog("SDK baglantisi kuruldu, ilk durum okunuyor...")
+        # Yeni acilan bir SDK baglantisinda, arka plandaki realtime-durum
+        # thread'i (port 20004) henuz ilk gercek paketi almadan
+        # GetActualJointPosDegree() ESKI/varsayilan bir deger dondurebiliyor
+        # (bu fonksiyon hep err=0 doner, SDK bu farki kendisi ayirt etmiyor) -
+        # ayni risk enter_drag_teach()'te de var, orada da ayni sekilde
+        # (sabit bekleme ile) ele aliniyor. Burada bu deger hem TCP offset
+        # hesabinda hem de ILK hareketin _set_start_state_from_sdk() uzerinden
+        # planlamanin BASLANGIC durumu olarak kullanilacagi icin, bayat bir
+        # okuma robotun GERCEK pozisyonundan FARKLI bir "su an buradayim"
+        # varsayimiyla planlama yapilmasina - execute() sirasinda robotun
+        # GERCEK pozisyona aniden sicramasina (ve bunun tetikledigi "shaft
+        # collision fault"a) yol acabilir. Canli testte connect+ilk hareket
+        # sirasinda tam bu yasandi.
+        current_joints = wait_for_live_joint_reading(self.sdk, self.sdk_lock)
         with self.sdk_lock:
-            current_joints = self.sdk.robot.GetActualJointPosDegree(0)[1:7]
-            current_pose = self.sdk.robot.GetActualTCPPose(0)[1:7]
+            current_pose = self.sdk.GetActualTCPPose()[1]
             current_flange_pose = self.sdk.GetActualToolFlangePose(0)[1]
+        _tlog("Robot durumu okundu, ROS2/MoveIt baslatiliyor...")
 
         max_vel = max(0.01, min(1.0, speed_pct / 100.0))
         max_accel = max(0.01, min(1.0, accel_pct / 100.0))
@@ -405,7 +541,38 @@ class CobotArm:
             .moveit_cpp(file_path=yaml_path)
             .to_moveit_configs()
         )
-        self._moveit = MoveItPy(node_name=f"{node_name}_core", config_dict=moveit_config.to_dict())
+        # ------------------------------------------------------------------
+        # GUVENLIK PAYINI PLANLAYICIYA OGRETMEK (link padding)
+        # ------------------------------------------------------------------
+        # Onceden pay SADECE plan URETILDIKTEN SONRA kontrol ediliyordu:
+        # OMPL yolu buluyordu, biz "bu yol 12mm esiginin altina duyuyor"
+        # deyip REDDEDIYORDUK ve hareket tamamen iptal oluyordu. Planlayicinin
+        # payin varligindan HABERI YOKTU, dolayisiyla alternatif bir yol da
+        # aramiyordu (canli olcum: ayni hedef icin plan() 5 kez cagrildiginda
+        # 5'i de BIREBIR AYNI yolu verdi - OMPL burada deterministik, yani
+        # "tekrar dene" yaklasimi ise yaramiyor; planning_attempts=1/5/20 de
+        # ayni sonucu verdi).
+        #
+        # Dogru cozum MoveIt'in kendi mekanizmasi: link padding. MoveIt her
+        # linki verilen kadar "sismis" kabul ederek carpisma kontrolu yapar
+        # (planning_scene_monitor.cpp -> robot_description_planning.
+        # default_robot_padding). Boylece pay GEOMETRIYE gomulur ve OMPL
+        # zaten payi koruyan bir yol arar - carpiyorsa kendisi baska yola
+        # gecer.
+        #
+        # Iki govde de sistigi icin aralarindaki GERCEK bosluk 2*padding olur;
+        # bu yuzden padding = MIN_CLEARANCE_M / 2 (12mm hedef -> 6mm padding).
+        # Gripper AYRI bir "attached object" oldugu icin onun payi ayri
+        # parametreyle veriliyor (default_attached_padding), aksi halde
+        # gripper paysiz kalirdi.
+        _cfg = moveit_config.to_dict()
+        _rdp = _cfg.setdefault("robot_description_planning", {})
+        _rdp["default_robot_padding"] = LINK_PADDING_M
+        _rdp["default_attached_padding"] = LINK_PADDING_M
+        _tlog("MoveItPy baslatiliyor (planlama pipeline'lari + robot modeli yukleniyor, "
+              "bu genelde en uzun suren asama)...")
+        self._moveit = MoveItPy(node_name=f"{node_name}_core", config_dict=_cfg)
+        _tlog("MoveItPy hazir.")
         self._planning_component = self._moveit.get_planning_component(self.group_name)
         self._planning_component.set_start_state_to_current_state()
 
@@ -427,6 +594,7 @@ class CobotArm:
 
         self._add_floor_collision(Pose, CollisionObject, SolidPrimitive)
         self._add_gripper_collision(Pose, CollisionObject, AttachedCollisionObject, SolidPrimitive)
+        _tlog("CobotArm hazir.")
 
         self._rclpy = rclpy
         self._shutdown_called = False
@@ -447,6 +615,17 @@ class CobotArm:
             collision_object.operation = CollisionObject.ADD
             with psm.read_write() as scene:
                 scene.apply_collision_object(collision_object)
+                # Zemin kutusunun ust yuzeyi z=0'da, robotun TABANI da orada
+                # oturuyor - yani temas GERCEKTE normal (robot masaya cıvatalı).
+                # Link padding devreye girdikten sonra (bkz. LINK_PADDING_M)
+                # bu temas "carpisma" sayilir oldu ve MTC gorevleri
+                # "base_link colliding with floor" ile basarisiz oldu.
+                # Taban ile zemin arasindaki carpisma bu yuzden ACIKCA
+                # serbest birakiliyor - zemin kontrolu KOLUN asagi inmesi
+                # icin var, taban icin degil. SADECE bu tek cift serbest;
+                # gripper kutusu ve tasinan nesne dahil digerlerinin zemin
+                # kontrolu aynen devam ediyor.
+                scene.allowed_collision_matrix.set_entry("floor", "base_link", True)
                 scene.current_state.update()
         except Exception as e:
             print(f"UYARI: Zemin collision nesnesi eklenemedi ({type(e).__name__}: {e})")
@@ -515,17 +694,22 @@ class CobotArm:
                 req.joint_model_group_name = self.group_name
                 res = CollisionResult()
                 scene.check_collision(req, res, scene.current_state)
-                too_close = res.collision or res.distance < MIN_CLEARANCE_M
+                # PADDING DEVREDE (bkz. LINK_PADDING_M): govdeler zaten sismis
+                # sayildigi icin "degiyor" = "gercek bosluk esigin altinda".
+                # Ayrica mesafe esigi uygulanmiyor - pay iki kez sayilmasin.
+                too_close = res.collision
+                true_gap_m = res.distance + 2 * LINK_PADDING_M
             print(f"  Gripper collision kutusu eklendi: {GRIPPER_WIDTH_M*1000:.0f}x{GRIPPER_DEPTH_M*1000:.0f}x"
                   f"{length*1000:.0f}mm (flanstan itibaren, {TIP_LINK}'e sabit; flans payi "
                   f"X={fx*1000:.1f} Y={fy*1000:.1f} Z={fz*1000:.1f}mm, canli olculen gripper="
                   f"{abs(gz)*1000:.1f}mm, guvenlik tabani={GRIPPER_LENGTH_FLOOR_M*1000:.0f}mm, "
                   f"buyuk olan + {GRIPPER_LENGTH_MARGIN_M*1000:.0f}mm pay kullanildi)")
-            print(f"  Su anki pozisyonda en yakin iki govde arasi mesafe: {res.distance*1000:.1f}mm "
-                  f"(guvenlik esigi: {MIN_CLEARANCE_M*1000:.0f}mm)")
+            print(f"  Su anki pozisyonda en yakin iki govde arasi mesafe: {true_gap_m*1000:.1f}mm "
+                  f"(guvenlik esigi: {MIN_CLEARANCE_M*1000:.0f}mm, planlayiciya "
+                  f"{LINK_PADDING_M*1000:.0f}mm link padding olarak verildi)")
 
             if too_close:
-                print(f"\nUYARI: Robotun SU ANKI pozisyonunda en yakin mesafe ({res.distance*1000:.1f}mm) "
+                print(f"\nUYARI: Robotun SU ANKI pozisyonunda en yakin mesafe ({true_gap_m*1000:.1f}mm) "
                       f"guvenlik esiginin ({MIN_CLEARANCE_M*1000:.0f}mm) altinda "
                       f"{'(GERCEKTEN CAKISIYOR)' if res.collision else '(henuz degmiyor ama cok yakin)'}. "
                       "Iki ihtimal var:")
@@ -560,10 +744,83 @@ class CobotArm:
             print(f"UYARI: Gripper collision nesnesi eklenemedi ({type(e).__name__}: {e}) - "
                   f"self-collision kontrolu gripper'in hacmini KAPSAMAYACAK, cok dikkatli ol!")
 
+    # ------------------------------------------------------------------
+    # KAVRANAN NESNEYI MODELE ILISTIRME (MoveIt attach / detach)
+    # ------------------------------------------------------------------
+    # MoveIt'in pick-and-place semasinda kavrama aninda nesne robotun
+    # modeline ILISTIRILIR: o andan itibaren kolla birlikte hareket eden bir
+    # govde olarak carpisma kontrolune girer ve gripper ile arasindaki temas
+    # (bilerek dokunuyorlar) "izinli" sayilir. Birakinca AYRILIR.
+    #
+    # Bu olmadan MoveIt tasidigimiz nesneden habersizdir - orayi BOS sanar ve
+    # nesneyi kola/masaya surtecek bir yol planlayabilir; bizim guvenlik
+    # kontrollerimiz de ayni modele baktigi icin bunu yakalayamaz.
+    #
+    # Kutu, TCP'de (cenelerin arasinda) merkezlenir; gripper'in kendi kutusu
+    # ve wrist3 ile temasi touch_links ile izinli kilinir.
+    def attach_grasped_object(self, width_m, depth_m, height_m):
+        from geometry_msgs.msg import Pose
+        from moveit_msgs.msg import CollisionObject, AttachedCollisionObject
+        from shape_msgs.msg import SolidPrimitive
+        try:
+            ox, oy, oz = self.tcp_offset_m
+            psm = self._moveit.get_planning_scene_monitor()
+            attached = AttachedCollisionObject()
+            attached.link_name = TIP_LINK
+            attached.object.header.frame_id = TIP_LINK
+            attached.object.id = GRASPED_OBJECT_ID
+            pose = Pose()
+            pose.position.x, pose.position.y, pose.position.z = ox, oy, oz
+            box = SolidPrimitive()
+            box.type = SolidPrimitive.BOX
+            box.dimensions = [width_m, depth_m, height_m]
+            attached.object.primitives.append(box)
+            attached.object.primitive_poses.append(pose)
+            attached.object.operation = CollisionObject.ADD
+            # Gripper govdesi ve bilek ile temas normaldir - carpisma sayilmasin.
+            attached.touch_links = [TIP_LINK, "jodell_gripper"]
+            with psm.read_write() as scene:
+                scene.process_attached_collision_object(attached)
+                scene.current_state.update()
+            print(f"  Nesne modele iliştirildi: {width_m*1000:.0f}x{depth_m*1000:.0f}x"
+                  f"{height_m*1000:.0f}mm (planlama artik onu da hesaba katiyor).")
+            self._object_attached = True
+        except Exception as e:
+            print(f"  UYARI: nesne modele iliştirilemedi ({type(e).__name__}: {e}) - "
+                  f"planlama tasidigin nesneden HABERSIZ olacak, dikkatli ol.")
+
+    def detach_object(self):
+        from moveit_msgs.msg import CollisionObject, AttachedCollisionObject
+        if not getattr(self, "_object_attached", False):
+            return
+        try:
+            psm = self._moveit.get_planning_scene_monitor()
+            remove = AttachedCollisionObject()
+            remove.link_name = TIP_LINK
+            remove.object.id = GRASPED_OBJECT_ID
+            remove.object.operation = CollisionObject.REMOVE
+            with psm.read_write() as scene:
+                scene.process_attached_collision_object(remove)
+                scene.current_state.update()
+            print("  Nesne modelden ayrildi (birakildi).")
+        except Exception as e:
+            print(f"  UYARI: nesne modelden ayrilamadi ({type(e).__name__}: {e}).")
+        finally:
+            self._object_attached = False
+
     def get_current_state(self):
+        # DIKKAT: burada "tum eksenler 0.0 ise tekrar oku" gibi bir kontrol
+        # ONCEDEN vardi ama GERI ALINDI - bu fonksiyon jog/replay/print_state
+        # tarafindan COK SIK (her adimdan sonra) cagriliyor, ve robotun
+        # GERCEK dinlenme/referans pozu da tum eksenlerde tam 0.0 olabiliyor
+        # (canli testte oldu) - o durumda bu kontrol her cagrida yanlislikla
+        # tetiklenip saniyelerce bekletiyordu ("movecobot cok bekletiyor").
+        # Taze-baglanti placeholder riski sadece BAGLANTI KURULDUGU ANDA
+        # (bkz. wait_for_live_joint_reading cagrilari: __init__,
+        # enter_drag_teach, exit_drag_teach) ele aliniyor, burada degil.
         with self.sdk_lock:
-            joints = self.sdk.robot.GetActualJointPosDegree(0)[1:7]
-            pose = self.sdk.robot.GetActualTCPPose(0)[1:7]
+            joints = self.sdk.GetActualJointPosDegree()[1]
+            pose = self.sdk.GetActualTCPPose()[1]
         return {
             "joints_deg": [round(v, 3) for v in joints],
             "tcp_pose": {
@@ -572,7 +829,7 @@ class CobotArm:
             },
         }
 
-    def _plan_and_execute(self, confirm, speed_pct=None, accel_pct=None):
+    def _plan_and_execute(self, confirm, speed_pct=None, accel_pct=None, prefer_lin=False):
         """speed_pct/accel_pct verilirse (adim-bazli kayitli hiz/ivme), o TEK
         plan() cagrisi icin oturumun varsayilanini (moveit_cpp.yaml'a init'te
         yazilan) PlanRequestParameters ile gecici olarak ezer - CobotArm'in
@@ -588,7 +845,113 @@ class CobotArm:
             eff_accel = accel_pct if accel_pct is not None else self.accel_pct
             plan_params.max_velocity_scaling_factor = max(0.01, min(1.0, eff_speed / 100.0))
             plan_params.max_acceleration_scaling_factor = max(0.01, min(1.0, eff_accel / 100.0))
-        plan_result = self._planning_component.plan(parameters=plan_params)
+        # ------------------------------------------------------------------
+        # NEDEN "KALIRSA YENIDEN PLANLA" DENMIYOR
+        # ------------------------------------------------------------------
+        # Bir ara buraya "plan guvenlik kontrolunden kalirsa 5 kez yeniden
+        # planla" dongusu konmustu. OLCULDU VE KALDIRILDI: bu kurulumda OMPL
+        # DETERMINISTIK davraniyor - ayni baslangic/hedef icin plan() 5 kez
+        # cagrildiginda 5'i de BIREBIR AYNI yolu (ayni nokta sayisi, ayni ara
+        # eklem acilari) dondurdu. PlanRequestParameters.planning_attempts
+        # 1/5/20 denendi, sonuc yine ayni. Farkli planner_id vermek de ise
+        # yaramiyor cunku bu paketin ompl_planning.yaml'inda planner_configs
+        # bolumu yok; verilen her isim icin MoveIt "Cannot find planning
+        # configuration ... will use defaults" deyip ayni varsayilana donuyor.
+        # Yani yeniden planlamak sadece ayni sonucu tekrar uretip zaman
+        # kaybettiriyordu.
+        #
+        # Bunun yerine pay PLANLAYICIYA ogretildi (link padding - bkz.
+        # __init__ icindeki LINK_PADDING_M blogu): govdeler sismis kabul
+        # edildigi icin OMPL zaten payi koruyan bir yol ariyor, "carpiyorsa
+        # baska yola gec" isi planlayicinin kendi icinde oluyor. Asagidaki
+        # kontroller artik son guvenlik agi olarak duruyor.
+        # ------------------------------------------------------------------
+        # ONCE EN KOLAY YOL: Pilz PTP (dogrudan eklem-uzayi hareketi)
+        # ------------------------------------------------------------------
+        # RRTConnect ORNEKLEME TABANLI bir planlayici: hedefe giden ilk
+        # buldugu yolu doner, o yolun "kisa" veya "dogal" olmasi gibi bir
+        # garantisi YOKTUR. Canli olcum (bugun): baslangic J3=90 derece,
+        # hedef J3=80 derece iken uretilen planin orta noktasinda J3 =
+        # -5.7 derece cikti - yani 10 derecelik bir is icin ~95 derecelik
+        # gereksiz bir savrulma. Bu tur dolanmalar hem gereksiz uzun hem de
+        # govdeye yaklastigi icin guvenlik kontrollerine takilmanin baslica
+        # sebebi.
+        #
+        # Pilz'in PTP'si ise TANIMI GEREGI dogrudan yol: her eklem baslangic
+        # acisindan hedef acisina monoton gider, dolanma yok, deterministik.
+        # Sanayi robotlarindaki standart "point-to-point" hareketi budur.
+        #
+        # Bu yuzden sira: ONCE PTP dene, guvenlik kontrollerinden gecerse onu
+        # kullan; gecmezse (ör. arada gercekten bir engel var, duz gitmek
+        # carpismaya yol aciyor) OMPL/RRTConnect'e dus - o zaman dolanma
+        # MESRU cunku duz yol kapali.
+        def _try_plan(params):
+            try:
+                return self._planning_component.plan(parameters=params)
+            except Exception as e:
+                print(f"  (planlama denemesi hata verdi: {type(e).__name__}: {e})")
+                return None
+
+        def _check(candidate):
+            """Guvenlik kontrolleri. Temizse None, degilse hata sozlugu doner."""
+            v = check_trajectory_for_floor(candidate.trajectory, ALL_LINKS, FLOOR_Z_M)
+            if v:
+                w = min(v, key=lambda x: x[2])
+                return {"success": False, "reason": "floor_collision",
+                        "details": f"adim {w[0]}, link '{w[1]}', Z={w[2]*1000:.1f}mm"}
+            psm_local = self._moveit.get_planning_scene_monitor()
+            with psm_local.read_only() as sc:
+                steps = check_trajectory_for_self_collision(sc, candidate.trajectory, self.group_name)
+            if steps:
+                ws, wd = min(steps, key=lambda x: x[1])
+                return {"success": False, "reason": "self_collision",
+                        "details": f"plandaki {len(steps)} noktada minimum guvenlik mesafesinin "
+                                   f"({MIN_CLEARANCE_M*1000:.0f}mm) altina dusuluyor - en kotusu adim "
+                                   f"{ws}/{len(candidate.trajectory)}, mesafe={wd*1000:.1f}mm"}
+            return None
+
+        from moveit.planning import PlanRequestParameters
+        _eff_speed = speed_pct if speed_pct is not None else self.speed_pct
+        _eff_accel = accel_pct if accel_pct is not None else self.accel_pct
+
+        def _pilz(planner_id):
+            prm = PlanRequestParameters(self._moveit)
+            prm.planning_pipeline = "pilz_industrial_motion_planner"
+            prm.planner_id = planner_id
+            prm.max_velocity_scaling_factor = max(0.01, min(1.0, _eff_speed / 100.0))
+            prm.max_acceleration_scaling_factor = max(0.01, min(1.0, _eff_accel / 100.0))
+            return prm
+
+        # prefer_lin=True: TCP'ye gore GORECELI hareketler (yaklasma/geri
+        # cekilme) icin. Pick-and-place'in standart semasinda kavramaya
+        # gidis ve nesneyle geri cekilis DUZ CIZGI olmalidir
+        # (MoveIt: pre_grasp_approach / post_grasp_retreat) - gripper
+        # nesneye yanlamasina dalmasin, kavradiktan sonra da nesneyi
+        # yanlara savurarak degil dosdogru kaldirsin diye. Pilz LIN tam
+        # olarak bunu garanti eder; PTP eklem-uzayinda duzdur ama TCP
+        # kavisli gidebilir.
+        _sira = []
+        if prefer_lin:
+            _sira.append(("LIN", "Duz cizgi (LIN)"))
+        _sira.append(("PTP", "Dogrudan yol (PTP)"))
+
+        plan_result = None
+        for _pid, _ad in _sira:
+            _cand = _try_plan(_pilz(_pid))
+            if not _cand:
+                print(f"  {_ad} planlanamadi - siradaki yonteme geciliyor.")
+                continue
+            _problem = _check(_cand)
+            if _problem is None:
+                plan_result = _cand
+                print(f"  {_ad} kullanildi.")
+                break
+            print(f"  {_ad} guvenli degil ({_problem['reason']}) - siradaki yonteme geciliyor.")
+        if plan_result is None:
+            print("  OMPL'e geciliyor (engelden dolasarak).")
+
+        if plan_result is None:
+            plan_result = self._planning_component.plan(parameters=plan_params)
         if not plan_result:
             return {"success": False, "reason": "planning_failed"}
 
@@ -603,18 +966,18 @@ class CobotArm:
         # docstring'i) - buyuk/coklu-eklem hareketlerde bu, gercek bir
         # neredeyse-carpismayi kacirabiliyor (canli testte oldu). Bu yuzden
         # planlanan yolun TAMAMINI, cok daha yogun orneklenmis haliyle
-        # (time-parameterization sonrasi) burada TEKRAR, ayrica kontrol
-        # ediyoruz - ikinci, daha guvenilir bir guvenlik agi.
+        # (time-parameterization sonrasi) burada TEKRAR kontrol ediyoruz.
         psm = self._moveit.get_planning_scene_monitor()
         with psm.read_only() as scene:
-            self_collision_steps = check_trajectory_for_self_collision(scene, plan_result.trajectory, self.group_name)
+            self_collision_steps = check_trajectory_for_self_collision(
+                scene, plan_result.trajectory, self.group_name)
         if self_collision_steps:
             worst_step, worst_dist = min(self_collision_steps, key=lambda v: v[1])
             return {"success": False, "reason": "self_collision",
                     "details": f"plandaki {len(self_collision_steps)} noktada minimum guvenlik "
-                                f"mesafesinin ({MIN_CLEARANCE_M*1000:.0f}mm) altina dusuluyor - en "
-                                f"kotusu adim {worst_step}/{len(plan_result.trajectory)}, mesafe="
-                                f"{worst_dist*1000:.1f}mm"}
+                               f"mesafesinin ({MIN_CLEARANCE_M*1000:.0f}mm) altina dusuluyor - en "
+                               f"kotusu adim {worst_step}/{len(plan_result.trajectory)}, mesafe="
+                               f"{worst_dist*1000:.1f}mm"}
 
         if confirm:
             answer = input("Bu hedefe uygulansin mi? (e/h): ").strip().lower()
@@ -630,23 +993,95 @@ class CobotArm:
         last_state = plan_result.trajectory[len(plan_result.trajectory) - 1]
         target_joints_deg = [math.degrees(v) for v in last_state.get_joint_group_positions(self.group_name)]
 
-        self._moveit.execute(self.group_name, plan_result.trajectory)
+        # bkz. __init__ icindeki self.executing yorumu - grippergui'nin arka
+        # plan durum sorgulama thread'i bu pencere sirasinda kendi SDK
+        # cagrisini atlasin diye.
+        self.executing.set()
+        try:
+            self._moveit.execute(self.group_name, plan_result.trajectory)
+        finally:
+            self.executing.clear()
 
-        final_state = self.get_current_state()
-        max_err_deg = max(abs(a - b) for a, b in zip(final_state["joints_deg"], target_joints_deg))
+        # Hareket bittikten SONRAKI dogrulama okumasi.
+        #
+        # DIKKAT - BAYAT OKUMA TUZAGI: get_current_state() artik SDK'nin
+        # ONBELLEKLI gercek-zamanli durum paketinden okuyor (ham XML-RPC
+        # sorgusu yerine - bkz. wait_for_live_joint_reading ustundeki not).
+        # Bu paket arka plan thread'i tarafindan guncelleniyor ve hareket
+        # biter bitmez HENUZ guncellenmemis olabiliyor: canli testte
+        # execute() dondukten hemen sonra okunan deger robotun BIR ONCEKI
+        # pozisyonuydu, dolayisiyla "hedeften 137.5 derece uzakta" diye
+        # SAHTE bir hata uretildi ve replay'in kalan adimlari iptal edildi -
+        # oysa robot hedefe tam ulasmisti (/joint_states ile dogrulandi).
+        #
+        # Cozum: tek okumaya guvenme, deger oturana kadar kisa sure yokla.
+        # GERCEK bir basarisizlikta deger zaten oturmaz ve hata dogru
+        # sekilde raporlanir - guvenlik kontrolu zayiflamiyor, sadece
+        # bayat veriye kanmiyor.
+        VERIFY_TIMEOUT_S = 2.0
+        VERIFY_POLL_S = 0.1
+        _verify_deadline = time.time() + VERIFY_TIMEOUT_S
+        while True:
+            final_state = self.get_current_state()
+            max_err_deg = max(abs(a - b) for a, b in zip(final_state["joints_deg"], target_joints_deg))
+            if max_err_deg <= 2.0 or time.time() >= _verify_deadline:
+                break
+            time.sleep(VERIFY_POLL_S)
         if max_err_deg > 2.0:
+            # ONEMLI: robot execute() SIRASINDA fault verip "Stopped" durumuna
+            # duserse, bu SDK cagrisiyla dogrudan tespit edilebiliyor
+            # (robot_state_pkg.main_code/sub_code - ayni realtime thread'in
+            # doldurdugu alan, GetActualJointPosDegree ile ayni kaynaktan).
+            # Bunu kontrol ETMEDEN once bu fonksiyon "hedeften X derece
+            # uzakta kaldi" gibi belirsiz bir mesaj basiyordu - canli testte
+            # bu mesajdaki X GERCEK bir sapma degil, WebApp'te GORUNEN fault
+            # yuzunden final_state okumasi placeholder/sifir donmus olmasindan
+            # kaynaklaniyordu (ör. J6 hedefi 135.9 iken final_state[J6]=0.0
+            # okunmus, fark tam 135.9 cikmisti - tesadufen hedef degerin
+            # kendisiyle ayni). Simdi robot GERCEKTEN faulted ise bunu ACIKCA
+            # soyluyoruz - kullaniciyi WebApp'teki hatayi tahmin etmeye
+            # birakmiyoruz.
+            # TANI: canli testte robot hedefe GERCEKTEN ulastigi halde bu
+            # kontrol "137.5 derece uzakta" dedi (ROS2 /joint_states ile
+            # dogrulandi: tum eklemler hedefle birebir ayniydi). Yani
+            # karsilastirmanin kendisinde bir uyusmazlik var. Suphe: SDK
+            # okumasi j1..j6 sirasindayken, planlanan yolun son noktasi
+            # PLANLAMA GRUBUNUN sirasinda geliyor olabilir - bu robotta
+            # /joint_states'in isim sirasi j1,j2,j4,j5,j3,j6 (j1..j6 DEGIL).
+            # Bir dahaki sefere sebebi tahmin etmemek icin iki vektoru de
+            # ve grubun eklem sirasini basiyoruz.
+            try:
+                _names = list(self.robot_model.get_joint_model_group(
+                    self.group_name).joint_model_names)
+            except Exception:
+                _names = ["(alinamadi)"]
+            print(f"  TANI grup eklem sirasi : {_names}")
+            print(f"  TANI hedef (plandan)   : {[round(v,2) for v in target_joints_deg]}")
+            print(f"  TANI okunan (SDK)      : {[round(v,2) for v in final_state['joints_deg']]}")
+
+            fault_note = ""
+            try:
+                with self.sdk_lock:
+                    mc = self.sdk.robot_state_pkg.main_code
+                    sc = self.sdk.robot_state_pkg.sub_code
+                if mc != 0 or sc != 0:
+                    fault_note = (f" ROBOT FAULT TESPIT EDILDI (main_code={mc}, sub_code={sc}) - "
+                                  f"WebApp'teki hata mesajini kontrol et, 'Clear' ile temizleyip "
+                                  f"tekrar dene.")
+            except Exception:
+                pass
             return {
                 "success": False,
                 "reason": "execution_not_confirmed",
                 "details": (f"hedeften {max_err_deg:.1f} derece uzakta kaldi - robot hareket etmemis "
                             f"olabilir (ROS2/ros2_control tarafinda sorun var mi kontrol et: "
                             f"'ros2 node list' icinde controller_manager/joint_state_broadcaster "
-                            f"gorunuyor mu?)"),
+                            f"gorunuyor mu?)." + fault_note),
                 "final_state": final_state,
             }
         return {"success": True, "final_state": final_state}
 
-    def _set_start_state_from_sdk(self):
+    def _set_start_state_from_sdk(self, known_joints_deg=None):
         """set_start_state_to_current_state() YERINE kullanilir. O metod,
         MoveIt'in ROS2/joint_states uzerinden besledigi current_state_
         monitor'una guvenir. Bu projede (execution_not_confirmed, joint-
@@ -660,10 +1095,23 @@ class CobotArm:
         GERCEK pozisyonu icin hic dogrulanmamis olabilir - canli testte
         beklenmedik bir carpisma-yakini olay ve garip bir bitis pozu
         (J4=+69 derece, hicbir hesapta olmayan bir deger) ile karsilastik,
-        bu tam olarak boyle bir uyumsuzlukla aciklanabilir."""
+        bu tam olarak boyle bir uyumsuzlukla aciklanabilir.
+
+        known_joints_deg verilirse, SDK'ya YENIDEN SORMADAN dogrudan bu
+        degeri baslangic durumu olarak kullanir - BIR ONCEKI hareketin
+        _plan_and_execute() icindeki post-execution dogrulamasindan (yine
+        DOGRUDAN SDK okumasi, ROS2 degil) gelen, HENUZ TAZE bir deger
+        oldugunda guvenli: ayni bilgiyi ekstra bir ag turu ile tekrar
+        sormaktan kacinir (bkz. replay_sequence - art arda adimlar arasinda
+        "her adimda bekleme" sikayetine yol acan gereksiz turlardan biri
+        buydu). Sadece bir replay dizisinin ILK adiminda (ya da known_
+        joints_deg verilmedigi her durumda) taze SDK okumasi yapilir."""
         from moveit.core.robot_state import RobotState
-        with self.sdk_lock:
-            current_joints = self.sdk.robot.GetActualJointPosDegree(0)[1:7]
+        if known_joints_deg is None:
+            with self.sdk_lock:
+                current_joints = self.sdk.GetActualJointPosDegree()[1]
+        else:
+            current_joints = known_joints_deg
         start_state = RobotState(self.robot_model)
         start_state.set_joint_group_positions(self.group_name, [math.radians(v) for v in current_joints])
         start_state.update()
@@ -701,17 +1149,19 @@ class CobotArm:
             "rx": rx, "ry": ry, "rz": rz,
         }
 
-    def move_to_joints(self, joint_degrees, confirm=False, speed_pct=None, accel_pct=None):
+    def move_to_joints(self, joint_degrees, confirm=False, speed_pct=None, accel_pct=None,
+                       known_start_joints_deg=None, prefer_lin=False):
         from moveit.core.robot_state import RobotState
-        self._set_start_state_from_sdk()
+        self._set_start_state_from_sdk(known_joints_deg=known_start_joints_deg)
         target_state = RobotState(self.robot_model)
         target_state.set_joint_group_positions(self.group_name, [math.radians(v) for v in joint_degrees])
         self._planning_component.set_goal_state(robot_state=target_state)
-        return self._plan_and_execute(confirm, speed_pct=speed_pct, accel_pct=accel_pct)
+        return self._plan_and_execute(confirm, speed_pct=speed_pct, accel_pct=accel_pct,
+                                      prefer_lin=prefer_lin)
 
     def move_relative_joints(self, joint_deltas_deg, confirm=False):
         with self.sdk_lock:
-            current = self.sdk.robot.GetActualJointPosDegree(0)[1:7]
+            current = self.sdk.GetActualJointPosDegree()[1]
         target = [current[i] + joint_deltas_deg[i] for i in range(6)]
         return self.move_to_joints(target, confirm=confirm)
 
@@ -758,25 +1208,28 @@ class CobotArm:
         pose_goal.pose.orientation.w = quat[3]
         return pose_goal
 
-    def move_to_pose_base(self, x, y, z, rx, ry, rz, confirm=False):
+    def move_to_pose_base(self, x, y, z, rx, ry, rz, confirm=False, prefer_lin=False):
         self._set_start_state_from_sdk()
         pose_goal = self._goal_pose_from_tcp(x, y, z, rx, ry, rz)
         self._planning_component.set_goal_state(pose_stamped_msg=pose_goal, pose_link=TIP_LINK)
-        return self._plan_and_execute(confirm)
+        return self._plan_and_execute(confirm, prefer_lin=prefer_lin)
 
     def move_to_pose_tool_xyz(self, dx, dy, dz, rx, ry, rz, confirm=False):
         """frame_choice='Tool': X/Y/Z mevcut Base-frame pozisyonuna eklenir (goreceli),
         RX/RY/RZ HER ZAMAN mutlak hedef olarak alinir - movepy ile ayni davranis."""
         with self.sdk_lock:
-            cur = self.sdk.robot.GetActualTCPPose(0)
-        cx, cy, cz = cur[1], cur[2], cur[3]
-        return self.move_to_pose_base(cx + dx, cy + dy, cz + dz, rx, ry, rz, confirm=confirm)
+            cur = self.sdk.GetActualTCPPose()[1]
+        cx, cy, cz = cur[0], cur[1], cur[2]
+        # GORECELI hareket = yaklasma/geri cekilme niteligindedir, duz cizgi
+        # olmali (bkz. _plan_and_execute icindeki prefer_lin aciklamasi).
+        return self.move_to_pose_base(cx + dx, cy + dy, cz + dz, rx, ry, rz,
+                                      confirm=confirm, prefer_lin=True)
 
     def move_tcp_local(self, dx, dy, dz, confirm=False):
         """TCP'nin kendi eksenlerine gore goreceli hareket; yonelim degismez."""
         with self.sdk_lock:
-            cur = self.sdk.robot.GetActualTCPPose(0)
-        cx, cy, cz, crx, cry, crz = cur[1:7]
+            cur = self.sdk.GetActualTCPPose()[1]
+        cx, cy, cz, crx, cry, crz = cur[0:6]
         cqx, cqy, cqz, cqw = euler_deg_to_quat(crx, cry, crz)
         cur_x_axis = [1 - 2 * (cqy * cqy + cqz * cqz), 2 * (cqx * cqy + cqz * cqw), 2 * (cqx * cqz - cqy * cqw)]
         cur_y_axis = [2 * (cqx * cqy - cqz * cqw), 1 - 2 * (cqx * cqx + cqz * cqz), 2 * (cqy * cqz + cqx * cqw)]
@@ -784,7 +1237,9 @@ class CobotArm:
         tx = cx + dx * cur_x_axis[0] + dy * cur_y_axis[0] + dz * cur_z_axis[0]
         ty = cy + dx * cur_x_axis[1] + dy * cur_y_axis[1] + dz * cur_z_axis[1]
         tz = cz + dx * cur_x_axis[2] + dy * cur_y_axis[2] + dz * cur_z_axis[2]
-        return self.move_to_pose_base(tx, ty, tz, crx, cry, crz, confirm=confirm)
+        # TCP kendi ekseninde goreceli hareket - tipik yaklasma/geri cekilme,
+        # duz cizgi olmali (bkz. prefer_lin aciklamasi).
+        return self.move_to_pose_base(tx, ty, tz, crx, cry, crz, confirm=confirm, prefer_lin=True)
 
     def shutdown(self):
         if self._shutdown_called:
@@ -907,7 +1362,7 @@ def jog_arm(arm):
                 print("\nHer eklem icin degisim miktarini gir (derece, 0 = degistirme):")
                 deltas = [ask_float(f"  {j.upper()} degisim", default=0.0, allow_back=True) for j in JOINT_NAMES]
                 with arm.sdk_lock:
-                    current = arm.sdk.robot.GetActualJointPosDegree(0)[1:7]
+                    current = arm.sdk.GetActualJointPosDegree()[1]
                 targets = [current[i] + deltas[i] for i in range(6)]
 
             # Eklem acilari 6 eksenli kolda TCP pozunu (X,Y,Z,RX,RY,RZ) FK
@@ -956,7 +1411,10 @@ def jog_arm(arm):
         print(f"HATA: {result['reason']}{details}")
 
 
-def jog_gripper(gripper):
+def jog_gripper(gripper, arm=None):
+    """arm verilirse, ceneler acildiginda (pozisyon <=10) kavranan nesne
+    modelden AYRILIR - yoksa elle acsan bile MoveIt hala nesneyi tasidigini
+    sanip planlamayi gereksiz kisitlar (bkz. attach_grasped_object)."""
     print("Pozisyon (0=tam acik, 100=tam kapali) veya 'geri' ile don.")
     while True:
         raw_pos = input("Pozisyon veya geri: ").strip()
@@ -978,6 +1436,8 @@ def jog_gripper(gripper):
             continue
         try:
             gripper.move(position=position, speed=speed, force=force)
+            if arm is not None and position <= 10:
+                arm.detach_object()
             print(f"Tamamlandi. Durum: {gripper.status()}")
         except GripperError as e:
             print(f"HATA: {e}")
@@ -1146,20 +1606,16 @@ def enter_drag_teach(arm, gripper):
             print("(fairino_launch'in calisir durumda oldugundan emin ol.) Kendi baglantimiz yeniden aciliyor...")
             arm.sdk = Robot.RPC(arm.robot_ip)
             gripper.robot = arm.sdk
-            time.sleep(1.0)
+            wait_for_live_joint_reading(arm.sdk, arm.sdk_lock)
             return False
 
         print("Robotla manuel mod icin gecici bir baglanti kuruluyor...")
         try:
             arm.sdk = Robot.RPC(arm.robot_ip)
             gripper.robot = arm.sdk
-            # Yeni baglanti kurulduktan hemen sonra okumak, arka plandaki
-            # realtime-durum thread'i (port 20004) henuz ilk gercek paketi
-            # almadan GetActualJointPosDegree'nin ESKI/varsayilan (sifir)
-            # deger dondurmesine yol acabiliyor (bu fonksiyon hep err=0 doner,
-            # SDK bu farki kendisi ayirt etmiyor) - kisa bir ek bekleme ile
-            # bu yaris durumunu azaltiyoruz.
-            time.sleep(1.0)
+            # bkz. wait_for_live_joint_reading - sabit bekleme yerine
+            # gercek veri gelene kadar tekrar tekrar okuyup dogruluyoruz.
+            wait_for_live_joint_reading(arm.sdk, arm.sdk_lock)
         except Exception as e:
             print(f"HATA: robota baglanilamadi ({e}). ROS2 kontrolu geri aciliyor...")
             _ros2_control_set_state("active", arm.robot_desc_name, arm.package_name)
@@ -1241,7 +1697,7 @@ def exit_drag_teach(arm, gripper):
         try:
             arm.sdk = Robot.RPC(arm.robot_ip)
             gripper.robot = arm.sdk
-            time.sleep(1.0)  # bkz. enter_drag_teach - realtime durumun durulmasi icin
+            wait_for_live_joint_reading(arm.sdk, arm.sdk_lock)  # bkz. enter_drag_teach
         except Exception as e:
             print(f"HATA: robota yeniden baglanilamadi ({e}). movecobot'u yeniden baslatman gerekebilir.")
 
@@ -1302,18 +1758,23 @@ def drag_teach_add_steps(arm, gripper, steps, name, defaults):
     if not enter_drag_teach(arm, gripper):
         return
     try:
-        print("  [a] Su anki (elle getirilen) pozu adim olarak ekle (gripper sabit pozisyona gider)")
-        print("  [k] Su anki poz + gripper'i KAVRAT, bunu adim olarak ekle (sabit pozisyon degil)")
-        print("  [d] Su anki durumu goster")
-        print("  [l] Eklenen adimlari listele")
-        print("  [w] Bekleme adimi ekle (saniye cinsinden)")
-        print("  [x] Bir adimi sil")
-        print("  [c] Robot fault verdiyse (ör. 'hiz limiti asildi'): WebApp'ten Clear'a bas,")
-        print("      sonra buraya donup bunu sec - launch'i durdurmana/movecobot'u")
-        print("      yeniden baslatmana GEREK YOK, kayittaki adimlar korunur")
-        print("  [b] Manuel moddan cik (ROS2 kontrolunu geri devret)\n")
+        manuel_menu = """
+=== Manuel (drag-teach) menusu ===
+  [a] Su anki (elle getirilen) pozu adim olarak ekle (gripper sabit pozisyona gider)
+  [k] Su anki poz + gripper'i KAVRAT, bunu adim olarak ekle (sabit pozisyon degil)
+  [d] Su anki durumu goster
+  [l] Eklenen adimlari listele
+  [w] Bekleme adimi ekle (saniye cinsinden)
+  [x] Bir adimi sil
+  [p] Bir adimin hiz/ivme/gripper parametrelerini duzenle (silmeden)
+  [c] Robot fault verdiyse (ör. 'hiz limiti asildi'): WebApp'ten Clear'a bas,
+      sonra buraya donup bunu sec - launch'i durdurmana/movecobot'u
+      yeniden baslatmana GEREK YOK, kayittaki adimlar korunur
+  [b] Manuel moddan cik (ROS2 kontrolunu geri devret)
+"""
+        print(manuel_menu)
         while True:
-            choice = input(f"[manuel mod, {len(steps)} adim] Secim (a/k/d/l/w/x/c/b): ").strip().lower()
+            choice = input(f"[manuel mod, {len(steps)} adim] Secim (a/k/d/l/w/x/p/c/b): ").strip().lower()
             if choice == "c":
                 drag_teach_clear_fault(arm)
             elif choice == "a":
@@ -1328,10 +1789,19 @@ def drag_teach_add_steps(arm, gripper, steps, name, defaults):
                 add_wait_step(steps, name, defaults)
             elif choice == "x":
                 delete_step(steps, name)
+            elif choice == "p":
+                edit_step_params(steps, name)
             elif choice in BACK_WORDS:
                 return
             else:
                 print("  Gecersiz secim.")
+                continue
+            # bkz. _run_step_editor - her komuttan sonra BULUNULAN menuye
+            # don, ust menuye degil: robotu/gripper'i etkileyen komutlarda
+            # once guncel konumu goster, sonra bu menuyu tekrar bas.
+            if choice in ("a", "k", "c"):
+                print_state(arm, gripper)
+            print(manuel_menu)
     finally:
         exit_drag_teach(arm, gripper)
 
@@ -1446,6 +1916,8 @@ def format_step_line(i, step):
     joints_str = ",".join(f"{v:.0f}" for v in step.get("joints_deg", [0] * 6))
     if step.get("gripper_action", "position") == "grip":
         g_str = f"KAVRA (hiz=%{step.get('gripper_speed')} kuvvet=%{step.get('gripper_force')})"
+    elif step.get("gripper_action") == "none":
+        g_str = "DOKUNULMAZ (ne tutuyorsa oyle kalir)"
     else:
         g_str = f"poz={step.get('gripper_position')} (hiz=%{step.get('gripper_speed')} kuvvet=%{step.get('gripper_force')})"
     speed_pct, accel_pct = step.get("speed_pct"), step.get("accel_pct")
@@ -1489,6 +1961,60 @@ def delete_step(steps, name):
     print(f"Adim #{idx} silindi. Kalan adim sayisi: {len(steps)}.")
 
 
+def edit_step_params(steps, name):
+    """Var olan bir adimin hiz/ivme (hareket adimlarinda) ya da bekleme
+    suresini (bekleme adimlarinda), adimi SILIP YENIDEN EKLEMEDEN
+    degistirir - robotu/gripper'i hic hareket ettirmez, sadece steps
+    listesindeki sozlugu yerinde gunceller."""
+    if not steps:
+        print("\nDuzenlenecek adim yok.")
+        return
+    list_steps(steps)
+    raw = input("Duzenlenecek adim numarasi ('son' = en sonuncusu, iptal icin 'geri' veya bos birak): ").strip().lower()
+    if not raw or raw in BACK_WORDS:
+        print("Iptal edildi, hicbir adim degistirilmedi.")
+        return
+    if raw in ("son", "last"):
+        idx = len(steps)
+    elif raw.isdigit():
+        idx = int(raw)
+    else:
+        print("  Gecersiz numara.")
+        return
+    if not (1 <= idx <= len(steps)):
+        print(f"  1-{len(steps)} araliginda olmali.")
+        return
+
+    step = steps[idx - 1]
+    if step.get("step_type", "move") == "wait":
+        try:
+            duration = ask_float("Yeni bekleme suresi (saniye)", default=step.get("duration_s", 1.0), allow_back=True)
+        except GoBack:
+            print("Geri donuldu, adim degistirilmedi.")
+            return
+        if duration < 0:
+            print("  Negatif olamaz, adim degistirilmedi.")
+            return
+        step["duration_s"] = duration
+        print(f"Adim #{idx} guncellendi (bekle {duration:.1f} sn).")
+    else:
+        try:
+            g_speed = ask_int("Gripper hizi %", step.get("gripper_speed", 50), allow_back=True)
+            g_force = ask_int("Gripper kuvveti %", step.get("gripper_force", 50), allow_back=True)
+            speed_pct = ask_float("Kol hizi %", default=step.get("speed_pct", 30.0), allow_back=True)
+            accel_pct = ask_float("Kol ivmesi %", default=step.get("accel_pct", 30.0), allow_back=True)
+        except GoBack:
+            print("Geri donuldu, adim degistirilmedi.")
+            return
+        step["gripper_speed"] = g_speed
+        step["gripper_force"] = g_force
+        step["speed_pct"] = speed_pct
+        step["accel_pct"] = accel_pct
+        print(f"Adim #{idx} guncellendi (hiz=%{speed_pct:.0f}, ivme=%{accel_pct:.0f}, "
+              f"gripper hiz=%{g_speed}, gripper kuvvet=%{g_force}).")
+    save_draft(name, steps)
+
+
 def add_move_step(arm, gripper, steps, name, defaults):
     """Su anki poz + gripper'i SABIT bir pozisyona ayarlayan adim ekler
     ([a] secenegi). defaults sozlugu bu ve diger adim-ekleme yardimcilari
@@ -1499,6 +2025,27 @@ def add_move_step(arm, gripper, steps, name, defaults):
         g_pos = gripper.status()["position_pct"]
     except GripperError:
         g_pos = 0
+
+    # GRIPPER'A DOKUNULSUN MU?
+    # Bu adim gripper'in O ANKI pozisyonunu MUTLAK hedef olarak kaydeder.
+    # Nesne TASIYAN bir adimda bu YANLIS olur: kavramadan sonra okunan
+    # pozisyon (ör. 91) o nesnenin KALINLIGIDIR. Ayni hareket baska kalinlikta
+    # bir nesneyle oynatilinca 91 ya nesneyi ezer ya da bosta birakip
+    # dusurur. Dogrusu "kavradigina tutunmaya devam et" demektir - yani
+    # gripper'a hic dokunmamak.
+    # Bir onceki adim KAVRA ise varsayilan otomatik olarak "dokunma" olur.
+    _prev_is_grip = bool(steps) and steps[-1].get("gripper_action") == "grip"
+    _default_touch = "h" if _prev_is_grip else "e"
+    if _prev_is_grip:
+        print("  Not: bir onceki adim KAVRA - bu adimda gripper'a dokunmamak (tutmaya")
+        print("       devam etmek) genelde dogrusudur, yoksa nesnenin kalinligina bagimli")
+        print(f"       sabit bir pozisyon ({g_pos}) kaydedilir.")
+    _ans = input(f"Bu adimda gripper'a dokunulsun mu? (e=poz={g_pos} kaydet / "
+                 f"h=dokunma) [{_default_touch}]: ").strip().lower()
+    if _ans == "":
+        _ans = _default_touch
+    _gripper_action = "position" if _ans == "e" else "none"
+
     try:
         g_speed = ask_int("Bu adimda gripper hizi %", defaults["g_speed"], allow_back=True)
         g_force = ask_int("Bu adimda gripper kuvveti %", defaults["g_force"], allow_back=True)
@@ -1513,15 +2060,16 @@ def add_move_step(arm, gripper, steps, name, defaults):
         "step_type": "move",
         "joints_deg": state["joints_deg"],
         "tcp_pose": state["tcp_pose"],
-        "gripper_action": "position",
+        "gripper_action": _gripper_action,
         "gripper_position": g_pos,
         "gripper_speed": g_speed,
         "gripper_force": g_force,
         "speed_pct": speed_pct,
         "accel_pct": accel_pct,
     })
+    _g_desc = f"poz={g_pos}" if _gripper_action == "position" else "dokunulmaz"
     print(f"Adim #{len(steps)} eklendi. (eklemler={[round(v, 1) for v in state['joints_deg']]}, "
-          f"gripper={g_pos}, hiz=%{speed_pct:.0f}, ivme=%{accel_pct:.0f})")
+          f"gripper={_g_desc}, hiz=%{speed_pct:.0f}, ivme=%{accel_pct:.0f})")
     save_draft(name, steps)
 
 
@@ -1552,12 +2100,39 @@ def add_grip_step(arm, gripper, steps, name, defaults):
         if input("Ekle (e/h): ").strip().lower() != "e":
             print("Adim eklenmedi.")
             return
+
+    # NESNE BOYUTU - kamera olmadigi icin BASINCTAN cikariyoruz.
+    # Gripper kuvvet geri bildirimiyle nesneye deyince durur; durdugu
+    # aciklik = nesnenin CENELER ARASI genisligi. Derinlik ve yukseklik
+    # fiziksel olarak algilanamaz (gripper nesnenin cenelerin disina ne
+    # kadar tastigini goremez), o ikisi sorulur.
+    _derived_w_mm = None
+    if result["gripped"] and result["position_pct"] > 0:
+        _derived_w_mm = (100 - result["position_pct"]) / 100.0 * GRIPPER_STROKE_M * 1000
+        print(f"  Basinctan turetilen nesne genisligi: ~{_derived_w_mm:.0f} mm "
+              f"(cene acikligi; yanlissa asagida duzeltebilirsin)")
+    try:
+        obj_w = ask_float("Nesne genisligi (mm)",
+                          default=(_derived_w_mm if _derived_w_mm else defaults.get("obj_w", 30.0)),
+                          allow_back=True)
+        obj_d = ask_float("Nesne derinligi (mm)", default=defaults.get("obj_d", 30.0), allow_back=True)
+        obj_h = ask_float("Nesne yuksekligi (mm)", default=defaults.get("obj_h", 60.0), allow_back=True)
+    except GoBack:
+        print("Geri donuldu, adim eklenmedi.")
+        return
+    defaults["obj_w"], defaults["obj_d"], defaults["obj_h"] = obj_w, obj_d, obj_h
+
+    # Kavradik - nesneyi HEMEN modele iliştir ki bundan sonraki her planlama
+    # (kayit sirasindaki jog dahil) tasidigimiz nesneyi hesaba katsin.
+    arm.attach_grasped_object(obj_w / 1000.0, obj_d / 1000.0, obj_h / 1000.0)
+
     steps.append({
         "step_type": "move",
         "joints_deg": state["joints_deg"],
         "tcp_pose": state["tcp_pose"],
         "gripper_action": "grip",
         "gripper_position": result["position_pct"],
+        "object_size_mm": [obj_w, obj_d, obj_h],
         "gripper_speed": g_speed,
         "gripper_force": g_force,
         "speed_pct": speed_pct,
@@ -1605,32 +2180,37 @@ def _run_step_editor(arm, gripper, name, steps, default_speed_pct=None, default_
     move) HEM mevcut bir kaydin duzenlenmesi (edit_saved_move) bunu kullanir.
     steps yerinde (in-place) degistirilir. Doner: (steps, replay_speed,
     replay_accel) [b] ile bitirilirse, None [i] ile iptal edilirse."""
+    editor_menu = """
+=== Adim ekleme menusu ===
+  [j] Kolu hareket ettir (jog - komutla)
+  [m] Manuel mod: robotu FIZIKSEL olarak elinle hareket ettir (drag-teach)
+  [g] Gripper'i hareket ettir (jog)
+  [d] Su anki durumu goster
+  [l] Eklenen adimlari listele
+  [a] Su anki durumu adim olarak ekle (gripper sabit pozisyona gider)
+  [k] Gripper'i KAVRAT ve bunu adim olarak ekle (sabit pozisyon degil - nesne
+      buyuklugune gore gerektigi kadar kapanip tutar)
+  [w] Bekleme adimi ekle (saniye cinsinden)
+  [x] Bir adimi sil
+  [p] Bir adimin hiz/ivme/gripper parametrelerini duzenle (silmeden)
+  [b] Kaydi bitir ve kaydet
+  [i] Iptal et (hicbir sey kaydedilmez/degistirilmez)
+"""
     print("\nAdim ekleme moduna girildi.")
-    print("  [j] Kolu hareket ettir (jog - komutla)")
-    print("  [m] Manuel mod: robotu FIZIKSEL olarak elinle hareket ettir (drag-teach)")
-    print("  [g] Gripper'i hareket ettir (jog)")
-    print("  [d] Su anki durumu goster")
-    print("  [l] Eklenen adimlari listele")
-    print("  [a] Su anki durumu adim olarak ekle (gripper sabit pozisyona gider)")
-    print("  [k] Gripper'i KAVRAT ve bunu adim olarak ekle (sabit pozisyon degil - nesne")
-    print("      buyuklugune gore gerektigi kadar kapanip tutar)")
-    print("  [w] Bekleme adimi ekle (saniye cinsinden)")
-    print("  [x] Bir adimi sil")
-    print("  [b] Kaydi bitir ve kaydet")
-    print("  [i] Iptal et (hicbir sey kaydedilmez/degistirilmez)\n")
+    print(editor_menu)
 
     default_speed_pct = arm.speed_pct if default_speed_pct is None else default_speed_pct
     default_accel_pct = arm.accel_pct if default_accel_pct is None else default_accel_pct
     defaults = init_step_defaults(arm, steps)
 
     while True:
-        choice = input(f"[{len(steps)} adim] Secim (j/m/g/d/l/a/k/w/x/b/i): ").strip().lower()
+        choice = input(f"[{len(steps)} adim] Secim (j/m/g/d/l/a/k/w/x/p/b/i): ").strip().lower()
         if choice == "j":
             jog_arm(arm)
         elif choice == "m":
             drag_teach_add_steps(arm, gripper, steps, name, defaults)
         elif choice == "g":
-            jog_gripper(gripper)
+            jog_gripper(gripper, arm)
         elif choice == "d":
             print_state(arm, gripper)
         elif choice == "l":
@@ -1643,6 +2223,8 @@ def _run_step_editor(arm, gripper, name, steps, default_speed_pct=None, default_
             add_wait_step(steps, name, defaults)
         elif choice == "x":
             delete_step(steps, name)
+        elif choice == "p":
+            edit_step_params(steps, name)
         elif choice == "b":
             if not steps:
                 print("  En az 1 adim eklemeden kaydedemezsin.")
@@ -1667,6 +2249,260 @@ def _run_step_editor(arm, gripper, name, steps, default_speed_pct=None, default_
             print("Iptal vazgecildi, devam edebilirsin.")
         else:
             print("  Gecersiz secim.")
+            continue
+        # Her komuttan sonra BULUNULAN menuye don: robotu/gripper'i
+        # etkileyen komutlarda once guncel konumu goster, sonra bu menuyu
+        # tekrar bas - kullanici ust menuye donmeden nerede oldugunu ve
+        # hangi seceneklerin oldugunu gorsun. ([d] zaten durumu basiyor.)
+        if choice in ("j", "m", "g", "a", "k"):
+            print_state(arm, gripper)
+        print(editor_menu)
+
+
+def _teach_pose(arm, gripper, baslik):
+    """Kullanici kolu istedigi poza getirene kadar bekler, o pozu doner.
+    Iptal edilirse None."""
+    print(f"\n{baslik}")
+    menu = ("  [j] Kolu komutla hareket ettir (jog)\n"
+            "  [m] Manuel mod: robotu ELINLE getir (drag-teach)\n"
+            "  [g] Gripper'i hareket ettir\n"
+            "  [d] Su anki durumu goster\n"
+            "  [o] BURASI TAMAM - bu pozu kullan\n"
+            "  [i] Iptal")
+    print(menu)
+    while True:
+        secim = input("Secim (j/m/g/d/o/i): ").strip().lower()
+        if secim == "j":
+            jog_arm(arm)
+        elif secim == "m":
+            if enter_drag_teach(arm, gripper):
+                try:
+                    input("Robotu elinle istedigin poza getir, sonra Enter'a bas...")
+                finally:
+                    exit_drag_teach(arm, gripper)
+        elif secim == "g":
+            jog_gripper(gripper, arm)
+        elif secim == "d":
+            print_state(arm, gripper)
+            continue
+        elif secim == "o":
+            st = arm.get_current_state()
+            print(f"  Poz alindi: {[round(v, 1) for v in st['joints_deg']]}")
+            return st["joints_deg"]
+        elif secim in ("i",) + BACK_WORDS:
+            return None
+        else:
+            print("  Gecersiz secim.")
+            continue
+        print_state(arm, gripper)
+        print(menu)
+
+
+def record_pick_and_place(arm, gripper):
+    """MoveIt Task Constructor ile al-tasi-birak kaydi.
+
+    Kullanicidan SADECE iki poz istenir (alma ve birakma). Yaklasma/geri
+    cekilme, nesneyi modele ilistirme/ayirma gibi asamalari MTC'nin kendi
+    hazir stage'leri yapar - bkz. pickplace.py."""
+    print("\n--- Pick & place ---")
+    try:
+        from pickplace import load_mtc
+    except Exception as e:
+        print(f"HATA: pickplace modulu yuklenemedi ({e}).")
+        return
+    if load_mtc() is None:
+        print("HATA: MoveIt Task Constructor kurulu degil. Kurulum:")
+        print("  sudo apt install ros-humble-moveit-task-constructor-core \\")
+        print("       ros-humble-moveit-task-constructor-capabilities")
+        return
+
+    try:
+        yaklasma = ask_float("Yaklasma/geri cekilme mesafesi (mm)", default=80.0, allow_back=True)
+        g_speed = ask_int("Kavrama hizi %", 50, allow_back=True)
+        g_force = ask_int("Kavrama kuvveti %", 30, allow_back=True)
+        # Nesne olculeri SADECE carpisma kontrolu icin - hassas olmasi
+        # gerekmiyor, cömert vermek daha guvenli. Genislik SORULMUYOR:
+        # cenelerin kavrama aninda durdugu aciklik zaten onu veriyor
+        # (bkz. GRIPPER_STROKE_M), ve her calistirmada yeniden olculuyor ki
+        # farkli kalinliktaki nesnelerde de dogru olsun.
+        print("\nNesne olculeri (sadece carpisma kontrolu icin, kabaca yeterli):")
+        print("  Genislik SORULMUYOR - cenelerin kavrarken durdugu aciklikta olculuyor.")
+        obj_d = ask_float("  Derinlik: cene hareketine DIK yatay olcu (mm)",
+                          default=40.0, allow_back=True)
+        obj_h = ask_float("  Yukseklik: nesnenin gripper'dan disa uzandigi olcu (mm)",
+                          default=60.0, allow_back=True)
+    except GoBack:
+        print("Iptal edildi.")
+        return
+
+    def _on_poz_olc(etiket):
+        """Su anki pozdan yaklasma_mm kadar GERI cekilip orayi olcer.
+
+        Neden: robot kavrama noktasina DOGRUDAN dalmamali; once guvenli
+        mesafede bir 'on-poz'a gidip oradan duz cizgi yaklasmali (MoveIt
+        pick&place semasindaki pre_grasp_approach). On-pozu robotun
+        kendisine hesaplatiyoruz - hem ters kinematik ugrasi olmuyor hem de
+        o pozun GERCEKTEN ulasilabilir oldugu ayni anda dogrulanmis oluyor."""
+        print(f"  {etiket}: on-poz icin {yaklasma:.0f}mm geri cekiliyor...")
+        r = arm.move_tcp_local(0, 0, -yaklasma, confirm=False)
+        if not r["success"]:
+            d = f" - {r['details']}" if r.get("details") else ""
+            print(f"  HATA: geri cekilemedi ({r['reason']}{d}). Yaklasma mesafesini "
+                  f"kucultup tekrar deneyin.")
+            return None
+        return arm.get_current_state()["joints_deg"]
+
+    pick = _teach_pose(arm, gripper, "1) Kolu nesneyi ALACAGI poza getir "
+                                     "(cene nesneyi kavrayacak konumda olsun)")
+    if pick is None:
+        print("Iptal edildi.")
+        return
+    pre_pick = _on_poz_olc("Alma")
+    if pre_pick is None:
+        return
+
+    place = _teach_pose(arm, gripper, "2) Kolu nesneyi BIRAKACAGI poza getir")
+    if place is None:
+        print("Iptal edildi.")
+        return
+    pre_place = _on_poz_olc("Birakma")
+    if pre_place is None:
+        return
+
+    # --- KAYDET ---
+    moves = load_moves()
+    while True:
+        name = input("\nKayit adi (ör: kutu_tasi, kaydetmeden calistirmak icin bos birak): ").strip()
+        if not name:
+            name = None
+            break
+        ok, err = valid_move_name(name)
+        if not ok:
+            print(f"  Gecersiz isim: {err}")
+            continue
+        if name in moves:
+            if input(f"'{name}' zaten kayitli, uzerine yazilsin mi? (e/h): ").strip().lower() != "e":
+                continue
+        break
+
+    cfg = {
+        "created": datetime.now().isoformat(timespec="seconds"),
+        "type": "pick_place",
+        "pick_joints": pick,
+        "place_joints": place,
+        # On-pozlar: kavrama/birakma noktasinin yaklasma_mm kadar gerisi.
+        # Robot once buraya gidip oradan DUZ CIZGI yaklasiyor.
+        "pre_pick_joints": pre_pick,
+        "pre_place_joints": pre_place,
+        "approach_mm": yaklasma,
+        "grip_speed": g_speed,
+        "grip_force": g_force,
+        "object_dh_mm": [obj_d, obj_h],
+        "speed_pct": arm.speed_pct,
+        "accel_pct": arm.accel_pct,
+    }
+    if name:
+        moves[name] = cfg
+        save_moves(moves)
+        sync_bashrc_aliases(moves)
+        print(f"\n'{name}' kaydedildi. Yeni terminalde sadece '{name}' yazman yeterli.")
+        print("Bu terminalde hemen kullanmak icin: source ~/.bashrc")
+
+    if input("\nSimdi calistirilsin mi? (e/h): ").strip().lower() != "e":
+        return
+    run_pick_place(arm, gripper, cfg)
+
+
+def run_pick_place(arm, gripper, cfg, sor=False):
+    """Kayitli (ya da yeni olusturulmus) bir pick & place yapilandirmasini
+    calistirir. Asamalari MTC yapar - bkz. pickplace.py.
+
+    sor=True ise (menuden oynatma) hiz/ivme ve kavrama hiz/kuvveti
+    calistirmadan once SORULUR; kayitli degerler varsayilan olarak gelir.
+    Girilen degerler KAYDI DEGISTIRMEZ, sadece bu calistirma icin gecerlidir.
+    Alias ile dogrudan calistirmada (sor=False) kayitli degerler kullanilir."""
+    from pickplace import PickPlace
+
+    if "pre_pick_joints" not in cfg or "pre_place_joints" not in cfg:
+        print("HATA: bu kayit ESKI bicimde (on-pozlar yok). Menuden [5] ile ayni "
+              "ismi verip yeniden olusturun.")
+        return False
+
+    if sor:
+        print("\n--- Bu calistirma icin degerler (Enter = kayitli deger) ---")
+        try:
+            _sp = ask_float("Kol hizi %", default=cfg.get("speed_pct", arm.speed_pct),
+                            allow_back=True)
+            _ac = ask_float("Kol ivmesi %", default=cfg.get("accel_pct", arm.accel_pct),
+                            allow_back=True)
+            _gs = ask_int("Kavrama hizi %", cfg["grip_speed"], allow_back=True)
+            _gf = ask_int("Kavrama kuvveti %", cfg["grip_force"], allow_back=True)
+        except GoBack:
+            print("Iptal edildi.")
+            return False
+        # Kaydi BOZMAMAK icin kopya uzerinde calis.
+        cfg = dict(cfg)
+        cfg["speed_pct"], cfg["accel_pct"] = _sp, _ac
+        cfg["grip_speed"], cfg["grip_force"] = _gs, _gf
+
+    print("\nUYARI: GERCEK ROBOT hareket edecek. Acil stop elinin altinda olsun.")
+    try:
+        input("Devam etmek icin Enter'a bas (iptal icin Ctrl+C)...")
+    except (KeyboardInterrupt, EOFError):
+        print("\nIptal edildi.")
+        return False
+
+    yaklasma = cfg["approach_mm"]
+    g_speed, g_force = cfg["grip_speed"], cfg["grip_force"]
+    obj_d, obj_h = cfg["object_dh_mm"]
+
+    try:
+        pp = PickPlace(arm.robot_desc_name, arm.package_name, arm.group_name,
+                       TIP_LINK, f"/tmp/fairino{arm.model_num}_movecobot.yaml",
+                       JOINT_NAMES,
+                       speed_pct=cfg.get("speed_pct", arm.speed_pct),
+                       accel_pct=cfg.get("accel_pct", arm.accel_pct))
+    except Exception as e:
+        print(f"HATA: MTC baslatilamadi ({type(e).__name__}: {e})")
+        return False
+
+    # --- 1) cene ac, alma pozuna duz cizgi yaklas ---
+    try:
+        gripper.move(position=0, speed=g_speed, force=g_force)
+    except GripperError as e:
+        print(f"UYARI: gripper acilamadi: {e}")
+    if not pp.alma_pozuna_yaklas(cfg["pre_pick_joints"], yaklasma):
+        return False
+
+    # --- 2) KUVVETLE kavra (sabit pozisyon degil - her nesnede calisir) ---
+    try:
+        sonuc = gripper.grip(speed=g_speed, force=g_force)
+    except GripperError as e:
+        print(f"HATA: kavrama basarisiz: {e}")
+        return False
+    if sonuc["gripped"]:
+        print(f"  Nesne yakalandi (pozisyon={sonuc['position_pct']}).")
+    else:
+        print(f"  UYARI: kapandi ama nesne algilanmadi (pozisyon={sonuc['position_pct']}).")
+    # Nesne genisligini BASINCTAN turet (cenelerin durdugu aciklik) - kayitta
+    # sabit tutulmuyor, HER CALISTIRMADA yeniden olculuyor ki farkli
+    # kalinliktaki nesnelerde de dogru olsun.
+    obj_w = max((100 - sonuc["position_pct"]) / 100.0 * GRIPPER_STROKE_M * 1000, 5.0)
+    print(f"  Basinctan turetilen nesne genisligi: ~{obj_w:.0f} mm")
+
+    # --- 3) ilistir, kaldir, birakma pozuna git, in ---
+    if not pp.kaldir_ve_birakma_pozuna_git(cfg["pre_place_joints"], yaklasma, yaklasma,
+                                           [obj_w, obj_d, obj_h], arm.tcp_offset_m):
+        return False
+
+    # --- 4) birak, ayir, geri cekil ---
+    try:
+        gripper.move(position=0, speed=g_speed, force=g_force)
+    except GripperError as e:
+        print(f"UYARI: gripper acilamadi: {e}")
+    pp.ayir_ve_geri_cekil(yaklasma)
+    print("\nPick & place tamamlandi.")
+    return True
 
 
 def record_new_move(arm, gripper):
@@ -1745,6 +2581,13 @@ def edit_saved_move(arm, gripper):
         if name not in moves:
             print(f"  '{name}' bulunamadi.")
             return
+        if moves[name].get("type") == "pick_place":
+            # Pick & place kaydinin adimi yok (iki poz + parametrelerden
+            # ibaret, asamalari MTC uretiyor) - adim editoru ile duzenlenemez.
+            print(f"  '{name}' bir pick & place kaydi; adim listesi yok, bu editorle "
+                  f"duzenlenemez. Degistirmek icin menuden [5] ile yeniden olusturup "
+                  f"ayni ismi verin.")
+            return
         # Derin kopya - kullanici [b] ile bitirip kaydetmeden orijinal
         # kayitli hareket HIC degismesin (iptal her zaman guvenli olsun).
         steps = json.loads(json.dumps(moves[name]["steps"]))
@@ -1783,7 +2626,8 @@ def list_saved_moves():
     print("\n=== Kayitli hareketler ===")
     for name, m in sorted(moves.items()):
         modified = f", duzenlendi: {m['modified']}" if m.get("modified") else ""
-        print(f"  {name:20s}  {len(m['steps'])} adim  hiz=%{m['speed_pct']:.0f} "
+        ne = "pick & place" if m.get("type") == "pick_place" else f"{len(m.get('steps', []))} adim"
+        print(f"  {name:20s}  {ne:12s}  hiz=%{m['speed_pct']:.0f} "
               f"ivme=%{m['accel_pct']:.0f}  ({m['created']}{modified})")
 
 
@@ -1814,6 +2658,14 @@ def replay_sequence(arm, gripper, steps, robot_ip):
             print("\nIptal edildi.")
             return False
 
+    # Ilk adim SDK'dan taze okumali (robotun GERCEKTE nerede oldugundan
+    # emin degiliz - ör. replay yeni baslatildi, robot elle jog edilmis
+    # olabilir). Ama SONRAKI her adim, bir ONCEKI adimin _plan_and_execute()
+    # icindeki post-execution dogrulamasindan (o da DOGRUDAN SDK okumasi,
+    # ROS2 degil) gelen TAZE bir deger zaten elimizde - onu tekrar SDK'ya
+    # sormadan kullanmak, adimlar arasindaki ag turu sayisini (ve dolayisiyla
+    # "her adimda bekleme" hissini) azaltir, guvenlikten odun vermeden.
+    known_start_joints_deg = None
     for i, step in enumerate(steps, 1):
         if step.get("step_type", "move") == "wait":
             duration = step.get("duration_s", 0)
@@ -1826,11 +2678,13 @@ def replay_sequence(arm, gripper, steps, robot_ip):
         accel_str = f"%{accel_pct:.0f}" if accel_pct is not None else f"%{arm.accel_pct:.0f} (oturum)"
         print(f"[{i}/{len(steps)}] Eklemlere hareket (hiz={speed_str} ivme={accel_str}): "
               f"{[round(v, 1) for v in step['joints_deg']]}")
-        result = arm.move_to_joints(step["joints_deg"], confirm=False, speed_pct=speed_pct, accel_pct=accel_pct)
+        result = arm.move_to_joints(step["joints_deg"], confirm=False, speed_pct=speed_pct, accel_pct=accel_pct,
+                                     known_start_joints_deg=known_start_joints_deg)
         if not result["success"]:
             details = f" - {result['details']}" if result.get("details") else ""
             print(f"HATA: adim {i} basarisiz oldu ({result['reason']}{details}). Kalan adimlar calistirilmadi.")
             return False
+        known_start_joints_deg = result["final_state"]["joints_deg"]
         gripper_action = step.get("gripper_action", "position")
         if gripper_action == "grip":
             print(f"[{i}/{len(steps)}] Gripper -> KAVRA (hiz={step['gripper_speed']} "
@@ -1841,13 +2695,34 @@ def replay_sequence(arm, gripper, steps, robot_ip):
                     print(f"  Nesne yakalandi (pozisyon={result['position_pct']}).")
                 else:
                     print(f"  UYARI: kapandi ama nesne algilanmadi (pozisyon={result['position_pct']}).")
+                # MoveIt semasinda kavrama = nesneyi modele ILISTIRME ani.
+                # Kayitta boyut varsa onu kullan; yoksa (eski kayitlar)
+                # basinctan turetilen genisligi kup gibi varsayarak
+                # muhafazakar bir kutu kur.
+                _sz = step.get("object_size_mm")
+                if _sz is None:
+                    _w = (100 - result["position_pct"]) / 100.0 * GRIPPER_STROKE_M * 1000
+                    _w = max(_w, 10.0)
+                    _sz = [_w, _w, _w]
+                    print(f"  (bu eski kayitta nesne boyutu yok - basinctan "
+                          f"~{_w:.0f}mm kup varsayildi)")
+                arm.attach_grasped_object(_sz[0] / 1000.0, _sz[1] / 1000.0, _sz[2] / 1000.0)
             except GripperError as e:
                 print(f"UYARI: kavrama basarisiz oldu: {e}")
+        elif gripper_action == "none":
+            # Gripper'a HIC dokunma - kavradigi neyse tutmaya devam eder.
+            # Bir nesneyi tasiyan adimlarda dogru davranis budur; sabit bir
+            # pozisyon emri vermek nesnenin KALINLIGINA bagimli olur.
+            print(f"[{i}/{len(steps)}] Gripper -> dokunulmuyor (tutuyorsa tutmaya devam)")
         else:
             print(f"[{i}/{len(steps)}] Gripper -> pozisyon={step['gripper_position']} "
                   f"hiz={step['gripper_speed']} kuvvet={step['gripper_force']}")
             try:
                 gripper.move(position=step["gripper_position"], speed=step["gripper_speed"], force=step["gripper_force"])
+                # MoveIt semasinda BIRAKMA = nesneyi modelden AYIRMA ani.
+                # Ceneler acildiysa (pozisyon ~0) nesne birakilmis demektir.
+                if step["gripper_position"] <= 10:
+                    arm.detach_object()
             except GripperError as e:
                 print(f"UYARI: gripper hareketi basarisiz oldu: {e}")
 
@@ -1867,6 +2742,9 @@ def replay_from_menu(arm, gripper, robot_ip):
     if name not in moves:
         print(f"  '{name}' bulunamadi.")
         return
+    if moves[name].get("type") == "pick_place":
+        run_pick_place(arm, gripper, moves[name], sor=True)
+        return
     print(f"\n(Bu oturumun hizinda calisacak: %{arm.speed_pct:.0f}/%{arm.accel_pct:.0f}. "
           f"Kayitli hiz %{moves[name]['speed_pct']:.0f}/%{moves[name]['accel_pct']:.0f} sadece "
           f"'{name}' aliasiyla dogrudan calistirinca kullanilir.)")
@@ -1885,7 +2763,9 @@ def replay_cli(name):
     robot_ip = robot_info["ROBOT_IP"]
     model_num = robot_info["ROBOT_MODEL_NUM"]
 
-    print(f"\n>>> '{name}' oynatiliyor ({len(move['steps'])} adim, "
+    _pp = move.get("type") == "pick_place"
+    _ne = "pick & place" if _pp else f"{len(move['steps'])} adim"
+    print(f"\n>>> '{name}' oynatiliyor ({_ne}, "
           f"hiz=%{move['speed_pct']:.0f}, ivme=%{move['accel_pct']:.0f})\n")
 
     arm = CobotArm(robot_ip, model_num, move["speed_pct"], move["accel_pct"], node_name=f"movecobot_replay_{name}")
@@ -1894,7 +2774,10 @@ def replay_cli(name):
         print("Gripper aktive ediliyor...")
         gripper.activate()
 
-    ok = replay_sequence(arm, gripper, move["steps"], robot_ip)
+    if _pp:
+        ok = run_pick_place(arm, gripper, move)
+    else:
+        ok = replay_sequence(arm, gripper, move["steps"], robot_ip)
     arm.shutdown()
     sys.exit(0 if ok else 1)
 
@@ -1986,7 +2869,8 @@ def interactive_main():
         try:
             from gripper_gui import run_gripper_gui
             gui_thread = threading.Thread(
-                target=run_gripper_gui, args=(gripper,), kwargs={"standalone": True}, daemon=True,
+                target=run_gripper_gui, args=(gripper,),
+                kwargs={"standalone": True, "busy_event": arm.executing}, daemon=True,
             )
             gui_thread.start()
             print("Gripper GUI penceresi aciliyor (grippergui, ayni baglantiyi paylasarak)...\n")
@@ -2002,11 +2886,12 @@ def interactive_main():
   2) Gripper'i hareket ettir
   3) Su anki durumu goster
   4) Yeni hareket kaydet (jog + adim ekle -> isimle kaydet -> otomatik alias)
-  5) Kayitli bir hareketi duzenle (adim ekle/sil, hiz/ivme degistir)
-  6) Kayitli bir hareketi oynat
-  7) Kayitli hareketleri listele
-  8) Kayitli bir hareketi sil
-  9) Cikis
+  5) Pick & place (SADECE alma ve birakma pozu - gerisini MoveIt yapar)
+  6) Kayitli bir hareketi duzenle (adim ekle/sil, hiz/ivme degistir)
+  7) Kayitli bir hareketi oynat
+  8) Kayitli hareketleri listele
+  9) Kayitli bir hareketi sil
+  10) Cikis
 """
     try:
         while True:
@@ -2018,7 +2903,7 @@ def interactive_main():
                 if gripper is None:
                     print("Gripper bagli degil.")
                 else:
-                    jog_gripper(gripper)
+                    jog_gripper(gripper, arm)
             elif choice == "3":
                 print_state(arm, gripper)
             elif choice == "4":
@@ -2028,22 +2913,35 @@ def interactive_main():
                     record_new_move(arm, gripper)
             elif choice == "5":
                 if gripper is None:
+                    print("Gripper bagli olmadan pick & place yapilamaz.")
+                else:
+                    record_pick_and_place(arm, gripper)
+            elif choice == "6":
+                if gripper is None:
                     print("Gripper bagli olmadan hareket duzenlenemez.")
                 else:
                     edit_saved_move(arm, gripper)
-            elif choice == "6":
+            elif choice == "7":
                 if gripper is None:
                     print("Gripper bagli degil.")
                 else:
                     replay_from_menu(arm, gripper, robot_ip)
-            elif choice == "7":
-                list_saved_moves()
             elif choice == "8":
-                delete_saved_move()
+                list_saved_moves()
             elif choice == "9":
+                delete_saved_move()
+            elif choice == "10":
                 break
             else:
                 print("Gecersiz secim.")
+                continue
+            # Robotu HAREKET ETTIREBILEN her komuttan sonra guncel konumu
+            # goster - kullanici menuye dondugunde kolun/gripper'in nerede
+            # oldugunu bir sonraki komutu vermeden once gorsun. (3 zaten
+            # durumu basiyor; 7/8 sadece kayit listesiyle ilgili, robotu
+            # etkilemiyor.)
+            if choice in ("1", "2", "4", "5", "6", "7"):
+                print_state(arm, gripper)
     except (KeyboardInterrupt, EOFError):
         print("\nCikiliyor.")
     finally:
