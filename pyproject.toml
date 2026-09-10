@@ -58,8 +58,14 @@ markers = ["hardware: gercek robot veya ROS2 kurulumu gerektirir"]
 [tool.ruff]
 line-length = 110
 target-version = "py310"
-# Vendor kodu ve ornekler denetlenmiyor.
-extend-exclude = ["vendor", "examples"]
+# Denetim disi:
+#   vendor    - bize ait olmayan ucuncu parti kod
+#   examples  - tek seferlik demo betikleri
+#   vision    - projenin goruntu isleme tarafi, AYRI BIR SAHIBI VAR (main
+#               dalindaki calisma). Bu daldan onun dosyalarini yeniden
+#               bicimlendirmek dogru olmaz; sahibi kendi kurallariyla
+#               denetlemeli.
+extend-exclude = ["vendor", "examples", "vision"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]
