@@ -184,3 +184,39 @@ def test_controller_son_blok_degilse_atliyor(arac, tmp_path):
 
     assert "ATLANDI" in sonuc
     assert "constraints:" not in yol.read_text(encoding="utf-8")
+
+
+def test_ompl_dosya_yoksa_OLUSTURULUYOR(arac, tmp_path, monkeypatch):
+    """Vendor'da ompl_planning.yaml GENELDE YOK.
+
+    frcobot_ros2'nin model paketleri bu dosya olmadan geliyor ve MoveIt o
+    durumda kendi varsayilanini kullaniyor - iceriginde sadece
+    AddTimeOptimalParameterization var, yani jerk hic sinirlanmiyor ve robot
+    yanlis-pozitif "Shaft collision fault" verebiliyor.
+
+    "Dosya yoksa atla" demek, duzeltmenin EN COK gerektigi durumda sessizce
+    uygulanmamasi olurdu. Once tam boyle bir hata vardi: temiz bir vendor
+    klonunda (tag V3.0.0_RobotV3.9.9) dosya olmadigi icin yama atlaniyordu.
+    """
+    monkeypatch.setattr(arac, "PATCH_DIR", REPO_ROOT / "ros2" / "patches")
+    pkg = sahte_paket(tmp_path, "5")
+    (pkg / "config" / "ompl_planning.yaml").unlink()
+
+    sonuc = arac.patch_ompl(pkg, dry=False)
+
+    icerik = (pkg / "config" / "ompl_planning.yaml").read_text(encoding="utf-8")
+    assert "OLUSTURULDU" in sonuc
+    assert "fairino5_v6_group:" in icerik
+    # Jerk duzeltmesi de gelmis olmali - dosyanin asil varlik sebebi bu.
+    assert "AddRuckigTrajectorySmoothing" in icerik
+    assert "AddTimeOptimalParameterization" in icerik
+
+
+def test_ompl_dry_run_da_dosya_olusturmuyor(arac, tmp_path, monkeypatch):
+    monkeypatch.setattr(arac, "PATCH_DIR", REPO_ROOT / "ros2" / "patches")
+    pkg = sahte_paket(tmp_path, "5")
+    (pkg / "config" / "ompl_planning.yaml").unlink()
+
+    arac.patch_ompl(pkg, dry=True)
+
+    assert not (pkg / "config" / "ompl_planning.yaml").exists()

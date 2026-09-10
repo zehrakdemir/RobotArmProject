@@ -172,19 +172,37 @@ def son_top_level_anahtar(text: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 def patch_ompl(pkg: Path, dry: bool) -> str:
-    hedef = pkg / "config" / "ompl_planning.yaml"
-    if not hedef.exists():
-        return "atlandi (ompl_planning.yaml yok)"
+    """ompl_planning.yaml'i yazar - YOKSA OLUSTURUR.
+
+    DIKKAT, BU DOSYA VENDOR'DA GENELDE YOK: frcobot_ros2'nin model
+    paketleri kendi ompl_planning.yaml'lari olmadan geliyor ve MoveIt
+    o durumda kendi varsayilanini kullaniyor - iceriginde SADECE
+    AddTimeOptimalParameterization var, yani jerk (ani ivme degisimi)
+    hic sinirlanmiyor. Canli testte kucuk eklem hareketlerinde bile
+    robotun kendi carpisma algilamasi yanlis-pozitif "Shaft collision
+    fault" veriyordu.
+
+    Yani "dosya yoksa atla" demek, duzeltmenin en cok gerektigi durumda
+    SESSIZCE uygulanmamasi olurdu. Once tam boyle bir hata vardi: temiz
+    bir vendor klonunda (tag V3.0.0_RobotV3.9.3) dosya olmadigi icin yama
+    atlaniyordu ve bunu ancak robot fault verince fark ederdik.
+    """
+    config_dir = pkg / "config"
+    if not config_dir.is_dir():
+        return "atlandi (config/ klasoru yok)"
+    hedef = config_dir / "ompl_planning.yaml"
     grup = srdf_group_name(pkg)
     if not grup:
         return "ATLANDI (SRDF'te grup adi bulunamadi)"
     taban = (PATCH_DIR / "ompl_planning.yaml").read_text(encoding="utf-8")
     yeni = taban.rstrip("\n") + "\n" + ompl_group_block(grup)
-    if hedef.read_text(encoding="utf-8") == yeni:
+    vardi = hedef.exists()
+    if vardi and hedef.read_text(encoding="utf-8") == yeni:
         return f"zaten guncel ({grup})"
     if not dry:
         hedef.write_text(yeni, encoding="utf-8")
-    return f"yazildi ({grup}, longest_valid_segment_fraction={LONGEST_VALID_SEGMENT_FRACTION})"
+    fiil = "guncellendi" if vardi else "OLUSTURULDU (vendor'da yoktu)"
+    return f"{fiil} ({grup}, longest_valid_segment_fraction={LONGEST_VALID_SEGMENT_FRACTION})"
 
 
 def patch_controllers(pkg: Path, dry: bool) -> str:
