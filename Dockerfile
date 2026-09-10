@@ -64,6 +64,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-humble-moveit \
         ros-humble-moveit-task-constructor-core \
+        # -core kütüphaneyi verir ama move_group'un ExecuteTaskSolutionCapability
+        # eklentisini VERMEZ; o ayrı paketten geliyor. Eksikken move_group şunu
+        # basıp devam ediyor ve pick & place sessizce çalışmıyor:
+        #   "Exception while loading move_group capability
+        #    'move_group/ExecuteTaskSolutionCapability': ... does not exist"
+        ros-humble-moveit-task-constructor-capabilities \
         ros-humble-ros2-control \
         ros-humble-ros2-controllers \
         ros-humble-joint-trajectory-controller \
@@ -74,7 +80,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3-colcon-common-extensions \
         python3-pip python3-tk \
         build-essential cmake git patch \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    # MTC çalıştırma eklentisi gerçekten geldi mi? Gelmezse pick & place
+    # sessizce çalışmaz — build sırasında yakalansın.
+    && test -f /opt/ros/humble/share/moveit_task_constructor_capabilities/capabilities_plugin_description.xml
 
 # DİKKAT — TAG DEĞİL, COMMIT. `2.5.9` tag'inde moveit_py paketi HENÜZ YOK
 # (kontrol edildi); native kurulum humble dalında, tag'den 11 commit sonrasında.
@@ -133,6 +142,10 @@ RUN git clone --depth 1 --branch ${FRCOBOT_TAG} \
 
 ENV FAIRINO_SDK_DIR=/opt/fairino-python-sdk/linux
 ENV FAIRINO_ROS2_WS=/opt/fairino_ws
+# scripts/fairino_launch.sh bunu source ediyor. Verilmezse native varsayılana
+# ($HOME/ws_moveit2) düşüyor ve container'da o yol yok — launch tam bu satırda
+# "No such file or directory" ile duruyordu.
+ENV FAIRINO_MOVEIT_WS=/opt/moveit_py_ws
 ENV FAIRINO_MIRROR_DIR=/opt/fairino_mirror
 ENV FAIRINO_PATCHES_DIR=/app/ros2/patches
 

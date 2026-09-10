@@ -22,16 +22,33 @@ set -e
 # ("Xwayland glamor" satirini stderr.log'da) kontrol et.
 export LIBGL_ALWAYS_SOFTWARE=1
 
-DETECT_SCRIPT="$HOME/detect_robot.py"
-SETUP_SCRIPT="$HOME/setup_fairino_target.py"
-ROS2_WS="$HOME/ros2_ws"
-STATE_FILE="$HOME/.fairino_last_target"
+# Bu yollarin hepsi ortam degiskeniyle degistirilebilir - container
+# icinde ev dizini yerine /opt altinda duruyorlar. Varsayilanlar
+# native kurulumdaki yerleri.
+#
+# detect_robot ve setup_target artik paketin icinde; kurulu paketin
+# konsol komutlari kullaniliyor (pip install ile PATH'e geliyorlar),
+# yoksa eski ~/ konumuna duesuluyor.
+ROS2_WS="${FAIRINO_ROS2_WS:-$HOME/ros2_ws}"
+MOVEIT_WS="${FAIRINO_MOVEIT_WS:-$HOME/ws_moveit2}"
+STATE_FILE="${FAIRINO_LAST_TARGET:-$HOME/.fairino_last_target}"
+
+if command -v detect-robot > /dev/null 2>&1; then
+    DETECT_CMD=(detect-robot)
+else
+    DETECT_CMD=(python3 "$HOME/detect_robot.py")
+fi
+if command -v fairino-setup-target > /dev/null 2>&1; then
+    SETUP_CMD=(fairino-setup-target)
+else
+    SETUP_CMD=(python3 "$HOME/setup_fairino_target.py")
+fi
 
 echo "================================================"
 echo " Robot algılanıyor (ağ taraması + GetSoftwareVersion)..."
 echo "================================================"
 
-DETECT_OUTPUT=$(python3 "$DETECT_SCRIPT" --full)
+DETECT_OUTPUT=$("${DETECT_CMD[@]}" --full)
 STATUS=$?
 
 if [ $STATUS -ne 0 ] || [ -z "$DETECT_OUTPUT" ]; then
@@ -51,10 +68,10 @@ echo ""
 echo "================================================"
 echo " Doğru kaynak kuruluyor ve derleniyor..."
 echo "================================================"
-python3 "$SETUP_SCRIPT" "$ROBOT_MODEL_NUM" "$ROBOT_VERSION_MAJ" "$ROBOT_VERSION_MIN" "$ROBOT_VERSION_MIN2" "$ROBOT_IP"
+"${SETUP_CMD[@]}" "$ROBOT_MODEL_NUM" "$ROBOT_VERSION_MAJ" "$ROBOT_VERSION_MIN" "$ROBOT_VERSION_MIN2" "$ROBOT_IP"
 
 if [ ! -f "$STATE_FILE" ]; then
-    echo "HATA: $STATE_FILE oluşmadı, setup_fairino_target.py başarısız olmuş olabilir."
+    echo "HATA: $STATE_FILE oluşmadı, setup_target başarısız olmuş olabilir."
     exit 1
 fi
 # shellcheck source=/dev/null
@@ -67,12 +84,18 @@ echo "================================================"
 # ws_moveit2 moveit_configs_utils gibi Python modullerini sagliyor;
 # bu source olmadan launch "ModuleNotFoundError: moveit_configs_utils"
 # ile patliyor ve rviz hic acilmiyordu.
-source "$HOME/ws_moveit2/install/setup.bash"
+# shellcheck source=/dev/null
+source "$MOVEIT_WS/install/setup.bash"
+# shellcheck source=/dev/null
 source "$ROS2_WS/install/setup.bash"
 
 if [ "$ROBOT_IP" != "127.0.0.1" ]; then
     echo "UYARI: Gerçek robot hareket edecek. Acil stop elinin altında olsun."
-    read -rp "Devam etmek için Enter'a bas (iptal için Ctrl+C)..." _
+    if [ -t 0 ] && [ -z "${FAIRINO_NO_CONFIRM:-}" ]; then
+        read -rp "Devam etmek için Enter'a bas (iptal için Ctrl+C)..." _
+    else
+        echo "(etkilesimsiz calisma - onay atlandi)"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -102,7 +125,7 @@ if sudo -n -u "$USER" true 2>/dev/null && \
     echo "RT oncelik izni mevcut (rtprio 99) - kontrol dongusu gercek-zamanli baslatiliyor."
     exec sudo -n -E -u "$USER" bash -c "
         source /opt/ros/humble/setup.bash
-        source '$HOME/ws_moveit2/install/setup.bash'
+        source '$MOVEIT_WS/install/setup.bash'
         source '$ROS2_WS/install/setup.bash'
         exec ros2 launch '$MOVEIT_PACKAGE' demo.launch.py capabilities:=move_group/ExecuteTaskSolutionCapability"
 else
