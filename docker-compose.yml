@@ -88,7 +88,15 @@ services:
       # Saf Linux'ta (WSL değil) aşağıdaki satırı kaldır.
       - /mnt/wslg:/mnt/wslg:rw
       # Kayıtlı hareketler container silinince kaybolmasın.
-      - fairino-state:/state
+      #
+      # HOST DİZİNİ, isimli volume DEĞİL - bilerek. Burada önce isimli bir
+      # volume (fairino-state) vardı ve sonucu sessiz bir tuzaktı:
+      # scripts/run_container.sh aynı dizini host'tan bind-mount ediyor,
+      # compose ise bambaşka bir depoya bağlıyordu. Aynı makinede iki yolu
+      # da kullanan biri, kaydettiği hareketleri diğerinde GÖREMİYORDU -
+      # kaybolmuş gibi görünüyor ama aslında öbür depoda duruyor.
+      # İkisi artık AYNI yeri kullanıyor.
+      - ${FAIRINO_STATE_DIR:-${HOME}/.local/state/fairino-cobot}:/state
 
     # Arayüz gerçekten cevap veriyor mu? "Up" yazması yetmez.
     healthcheck:
@@ -103,6 +111,3 @@ services:
     restart: unless-stopped
     stdin_open: true
     tty: true
-
-volumes:
-  fairino-state:
