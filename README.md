@@ -97,7 +97,9 @@ Arka planda çalıştırmak için `docker compose up -d cobot`, logları izlemek
 | **E-STOP** | Süren yörüngeyi iptal eder ve SDK üzerinden `StopMotion` gönderir. Hareket kilidini beklemez. |
 | **Canlı durum** | Eklem açıları, TCP pozu, fault kodları, gripper durumu — WebSocket ile akar |
 | **Eklem kontrolü** | Her ekseni tek tek sür, ya da altı açıyı birden ver |
-| **Jog** | Eklem ve TCP (araç eksenine göre) adımlı hareket |
+| **Jog — base ekseni** | TCP'yi sabit dünya eksenlerinde ötele: +Z her zaman yukarı, alet nasıl dönmüş olursa olsun. Yönelim değişmez |
+| **Jog — araç ekseni** | TCP'yi kendi eksenlerinde ötele (eksenler aletle birlikte döner) — yaklaşma/geri çekilme için |
+| **Mutlak TCP pozu** | X/Y/Z/RX/RY/RZ'yi base çerçevesinde doğrudan ver; "Şu anki" ile doldurup tek değeri değiştir |
 | **Önizleme** | Hedefe gitmeden önce, ileri kinematikle TCP nerede olacak göster |
 | **Gripper** | Aç/kapa, kuvvet ve hız ayarı, durum okuma |
 | **Kayıtlı hareketler** | Listele, oynat, sil — `movecobot` ile aynı dosyaları kullanır |

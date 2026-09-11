@@ -87,12 +87,23 @@ function kurJog() {
     kap.appendChild(satir);
   });
 
+  // Arac eksenleri: eksenler aletle birlikte doner.
   document.querySelectorAll("[data-t]").forEach((b) => {
     b.onclick = () => {
       const adim = (parseFloat($("#tstep").value) || 0) * parseInt(b.dataset.s, 10);
       const govde = { dx_mm: 0, dy_mm: 0, dz_mm: 0 };
       govde["d" + b.dataset.t + "_mm"] = adim;
-      isGonder("/api/arm/tcp_local", govde, `TCP ${b.dataset.t.toUpperCase()} ${adim}mm`);
+      isGonder("/api/arm/tcp_local", govde, `TCP araç ${b.dataset.t.toUpperCase()} ${adim}mm`);
+    };
+  });
+
+  // Base eksenleri: eksenler SABIT - alet nasil durursa dursun +Z yukari.
+  document.querySelectorAll("[data-b]").forEach((b) => {
+    b.onclick = () => {
+      const adim = (parseFloat($("#bstep").value) || 0) * parseInt(b.dataset.s, 10);
+      const govde = { dx_mm: 0, dy_mm: 0, dz_mm: 0 };
+      govde["d" + b.dataset.b + "_mm"] = adim;
+      isGonder("/api/arm/tcp_base", govde, `TCP base ${b.dataset.b.toUpperCase()} ${adim}mm`);
     };
   });
 
@@ -141,6 +152,66 @@ function kurMutlak() {
       "Kol şu açılara gidecek:\n" + EKLEMLER.map((a, i) => `${a} = ${hedef[i]}°`).join("\n"));
     if (!ok) return;
     isGonder("/api/arm/joints", { joints_deg: hedef }, "Mutlak hedef");
+  };
+}
+
+// Mutlak TCP pozu - hepsi BASE cercevesinde.
+//
+// NEDEN "Su anki" butonu once: alti alanin hepsini elle doldurmak, robotu
+// beklenmedik bir yonelime birden dondurmenin en kolay yolu. Once mevcut poz
+// yazilip TEK bir deger degistirilince hareket ongorulebilir oluyor.
+const POZ_ALAN = [
+  ["x", "X (mm)"], ["y", "Y (mm)"], ["z", "Z (mm)"],
+  ["rx", "RX (°)"], ["ry", "RY (°)"], ["rz", "RZ (°)"],
+];
+
+function kurTcpMutlak() {
+  const kap = $("#pose");
+  POZ_ALAN.forEach(([ad, etiket]) => {
+    const l = el("label", "field");
+    l.appendChild(el("span", null, etiket));
+    const inp = el("input"); inp.type = "number"; inp.step = "0.1";
+    inp.id = "pose-" + ad; inp.value = "0";
+    l.appendChild(inp);
+    kap.appendChild(l);
+  });
+
+  const oku = () => {
+    const o = {};
+    POZ_ALAN.forEach(([ad]) => { o[ad] = parseFloat($("#pose-" + ad).value) || 0; });
+    return o;
+  };
+
+  const doldur = () => {
+    const p = sonDurum.tcp_pose;
+    if (!p) { yaz("TCP pozu henüz okunmadı", "warn"); return false; }
+    POZ_ALAN.forEach(([ad]) => { $("#pose-" + ad).value = Number(p[ad]).toFixed(2); });
+    return true;
+  };
+
+  $("#pose-now").onclick = () => { if (doldur()) yaz("Alanlara şu anki TCP pozu yazıldı"); };
+
+  $("#pose-go").onclick = async () => {
+    const h = oku();
+    const p = sonDurum.tcp_pose;
+    // Mevcut pozdan farki da goster - "sadece Z'yi 20mm indiriyorum" demek
+    // isteyen biri, yanlislikla yonelimi de degistirdiyse burada gorur.
+    let fark = "";
+    if (p) {
+      const degisen = POZ_ALAN
+        .map(([ad]) => [ad, +(h[ad] - p[ad]).toFixed(2)])
+        .filter(([, d]) => d !== 0)
+        .map(([ad, d]) => `${ad.toUpperCase()} ${d > 0 ? "+" : ""}${d}`);
+      fark = degisen.length
+        ? "\n\nŞu ankinden fark:\n" + degisen.join("   ")
+        : "\n\n(şu anki pozla aynı)";
+    }
+    const ok = await onayla("Mutlak TCP pozu (base)",
+      `TCP şuraya gidecek:\nx=${h.x} y=${h.y} z=${h.z}\n` +
+      `rx=${h.rx} ry=${h.ry} rz=${h.rz}` + fark);
+    if (!ok) return;
+    h.prefer_lin = $("#pose-lin").checked;
+    isGonder("/api/arm/pose", h, "Mutlak TCP pozu");
   };
 }
 
@@ -280,6 +351,7 @@ function baglan() {
 // ---------------------------------------------------------------------------
 kurJog();
 kurMutlak();
+kurTcpMutlak();
 hareketleriYukle();
 baglan();
 setInterval(gripperDurum, 1200);

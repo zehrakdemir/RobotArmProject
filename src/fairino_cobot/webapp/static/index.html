@@ -71,6 +71,25 @@
     </section>
 
     <section>
+      <h2>TCP jog (base eksenleri, mm)</h2>
+      <div class="body">
+        <label class="field"><span>Adım (mm)</span>
+          <input type="number" id="bstep" value="10" step="1"></label>
+        <div class="jogrow"><span class="lbl">X</span>
+          <button data-b="x" data-s="-1">− X</button><button data-b="x" data-s="1">+ X</button></div>
+        <div class="jogrow"><span class="lbl">Y</span>
+          <button data-b="y" data-s="-1">− Y</button><button data-b="y" data-s="1">+ Y</button></div>
+        <div class="jogrow"><span class="lbl">Z</span>
+          <button data-b="z" data-s="-1">− Z</button><button data-b="z" data-s="1">+ Z</button></div>
+        <div class="note">
+          Eksenler <b>sabit</b>: alet nasıl dönmüş olursa olsun <b>+Z yukarı</b>,
+          +X robotun önü. Masaya dik inip çıkmak, tezgâh boyunca kaydırmak için
+          bunu kullan. Yönelim değişmez.
+        </div>
+      </div>
+    </section>
+
+    <section>
       <h2>TCP jog (araç eksenleri, mm)</h2>
       <div class="body">
         <label class="field"><span>Adım (mm)</span>
@@ -82,8 +101,28 @@
         <div class="jogrow"><span class="lbl">Z</span>
           <button data-t="z" data-s="-1">− Z</button><button data-t="z" data-s="1">+ Z</button></div>
         <div class="note">
-          Bu hareketler zemin ve self-collision kontrolünden geçer; güvenli
-          değilse robot hiç hareket etmez.
+          Eksenler <b>aletle birlikte döner</b>: +Z, aletin baktığı yöndür.
+          Yaklaşma/geri çekilme için uygundur.
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Mutlak TCP pozu (base)</h2>
+      <div class="body">
+        <div class="row3" id="pose"></div>
+        <div style="height:8px"></div>
+        <label class="field" style="flex-direction:row;align-items:center;gap:8px">
+          <input type="checkbox" id="pose-lin" checked>
+          <span>Düz çizgi (LIN) dene</span></label>
+        <div style="height:8px"></div>
+        <div class="row3">
+          <button id="pose-now">Şu anki</button>
+          <button id="pose-go" class="primary">Git</button>
+        </div>
+        <div id="pose-out" class="note">
+          X/Y/Z mm, RX/RY/RZ derece — hepsi <b>base</b> çerçevesinde.
+          Önce “Şu anki” ile doldurup tek bir değeri değiştirmek en güvenlisi.
         </div>
       </div>
     </section>

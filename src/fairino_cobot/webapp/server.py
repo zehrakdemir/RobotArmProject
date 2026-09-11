@@ -49,7 +49,11 @@ class JointFark(BaseModel):
     deltas_deg: list[float] = Field(..., min_length=6, max_length=6)
 
 
-class TcpYerel(BaseModel):
+class TcpFark(BaseModel):
+    """TCP icin goreceli oteleme. Hangi cerceveye gore oldugunu ENDPOINT
+    belirler: /api/arm/tcp_local arac eksenleri, /api/arm/tcp_base base
+    (dunya) eksenleri."""
+
     dx_mm: float = 0.0
     dy_mm: float = 0.0
     dz_mm: float = 0.0
@@ -157,7 +161,9 @@ def eklem_jog(istek: JointFark) -> dict[str, Any]:
 
 
 @app.post("/api/arm/tcp_local")
-def tcp_yerel(istek: TcpYerel) -> dict[str, Any]:
+def tcp_yerel(istek: TcpFark) -> dict[str, Any]:
+    """TCP'nin KENDI eksenlerine gore goreceli hareket - eksenler aletle
+    birlikte doner."""
     def calistir(job):
         job.log.append(f"TCP yerel: dx={istek.dx_mm} dy={istek.dy_mm} dz={istek.dz_mm}")
         return oturum.arm.move_tcp_local(
@@ -165,6 +171,19 @@ def tcp_yerel(istek: TcpYerel) -> dict[str, Any]:
         )
 
     return _is_baslat("arm", "TCP yerel hareket", calistir)
+
+
+@app.post("/api/arm/tcp_base")
+def tcp_baz(istek: TcpFark) -> dict[str, Any]:
+    """TCP'yi BASE (dunya) eksenlerine gore goreceli hareket ettirir -
+    eksenler SABIT, alet nasil durursa dursun +Z yukaridir."""
+    def calistir(job):
+        job.log.append(f"TCP base: dx={istek.dx_mm} dy={istek.dy_mm} dz={istek.dz_mm}")
+        return oturum.arm.move_tcp_base(
+            istek.dx_mm, istek.dy_mm, istek.dz_mm, confirm=False
+        )
+
+    return _is_baslat("arm", "TCP base hareket", calistir)
 
 
 @app.post("/api/arm/pose")

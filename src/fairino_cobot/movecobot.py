@@ -1243,6 +1243,26 @@ class CobotArm:
         # duz cizgi olmali (bkz. prefer_lin aciklamasi).
         return self.move_to_pose_base(tx, ty, tz, crx, cry, crz, confirm=confirm, prefer_lin=True)
 
+    def move_tcp_base(self, dx, dy, dz, confirm=False):
+        """TCP'yi BASE (dunya) eksenlerine gore goreceli hareket ettirir;
+        yonelim degismez.
+
+        move_tcp_local'den FARKI: orada eksenler TCP ile birlikte doner, yani
+        aleti egdiginde "+Z" artik yukari degil, aletin baktigi yondur. Burada
+        eksenler SABIT - "+Z" robot ne durumda olursa olsun yukaridir. Masaya
+        dik inip cikmak, tezgah boyunca kaydirmak gibi isler icin dogru olan
+        budur.
+
+        Base ekseninde goreceli hareket de tipik yaklasma/geri cekilme
+        niteliginde oldugu icin duz cizgi tercih ediliyor (prefer_lin).
+        """
+        with self.sdk_lock:
+            cur = self.sdk.GetActualTCPPose()[1]
+        cx, cy, cz, crx, cry, crz = cur[0:6]
+        # Donusum YOK - base ekseni zaten TCP pozunun ifade edildigi cerceve.
+        return self.move_to_pose_base(cx + dx, cy + dy, cz + dz, crx, cry, crz,
+                                      confirm=confirm, prefer_lin=True)
+
     def shutdown(self):
         if self._shutdown_called:
             return
