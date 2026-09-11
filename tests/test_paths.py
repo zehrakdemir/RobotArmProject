@@ -159,6 +159,44 @@ def test_detect_robot_paket_icinde_bulunuyor():
 
 
 # ---------------------------------------------------------------------------
+# tools/apply_ros2_patches.py yeri
+#
+# setup_target, aynadan YENI bir moveit config paketi kopyaladiginda ona da
+# yamalari uygulamak icin bu betige ihtiyac duyuyor. Bulunamazsa yamasiz
+# config ile devam EDILMIYOR - eklem ivme limiti olmadan Pilz PTP/LIN hic
+# planlayamiyor ve her hareket rastgele planlayiciya duesuyor (kol
+# savrulabilir, canli olayda oldu).
+# ---------------------------------------------------------------------------
+
+def test_yama_betigi_repoda_bulunuyor():
+    p = paths.patcher_script()
+    assert p.name == "apply_ros2_patches.py"
+    assert p.is_file()
+
+
+def test_yama_betigi_ortam_degiskeniyle_verilebiliyor(monkeypatch, tmp_path):
+    ozel = tmp_path / "kendi_yamacim.py"
+    ozel.write_text("# bos\n", encoding="utf-8")
+    monkeypatch.setenv("FAIRINO_PATCHER", str(ozel))
+
+    assert paths.patcher_script() == ozel
+
+
+def test_yama_betigi_yoksa_nereye_bakildigini_soyluyor(monkeypatch, tmp_path):
+    """Sessizce None donmemeli - cagiran taraf yamasiz devam etmeyi
+    reddedebilmek icin acik bir hata gormeli."""
+    monkeypatch.delenv("FAIRINO_PATCHER", raising=False)
+    monkeypatch.setattr(paths, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(paths.Path, "is_file", lambda self: False)
+
+    with pytest.raises(paths.PathError) as hata:
+        paths.patcher_script()
+
+    assert "apply_ros2_patches.py" in str(hata.value)
+    assert "FAIRINO_PATCHER" in str(hata.value)
+
+
+# ---------------------------------------------------------------------------
 # Paketin kendisi
 # ---------------------------------------------------------------------------
 

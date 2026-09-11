@@ -316,6 +316,44 @@ def safe_copytree(src: Path, dst: Path):
     tmp_dst.rename(dst)
 
 
+def apply_config_patches(config_target: Path):
+    """Aynadan YENI kopyalanan moveit config paketine yamalarimizi uygular.
+
+    NEDEN VAR: bu adim eskiden HIC yapilmiyordu. Imajda FR3 paketi hazir
+    geldigi ve zaten yamali oldugu icin fark edilmiyordu - ama BASKA BIR
+    MODEL (FR5, FR10...) takan biri paketi aynadan kopyaliyor ve YAMASIZ
+    kullaniyordu:
+      - ompl_planning.yaml yok        -> jerk sinirlanmiyor, robot yanlis
+                                         pozitif "Shaft collision fault"
+                                         verebiliyor
+      - JTC constraints yok           -> hedefe varilmasa da hareket
+                                         BASARILI sayiliyor
+      - eklem ivme limiti yok         -> Pilz PTP/LIN HIC planlayamiyor,
+                                         her hareket OMPL/RRTConnect'e
+                                         duesuyor
+    Sonuncusu canli bir olaya yol acti: 10mm'lik bir TCP otelemesi icin
+    planlayici IK'nin baska bir dalina atladi, kol 32.9 derece savruldu ve
+    acil stopa basildi.
+
+    Yama araci tools/ altinda ve pakete dahil degil; dosyadan yukleniyor.
+    Sadece CONFIG yamalari cagriliyor - donanim yamasi zaten
+    apply_hardware_patch ile ayrica uygulaniyor ve 'patch' komutunu
+    gerektiriyor, buradaki uc yama ise saf Python.
+    """
+    import importlib.util
+
+    betik = paths.patcher_script()
+    spec = importlib.util.spec_from_file_location("apply_ros2_patches", betik)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    # patch_ompl sablonu PATCH_DIR'den okuyor - tek kaynak paths.patches_dir().
+    mod.PATCH_DIR = paths.patches_dir()
+
+    print(f"  ompl_planning.yaml    : {mod.patch_ompl(config_target, False)}")
+    print(f"  ros2_controllers.yaml : {mod.patch_controllers(config_target, False)}")
+    print(f"  joint_limits.yaml     : {mod.patch_joint_limits(config_target, False)}")
+
+
 def sync_shared_package(pkg_name: str, src: Path):
     if not src.exists():
         print(f"  UYARI: {src} yok, {pkg_name} senkronize edilemedi.")
@@ -417,6 +455,21 @@ def main():
             die(f"{config_pkg_name} mirror'da da yok: {config_src}\n"
                 f"FR{model_num} için resmi config paketi bende mevcut değil, bana söyle.")
         safe_copytree(config_src, config_target)
+
+        # AYNADAN GELEN PAKET YAMASIZDIR - hemen yamalanmali.
+        # Bu atlanirsa robot yamasiz bir config ile surulur; ayrintili
+        # gerekce apply_config_patches docstring'inde. Yamalar
+        # uygulanamiyorsa DEVAM ETME: sessizce yamasiz surmek, bu projede
+        # bir kez acil stopa basilmasina yol acti.
+        print("")
+        print(f"=== {config_pkg_name} yamalari uygulaniyor (aynadan yeni geldi) ===")
+        try:
+            apply_config_patches(config_target)
+        except Exception as e:
+            die(f"{config_pkg_name} yamalanamadi: {type(e).__name__}: {e}\n"
+                "Yamasiz config ile devam edilmiyor - eklem ivme limiti olmadan "
+                "Pilz PTP/LIN hic planlayamiyor ve her hareket rastgele planlayiciya "
+                "duesuyor (kol savrulabilir).")
 
     if config_src.exists() and not needs_rebuild(config_pkg_name, config_src, extra=robot_ip):
         print(f"=== {config_pkg_name} degismemis (kaynak+robot_ip ayni), rebuild atlaniyor ===")

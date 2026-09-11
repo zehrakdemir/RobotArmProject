@@ -243,6 +243,36 @@ def patches_dir() -> Path:
     )
 
 
+def patcher_script() -> Path:
+    """tools/apply_ros2_patches.py'nin yeri.
+
+    NEDEN GEREKLI: setup_target, aynadan YENI bir moveit config paketi
+    kopyaladiginda ona da yamalarimizin uygulanmasi gerekiyor. Eskiden
+    uygulanmiyordu ve sonucu sessiz bir tehlikeydi - FR3 disinda bir model
+    takan biri YAMASIZ config aliyordu: OMPL longest_valid_segment_fraction
+    yok, JTC toleranslari yok, eklem IVME LIMITI yok. Ivme limiti olmayinca
+    Pilz PTP/LIN hic planlayamiyor ve her hareket OMPL/RRTConnect'e duesuyor;
+    canli olayda bu, 10mm'lik bir TCP otelemesi icin kolun 32.9 derece
+    savrulmasina ve acil stopa basilmasina yol acti.
+
+    Betik pakete DAHIL DEGIL (tools/ altinda, kurulum disi kaliyor), o
+    yuzden yeri burada cozuluyor.
+    """
+    env = _env_path("FAIRINO_PATCHER")
+    if env and env.is_file():
+        return env
+    adaylar = (REPO_ROOT / "tools" / "apply_ros2_patches.py",
+               Path("/app/tools/apply_ros2_patches.py"))
+    for aday in adaylar:
+        if aday.is_file():
+            return aday
+    raise PathError(
+        "tools/apply_ros2_patches.py bulunamadi.\n"
+        "Bakilan yerler:\n  " + "\n  ".join(str(a) for a in adaylar) + "\n"
+        "FAIRINO_PATCHER ile yerini bildirebilirsin."
+    )
+
+
 def last_target_file() -> Path:
     """fairino_launch'in en son algiladigi robotu yazdigi dosya."""
     return _env_path("FAIRINO_LAST_TARGET") or (HOME / ".fairino_last_target")
