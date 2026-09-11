@@ -208,6 +208,16 @@ SELFCAL_MIN_VALID_FRAC: float = _env_float("SELFCAL_MIN_VALID_FRAC", 0.18)
 # onler; gorunur bosluklu bitisik kutular ayri kalir.
 CLUSTER_MERGE_GAP_MM: float = _env_float("CLUSTER_MERGE_GAP_MM", 35.0)
 
+# Otomatik Hucre tespit modu:
+#   "nesne" -> geometrik (masa duzlemi + kumeleme; her turlu kutu/cisim, model gerekmez)
+#   "valiz" -> YOLO26-seg (SEG_WEIGHTS); sadece 'suitcase' sinifi, tam senaryo valize ayarli
+DETECT_MODE: str = _env_str("DETECT_MODE", "nesne").strip().lower()
+
+# Teshis: ayak-izi olcumunun erozyon/kirpma asamalarinda ne kaybettigini logla
+# (src/multi.py _detect_3d). Uretimde kapali kalsin, sadece kalibrasyon/olcu
+# ayari yaparken acin.
+DEBUG_FOOTPRINT: bool = _env_bool("DEBUG_FOOTPRINT", False)
+
 # --- Jodell gripper (Fairino SDK: MoveGripper, poz 0..100) ---
 # SimMachine simulatorunde gercek gripper YOKTUR; MoveGripper cagrisi hareket
 # denetleyicisini hataya (err 8-1) sokuyor. Gercek gripper takilinca true yapin.

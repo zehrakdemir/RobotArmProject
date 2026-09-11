@@ -47,13 +47,19 @@ Sürekli döngü orkestrasyonu: [`src/auto.py`](src/auto.py) (`AutoCell`).
 
 ## Arayüz (Streamlit)
 
-`http://localhost:8501` — sol menüden:
+`http://localhost:8501` — `app.py` bir yönlendirici (`st.navigation`), gerçek
+sayfalar `pages/` altında:
 
 | Sayfa | İş |
 |---|---|
-| **Hizli Stereo** | Tek çift fotoğraftan hızlı derinlik/bulut denemesi |
+| **Otomatik Hucre** (varsayılan) | BAŞLAT/DURDUR — çok nesneli sürekli al-yerleştir döngüsü + canlı segmentasyon + derinlik haritası + 3B bulut |
 | **Hucre Modu** | Tek nesne: ölç + duruş + FR3 komutu (elle duruş/ROI override'ları burada) |
-| **Otomatik Hucre** | BAŞLAT/DURDUR — çok nesneli sürekli al-yerleştir döngüsü + canlı segmentasyon |
+| **Hizli Stereo** | Tek çift fotoğraftan hızlı derinlik/bulut denemesi — kamera hizalama kontrolü |
+
+Eski 2-fotoğraf demosu (`legacy/app_2foto_demo.py`) nav'dan kaldırıldı —
+kalibrasyon kullanmıyordu, artık gerçek kullanım Otomatik Hücre. Kod duruyor,
+`app.py`'deki `st.navigation` listesine bir `st.Page` daha ekleyip geri
+getirebilirsin.
 
 ---
 
@@ -149,8 +155,10 @@ pytest -q tests/     # model / cv2 gerektirmeyen birim testleri
 ## Dizin yapısı
 
 ```
-app.py                  Streamlit giriş (Hizli Stereo)
-pages/                  Streamlit sayfaları (Hucre Modu, Otomatik Hucre)
+app.py                  Streamlit giriş — sayfa yönlendirici (st.navigation)
+pages/                  Streamlit sayfaları (Otomatik Hucre, Hucre Modu, Hizli Stereo)
+src/ui.py                                           ortak tema (yalnız görsel)
+legacy/                 nav'dan kaldırılmış eski 2-foto demosu (kod duruyor)
 src/
   calib.py   selfcalib.py   stereo.py   multi.py     stereo + çok-nesne çekirdeği
   auto.py                                            AutoCell al-yerleştir döngüsü

@@ -14,7 +14,11 @@ import numpy as np
 import streamlit as st
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-st.set_page_config(page_title="Hizli Stereo", layout="wide")
+st.set_page_config(page_title="Hizli Stereo", layout="wide", page_icon="⚡")
+
+from src.ui import inject_theme, page_header  # noqa: E402
+
+inject_theme()
 
 
 def _rgb(img):
@@ -48,10 +52,12 @@ def _png(img_bgr):
     return b.tobytes() if ok else b""
 
 
-st.title("⚡ Hizli Stereo — disparite / derinlik / 3B bulut")
-st.caption("2 goruntu yukle → poz kestir → rektifiye → SGBM+WLS → 3B. "
-           "Kalibrasyon ve valiz tespiti YOK; kamera hizalama/onizleme icin. "
-           "Metrik cm + robot icin: **Hucre Modu** + kalibrasyon.")
+page_header(
+    "⚡", "Hızlı Stereo",
+    "2 görüntü yükle → poz kestir → rektifiye → SGBM+WLS → 3B. Kalibrasyon ve valiz "
+    "tespiti YOK — kamera hizalama/önizleme için. Metrik cm + robot için: "
+    "Hücre Modu + kalibrasyon.",
+)
 
 with st.sidebar:
     st.header("Girdi")

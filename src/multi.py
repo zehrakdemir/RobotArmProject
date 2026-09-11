@@ -170,15 +170,23 @@ def _merge_adjacent(xy: np.ndarray, clusters: list, table_xy: Optional[np.ndarra
         return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1,) * 2)
     ker_far = _ker(gap_mm)          # gap_mm'ye kadar kopru
     ker_touch = _ker(16.0)         # ~bitisik (parcalanma)
-    masks, dil_far, dil_touch = [], [], []
+    masks, dil_far, dil_touch, aspect = [], [], [], []
     for sel in clusters:
-        ij = np.floor((xy[sel] - mn) / cell_mm).astype(np.int64)
+        q = xy[sel]
+        ij = np.floor((q - mn) / cell_mm).astype(np.int64)
         ij = np.clip(ij, 0, [W - 3, H - 3])
         g = np.zeros((H, W), np.uint8)
         g[ij[:, 1] + 1, ij[:, 0] + 1] = 1
         masks.append(g)
         dil_far.append(cv2.dilate(g, ker_far))
         dil_touch.append(cv2.dilate(g, ker_touch))
+        (_, (w1, w2), _) = cv2.minAreaRect(q.astype(np.float32))
+        aspect.append(max(w1, w2) / max(min(w1, w2), 1.0))
+    # sap/kayis/kapak gibi UZUN INCE parcalar (aspect > 2.3) bitisik oldugunda
+    # her zaman anagovdeye katilir (sirt cantasi vb.); iki KOMPAKT govde
+    # (gercek 2 ayri kutu) bitisik olsa bile bu yolla otomatik birlesmez -
+    # asagidaki masa-kontrolune duser.
+    not_boxy = [a > 2.3 for a in aspect]
     tgrid = np.zeros((H, W), np.uint8)
     if table_xy is not None and len(table_xy):
         tij = np.floor((table_xy - mn) / cell_mm).astype(np.int64)
@@ -196,7 +204,8 @@ def _merge_adjacent(xy: np.ndarray, clusters: list, table_xy: Optional[np.ndarra
 
     for i in range(len(clusters)):
         for j in range(i + 1, len(clusters)):
-            if np.any(dil_touch[i] & dil_touch[j]):     # ~bitisik -> her zaman birlestir
+            touching = bool(np.any(dil_touch[i] & dil_touch[j]))
+            if touching and (not_boxy[i] or not_boxy[j]):   # ~bitisik + sap/kayis gibi -> birlestir
                 parent[find(i)] = find(j); continue
             corridor = dil_far[i] & dil_far[j]
             if not np.any(corridor):
@@ -248,10 +257,11 @@ def _cluster_2d(xy: np.ndarray, cell_mm: float = 10.0, close_px: int = 1,
 
 
 def _backproject(px_xy: np.ndarray, K: np.ndarray, n: np.ndarray, d: float):
-    """Piksel isinlari x duzlem (n.X + d = 0) kesisimi. Doner: (M,3)."""
+    """Piksel isinlari x duzlem (n.X + d = 0) kesisimi. Doner: (M,3).
+    NOT: bu rig'de kamera onu -Z (rig.reproject ile ayni yon) - isin z=-1."""
     fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
     dirs = np.stack([(px_xy[:, 0] - cx) / fx, (px_xy[:, 1] - cy) / fy,
-                     np.ones(len(px_xy))], 1)
+                     -np.ones(len(px_xy))], 1)
     den = dirs @ n
     ok = np.abs(den) > 1e-6
     t = -d / den[ok]
@@ -296,7 +306,7 @@ def _obb_from_mask(mask: np.ndarray, K: np.ndarray, plane, pts_above: np.ndarray
     topb = ys <= ylo + 3
     if int(topb.sum()) >= 6:
         tx, ty = xs[topb].astype(float), ys[topb].astype(float)
-        dirs = np.stack([(tx - cx) / fx, (ty - cy) / fy, np.ones_like(tx)], 1)
+        dirs = np.stack([(tx - cx) / fx, (ty - cy) / fy, -np.ones_like(tx)], 1)
         du, dv = dirs @ u, dirs @ v
         s = (cu * du + cv_ * dv) / np.maximum(du * du + dv * dv, 1e-9)
         Xtop = dirs * s[:, None]
@@ -366,14 +376,98 @@ def _obj_obb(pts: np.ndarray, plane, up_idx: int):
 
 
 # ----------------------------------------------------------------------
+def _objects_from_masks(img_masks, P, PX, n, d, plane, K, W, up_idx,
+                        have_he, base, min_footprint_cm, max_objects):
+    """2B nesne maskeleri (jenerik segmentasyon YA DA YOLO26-seg) -> [DetectedObject].
+    Her maske: masa duzlemine geri-izdusum ile ayak izi + seyrek 3B'den yukseklik."""
+    import cv2
+    lin = PX[:, 1].astype(np.int64) * W + PX[:, 0].astype(np.int64)
+    objs: list[DetectedObject] = []
+    dropped = []
+    for mk in img_masks:
+        mk = np.asarray(mk, bool)
+        inside = mk.reshape(-1)[lin]                        # bu maskedeki 3B noktalar
+        pts_in = P[inside]
+        s_in = pts_in @ n + d if len(pts_in) else np.array([])
+        pts_o = pts_in[(s_in > 12.0) & (s_in < 900.0)] if len(pts_in) else pts_in
+        if len(pts_o) < 150:                                # 3B dogrulama YOK -> guvenilmez
+            dropped.append(f"maske {int(mk.sum())}px -> 3B nokta {len(pts_o)} (<150) "
+                           "OLCULEMEZ (isik/doku)"); continue
+        obb = _obb_from_mask(mk, K, plane, pts_o, up_idx)
+        if obb is None:
+            dropped.append(f"maske {int(mk.sum())}px -> olcu uretilemedi"); continue
+        dims = sorted([obb.width_mm, obb.height_mm, obb.thickness_mm], reverse=True)
+        if dims[1] / 10.0 < min_footprint_cm:
+            dropped.append(f"{tuple(round(v/10,1) for v in dims)} orta<{min_footprint_cm}"); continue
+        obb_r = obb
+        if have_he:
+            R, t = base.T[:3, :3], base.T[:3, 3]
+            obb_r = OBB(center=R @ obb.center + t, axes=(R @ obb.axes.T).T,
+                        extents=obb.extents.copy(), ground_z=config.GROUND_Z_MM,
+                        yaw_deg=obb.yaw_deg)
+            pts_r = (R @ pts_o.T).T + t
+        else:
+            pts_r = pts_o
+        posture = classify_obb(obb_r, lean_deg=0.0).label
+        if pts_r is None or len(pts_r) < 400:              # seyrek -> OBB hacminden ornek
+            rng = np.random.default_rng(0)
+            g = rng.uniform(-0.5, 0.5, (1200, 3)) * obb_r.extents
+            pts_r = (g @ obb_r.axes) + obb_r.center
+        gp = plan_grasp(pts_r, obb=obb_r)
+        vol_l = float(np.prod(dims)) / 1e6
+        cnts, _ = cv2.findContours(mk.astype(np.uint8), cv2.RETR_EXTERNAL,
+                                   cv2.CHAIN_APPROX_SIMPLE)
+        cnt = max(cnts, key=cv2.contourArea) if cnts else None
+        x, y, ww, hh = cv2.boundingRect(cnt) if cnt is not None else (0, 0, 0, 0)
+        objs.append(DetectedObject(
+            rank=0, center_mm=[float(v) for v in obb_r.center],
+            dims_cm=(round(dims[0] / 10, 1), round(dims[1] / 10, 1), round(dims[2] / 10, 1)),
+            volume_l=vol_l, yaw_deg=obb_r.yaw_deg, n_points=len(pts_o),
+            posture=posture, bbox_px=(x, y, x + ww, y + hh), contour=cnt,
+            obb=obb_r, grasp=gp))
+    if dropped:
+        logger.info("elenen maske: %s", "; ".join(dropped))
+    objs.sort(key=lambda o: o.volume_l, reverse=True)      # EN BUYUK once
+    for i, o in enumerate(objs[:max_objects]):
+        o.rank = i
+    return objs[:max_objects]
+
+
+_SUITCASE_DET = None
+
+
+def _get_suitcase_detector():
+    """YOLO26-seg valiz dedektoru - process basina bir kez yuklenir."""
+    global _SUITCASE_DET
+    if _SUITCASE_DET is None:
+        from .detector import SuitcaseDetector
+        _SUITCASE_DET = SuitcaseDetector()
+    return _SUITCASE_DET
+
+
 def detect_objects(image_left: np.ndarray, image_right: np.ndarray,
                    rig: Optional[StereoRig] = None,
                    base_T_cam: Optional[BaseTransform] = None,
                    min_footprint_cm: float = 2.8,
                    max_objects: int = 10,
-                   frames: Optional[list] = None) -> list[DetectedObject]:
+                   frames: Optional[list] = None,
+                   mode: Optional[str] = None,
+                   diag: Optional[dict] = None) -> list[DetectedObject]:
     """frames verilirse (sabit sahnenin birden fazla L/R cifti) bulutlar
-    BIRLESTIRILIR -> seyrek/kararsiz olcumler stabil hale gelir. Yoksa tek cift."""
+    BIRLESTIRILIR -> seyrek/kararsiz olcumler stabil hale gelir. Yoksa tek cift.
+
+    mode:
+      "nesne" (varsayilan) -> geometrik: masa duzlemi + 2B kumeleme; her cisim.
+      "valiz"              -> YOLO26-seg maskeleri (sadece 'suitcase'); olcu ayni
+                              maske->duzlem izdusum + seyrek-3B yukseklik yolundan.
+      None -> config.DETECT_MODE
+
+    diag: bos bir dict verilirse (mod FARK ETMEKSIZIN) icine gorsellestirme
+      verisi doldurulur: "rektifiye_sol" (H,W,3 BGR), "disparite" (H,W float),
+      "derinlik_mm" (H,W float, Z kanali, NaN=gecersiz), "bulut_mm" (N,3),
+      "bulut_rgb" (N,3 uint8 veya None). Nesne tespitini etkilemez.
+    """
+    mode = (mode or getattr(config, "DETECT_MODE", "nesne") or "nesne").strip().lower()
     rig = rig or StereoRig.load()
     try:
         base = base_T_cam or BaseTransform.load()
@@ -415,6 +509,12 @@ def detect_objects(image_left: np.ndarray, image_right: np.ndarray,
         px_parts.append(np.column_stack([xx, yy]).astype(np.int32))
     P = np.concatenate(parts, axis=0) if len(parts) > 1 else parts[0]
     PX = np.concatenate(px_parts, axis=0) if len(px_parts) > 1 else px_parts[0]
+
+    if diag is not None:
+        depth_full = np.where(fin, pts[:, :, 2], np.nan).astype(np.float32)
+        diag.update(rektifiye_sol=lr_last, disparite=disp.disparity.astype(np.float32),
+                    derinlik_mm=depth_full)
+
     if len(P) < 3000:
         logger.warning("cok az 3B nokta (%d) - isik/doku?", len(P))
         return []
@@ -433,6 +533,37 @@ def detect_objects(image_left: np.ndarray, image_right: np.ndarray,
     Pa, PXa = P[above], PX[above]
     P_table = P[(signed > -25.0) & (signed < 15.0)]  # masa hizasi -> kumeler arasi "masa var mi"
 
+    if diag is not None:
+        # GORSEL bulut: SADECE masa ustundeki (nesne) noktalar - zemin/masa disari
+        # birakilir, gorselde net "burada nesne var" gorunsun.
+        cloud_xyz, cloud_rgb = Pa, None
+        try:
+            cloud_rgb = lr_last[PXa[:, 1], PXa[:, 0]][:, ::-1].astype(np.uint8)  # BGR->RGB
+        except Exception:  # noqa: BLE001
+            pass
+        cap = int(getattr(config, "POINTCLOUD_MAX_POINTS", 60000))
+        if cap > 0 and len(cloud_xyz) > cap:
+            csel = np.random.default_rng(0).choice(len(cloud_xyz), size=cap, replace=False)
+            cloud_xyz = cloud_xyz[csel]
+            cloud_rgb = cloud_rgb[csel] if cloud_rgb is not None else None
+        diag.update(bulut_mm=cloud_xyz, bulut_rgb=cloud_rgb)
+
+    # ================= VALIZ MODU: YOLO26-seg maskeleri (YOL A atlanir) ============
+    if mode == "valiz":
+        try:
+            dets = _get_suitcase_detector().detect_all(lr_last)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("valiz modu: YOLO tespiti basarisiz (%s)", exc)
+            return []
+        if not dets:
+            logger.info("valiz modu: goruntude valiz yok")
+            return []
+        objs = _objects_from_masks([dd.mask for dd in dets], P, PX, n, d, plane, K,
+                                   W, up_idx, have_he, base, min_footprint_cm, max_objects)
+        logger.info("%d valiz [YOLO26-seg %s] (epipolar %+.1fpx)", len(objs),
+                    dets[0].weights_used, epi_dy)
+        return objs
+
     # ================= YOL A: DOLU BULUT (dokulu masa) -> 3B kumeleme =================
     if len(Pa) >= 2500:
         objs = _detect_3d(Pa, PXa, n, d, K, up_idx, have_he, base, lr_last,
@@ -447,61 +578,11 @@ def detect_objects(image_left: np.ndarray, image_right: np.ndarray,
     if not img_masks:
         logger.warning("goruntude nesne bolgesi yok")
         return []
-    lin = PX[:, 1].astype(np.int64) * W + PX[:, 0].astype(np.int64)
-
-    objs: list[DetectedObject] = []
-    dropped = []
-    for mk in img_masks:
-        inside = mk.reshape(-1)[lin]                        # bu maskedeki 3B noktalar
-        pts_in = P[inside]
-        s_in = pts_in @ n + d if len(pts_in) else np.array([])
-        pts_o = pts_in[(s_in > 12.0) & (s_in < 900.0)] if len(pts_in) else pts_in
-        if len(pts_o) < 150:                                # 3B dogrulama YOK -> guvenilmez
-            dropped.append(f"maske {int(mk.sum())}px -> 3B nokta {len(pts_o)} (<150) "
-                           "OLCULEMEZ (isik/doku)"); continue
-        # OLCU: maskeyi masa duzlemine geri-izdusum (yogun) + seyrek 3B'den yukseklik
-        obb = _obb_from_mask(mk, K, plane, pts_o, up_idx)
-        if obb is None:
-            dropped.append(f"maske {int(mk.sum())}px -> olcu uretilemedi"); continue
-        dims = sorted([obb.width_mm, obb.height_mm, obb.thickness_mm], reverse=True)
-        if dims[1] / 10.0 < min_footprint_cm:
-            dropped.append(f"{tuple(round(v/10,1) for v in dims)} orta<{min_footprint_cm}"); continue
-        obb_r = obb
-        if have_he:
-            R, t = base.T[:3, :3], base.T[:3, 3]
-            obb_r = OBB(center=R @ obb.center + t, axes=(R @ obb.axes.T).T,
-                        extents=obb.extents.copy(), ground_z=config.GROUND_Z_MM,
-                        yaw_deg=obb.yaw_deg)
-            pts_r = (R @ pts_o.T).T + t
-        else:
-            pts_r = pts_o
-        posture = classify_obb(obb_r, lean_deg=0.0).label
-        # seyrek 3B -> plan_grasp icin OBB hacminden yogun ornek uret
-        if pts_r is None or len(pts_r) < 400:
-            rng = np.random.default_rng(0)
-            g = rng.uniform(-0.5, 0.5, (1200, 3)) * obb_r.extents
-            pts_r = (g @ obb_r.axes) + obb_r.center
-        gp = plan_grasp(pts_r, obb=obb_r)
-        vol_l = float(np.prod(dims)) / 1e6
-        cnts, _ = cv2.findContours(mk.astype(np.uint8), cv2.RETR_EXTERNAL,
-                                   cv2.CHAIN_APPROX_SIMPLE)
-        cnt = max(cnts, key=cv2.contourArea) if cnts else None
-        x, y, ww, hh = cv2.boundingRect(cnt) if cnt is not None else (0, 0, 0, 0)
-        objs.append(DetectedObject(
-            rank=0, center_mm=[float(v) for v in obb_r.center],
-            dims_cm=(round(dims[0] / 10, 1), round(dims[1] / 10, 1), round(dims[2] / 10, 1)),
-            volume_l=vol_l, yaw_deg=obb_r.yaw_deg, n_points=len(pts_o),
-            posture=posture, bbox_px=(x, y, x + ww, y + hh), contour=cnt,
-            obb=obb_r, grasp=gp))
-
-    if dropped:
-        logger.info("elenen kume: %s", "; ".join(dropped))
-    objs.sort(key=lambda o: o.volume_l, reverse=True)      # EN BUYUK once
-    for i, o in enumerate(objs[:max_objects]):
-        o.rank = i
-    logger.info("%d nesne (epipolar duzeltme %+.1fpx %s)", len(objs), epi_dy,
+    objs = _objects_from_masks(img_masks, P, PX, n, d, plane, K, W, up_idx,
+                               have_he, base, min_footprint_cm, max_objects)
+    logger.info("%d nesne [2B segmentasyon] (epipolar %+.1fpx %s)", len(objs), epi_dy,
                 "uygulandi" if epi_ok else "yok")
-    return objs[:max_objects]
+    return objs
 
 
 def _cuboid_from_silhouette(px_xy: np.ndarray, img_hw, K, n, d):
@@ -644,19 +725,24 @@ def _detect_3d(Pa, PXa, n, d, K, up_idx, have_he, base, lr_last,
             u = np.cross(n, [0.0, 0.0, 1.0]); u = u / (np.linalg.norm(u) + 1e-9)
             vv = np.cross(n, u); vv = vv / (np.linalg.norm(vv) + 1e-9)
             fx, fy, cx0, cy0 = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
+            # NOT: bu rig'de kamera onu -Z (rig.reproject ile ayni yon) - isin z=-1
+            # olmali, aksi halde t hep negatif cikip (t>60) filtresi HER SEYI eler
+            # ve sessizce obb_z (daha az hassas) fallback'ine duser.
             dr = np.stack([(pxc[:, 0] - cx0) / fx, (pxc[:, 1] - cy0) / fy,
-                           np.ones(len(pxc))], 1)
+                           -np.ones(len(pxc))], 1)
             den = dr @ n; m2 = np.abs(den) > 1e-6
             t = -(d - Hc * 0.5) / den[m2]              # nesne ORTA yuksekligi duzlemi
             X = dr[m2] * t[:, None]
             X = X[(t > 60) & (t < 5000)]
+            if getattr(config, "DEBUG_FOOTPRINT", False):
+                logger.warning("TESHIS ayak-izi: eroded_px=%d projected=%d", len(xs2), len(X))
             if len(X) >= 100:
                 f2 = np.stack([X @ u, X @ vv], 1).astype(np.float32)
                 lo, hi = np.percentile(f2, [1, 99], axis=0)
                 f2 = f2[np.all((f2 >= lo) & (f2 <= hi), axis=1)]
                 (_, _), (w1, w2), ang = cv2.minAreaRect(f2)
                 sc = float(getattr(config, "MEASURE_SCALE", 1.0))
-                Wm, Dm, yaw = (max(w1, w2) + 8.0) * sc, (min(w1, w2) + 8.0) * sc, float(ang)
+                Wm, Dm, yaw = max(w1, w2) * sc, min(w1, w2) * sc, float(ang)
         except Exception:  # noqa: BLE001
             pass
         if Wm is None:

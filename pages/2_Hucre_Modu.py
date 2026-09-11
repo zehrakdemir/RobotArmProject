@@ -13,7 +13,11 @@ import numpy as np
 import streamlit as st
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-st.set_page_config(page_title="Hucre Modu - Valiz + FR3", layout="wide")
+st.set_page_config(page_title="Hucre Modu - Valiz + FR3", layout="wide", page_icon="🤖")
+
+from src.ui import inject_theme, page_header  # noqa: E402
+
+inject_theme()
 
 
 def _rgb(img):
@@ -47,9 +51,11 @@ def _latest_snap_pair(folder="snaps"):
 
 
 # ---------------------------------------------------------------- baslik
-st.title("🤖 Hucre Modu — Valiz olcum + FR3 kavrama")
-st.caption("2 sabit kamera (kalibreli stereo) → VALIZ MI? → 3B bulut (robot taban) "
-           "→ OBB + durus → DIK: kavrama plani / YATIK: dik konuma getirme → FR3 programi.")
+page_header(
+    "🤖", "Hücre Modu",
+    "2 sabit kamera (kalibreli stereo) → VALİZ Mİ? → 3B bulut (robot taban) → OBB + "
+    "duruş → DİK: kavrama planı / YATIK: dik konuma getirme → FR3 programı.",
+)
 
 from src import config
 from src.calib import calibration_status

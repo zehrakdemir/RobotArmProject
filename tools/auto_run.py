@@ -22,12 +22,14 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="robota gonderme, sadece plan")
     ap.add_argument("--max-cycles", type=int, default=50)
     ap.add_argument("--once", action="store_true", help="tek tur calis, cik")
+    ap.add_argument("--mode", choices=["valiz", "nesne"], default=None,
+                    help="valiz=YOLO26-seg · nesne=geometrik (varsayilan: .env DETECT_MODE)")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     from src.auto import AutoCell
 
-    cell = AutoCell(dry_run=args.dry_run)
+    cell = AutoCell(dry_run=args.dry_run, mode=args.mode)
     if args.once:
         r = cell.step()
         print("SONUC:", r)

@@ -79,6 +79,9 @@ class AutoState:
     last_cycle: dict = field(default_factory=dict)
     objects: list = field(default_factory=list)   # son taramadaki DetectedObject.as_dict
     overlay_png: bytes = b""                       # son tarama: cerceveli rektifiye SOL kare
+    depth_png: bytes = b""                          # son tarama: renklendirilmis derinlik haritasi
+    cloud_xyz_mm: object = None                     # son tarama: 3B bulut (N,3 mm, downsample)
+    cloud_rgb: object = None                        # son tarama: bulut renkleri (N,3 uint8) / None
     plan: list = field(default_factory=list)      # kuru mod: tum nesneler icin sira plani
     events: list = field(default_factory=list)
     done: bool = False
@@ -93,8 +96,10 @@ class AutoState:
 
 # ---------------------------------------------------------------- orkestra
 class AutoCell:
-    def __init__(self, dry_run: bool = False, place_slots: Optional[list] = None):
+    def __init__(self, dry_run: bool = False, place_slots: Optional[list] = None,
+                 mode: Optional[str] = None):
         self.dry_run = dry_run
+        self.mode = (mode or getattr(config, "DETECT_MODE", "nesne") or "nesne").strip().lower()
         self.slots = [list(s) for s in (place_slots or config.PLACE_SLOTS)]
         self.rig = StereoRig.load()
         try:
@@ -116,6 +121,24 @@ class AutoCell:
         except Exception as exc:  # noqa: BLE001
             logger.debug("overlay olusmadi: %s", exc)
 
+    def _diagnostics(self, diag: dict):
+        """detect_objects'in diag ciktisindan derinlik haritasi + 3B bulut uretir
+        (mod farketmeksizin - valiz da, nesne de ayni sekilde gosterilir)."""
+        s = self.state
+        try:
+            depth_mm = diag.get("derinlik_mm")
+            if depth_mm is not None:
+                import cv2
+                from .depth import colorize_depth
+                color = colorize_depth(depth_mm)                # (H,W,3) BGR
+                ok, buf = cv2.imencode(".png", cv2.cvtColor(color, cv2.COLOR_BGR2RGB))
+                if ok:
+                    s.depth_png = buf.tobytes()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("derinlik haritasi olusmadi: %s", exc)
+        s.cloud_xyz_mm = diag.get("bulut_mm")
+        s.cloud_rgb = diag.get("bulut_rgb")
+
     # -- tek tur --
     def step(self) -> dict:
         s = self.state
@@ -129,10 +152,13 @@ class AutoCell:
         except Exception as exc:  # noqa: BLE001
             s.error = str(exc); s.log(f"KAMERA HATASI: {exc}")
             return {"error": s.error}
+        diag: dict = {}
         objs = detect_objects(None, None, rig=self.rig, base_T_cam=self.base,
-                              max_objects=config.AUTO_MAX_OBJECTS, frames=frames)
+                              max_objects=config.AUTO_MAX_OBJECTS, frames=frames,
+                              mode=self.mode, diag=diag)
         s.objects = [o.as_dict() for o in objs]
         self._overlay(frames[-1][0], objs)
+        self._diagnostics(diag)
         if not objs:
             s.log(f"{nm}: masada nesne yok - bekleniyor.")
             return {"empty": True, "objects": []}
@@ -178,12 +204,15 @@ class AutoCell:
         except Exception as exc:  # noqa: BLE001
             s.error = str(exc); s.log(f"KAMERA HATASI: {exc}"); s.running = False
             return []
+        diag: dict = {}
         objs = detect_objects(None, None, rig=self.rig, base_T_cam=self.base,
-                              max_objects=config.AUTO_MAX_OBJECTS, frames=frames)
+                              max_objects=config.AUTO_MAX_OBJECTS, frames=frames,
+                              mode=self.mode, diag=diag)
         s.objects = [o.as_dict() for o in objs]
         self._overlay(frames[-1][0], objs)
-        s.log(f"{nm}: {config.AUTO_MERGE_FRAMES} kare birlestirildi -> {len(objs)} nesne, "
-              "buyukten kucuge sira:")
+        self._diagnostics(diag)
+        s.log(f"{nm}: [{self.mode}] {config.AUTO_MERGE_FRAMES} kare birlestirildi -> "
+              f"{len(objs)} nesne, buyukten kucuge sira:")
         plan = []
         for i, o in enumerate(objs):
             if not (o.grasp and o.grasp.feasible):
@@ -208,7 +237,7 @@ class AutoCell:
             self.plan_all()                         # kuru = tek tarama + tam plan
             return
         self.state.running = True
-        self.state.log(f"BASLADI (hand-eye={'var' if self.have_he else 'YOK'}, "
+        self.state.log(f"BASLADI (mod={self.mode}, hand-eye={'var' if self.have_he else 'YOK'}, "
                        f"slot={len(self.slots)})")
         if not self.have_he:
             self.state.log("UYARI: base_T_cam yok - pozlar KAMERA cercevesinde. "

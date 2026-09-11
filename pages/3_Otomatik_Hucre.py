@@ -12,11 +12,15 @@ import time
 import streamlit as st
 
 from src import config
+from src.ui import inject_theme, page_header, live_dot, section
 
-st.set_page_config(page_title="Otomatik Hucre", layout="wide")
-st.title("🔁 Otomatik Cok-Nesneli Hucre")
-st.caption("Masadaki kutulari algila → **en buyuk** → FR3 kaldir/yerlestir → tekrar → "
-           "kucuge dogru. Kameralar robot masasina bakiyor.")
+st.set_page_config(page_title="Otomatik Hucre", layout="wide", page_icon="🛄")
+inject_theme()
+page_header(
+    "🛄", "Otomatik Bagaj Bandı",
+    "Masadaki kutuları algıla → en büyük → FR3 kaldır/yerleştir → tekrar → küçüğe "
+    "doğru. Bir bagaj bandı gibi çalışır: kameralar robot masasına bakıyor.",
+)
 
 ss = st.session_state
 ss.setdefault("auto_cell", None)
@@ -25,6 +29,14 @@ ss.setdefault("auto_stopper", None)     # threading.Event
 
 with st.sidebar:
     st.header("Ayarlar")
+    _modes = {"🧳 Valiz (YOLO26-seg)": "valiz", "📦 Diğer nesneler (geometrik)": "nesne"}
+    _labels = list(_modes)
+    _def_ix = 1 if config.DETECT_MODE == "nesne" else 0
+    mode_label = st.radio("Tespit modu", _labels, index=_def_ix,
+                          help="Valiz: YOLO26-seg ile sadece valiz sınıfı, tüm senaryo valize "
+                               "ayarlı. Diğer: masa düzlemi + geometrik kümeleme, her cisim, "
+                               "model gerekmez. İkisi de aynı en-büyük→yerleştir döngüsü.")
+    mode = _modes[mode_label]
     dry = st.checkbox("Kuru calisma (robota gonderme)", value=True,
                       help="Kapali: FR3'e GERCEK hareket. Once kuru dene.")
     st.write(f"**ROBOT_IP** = {config.ROBOT_IP}  ·  ENABLED={config.ROBOT_ENABLED}")
@@ -48,7 +60,7 @@ if col1.button("▶️ BASLAT", type="primary", use_container_width=True,
     from src.auto import AutoCell
     stopper = threading.Event()
     ss.auto_stopper = stopper
-    cell = AutoCell(dry_run=dry)
+    cell = AutoCell(dry_run=dry, mode=mode)
     ss.auto_cell = cell
     t = threading.Thread(target=cell.run,
                          kwargs=dict(stop=stopper.is_set, max_cycles=50),
@@ -70,6 +82,12 @@ if cell is None:
 
 s = cell.state
 alive = bool(ss.auto_thread and ss.auto_thread.is_alive())
+hc1, hc2 = st.columns([1, 3])
+with hc1:
+    live_dot(alive, label_off=("BANT DURDU — BİTTİ" if s.done else "BANT BEKLEMEDE"))
+with hc2:
+    st.markdown(
+        f"Aktif mod: **{'🧳 Valiz (YOLO26-seg)' if cell.mode == 'valiz' else '📦 Diğer nesneler (geometrik)'}**")
 c1, c2, c3 = st.columns(3)
 c1.metric("Durum", "ÇALIŞIYOR" if alive else ("BİTTİ" if s.done else "durdu"))
 c2.metric("Yerlestirilen", f"{s.placed} / {len(config.PLACE_SLOTS)}")
@@ -78,11 +96,12 @@ if s.error:
     st.error(f"Hata: {s.error}")
 
 # --- canli goruntu: solda ham akis, sagda tespit cerceveleri ---
+section("📡", "Canlı Görüntü")
 vc1, vc2 = st.columns(2)
 with vc1:
     st.caption("Canlı kamera (sol) — ham")
     st.markdown(
-        f'<img src="http://localhost:8600/stream/L" style="width:100%;border:1px solid #444">',
+        f'<img src="http://localhost:8600/stream/L" style="width:100%;border:1px solid #223044;border-radius:12px">',
         unsafe_allow_html=True)
 with vc2:
     st.caption("Son tarama — tespit çerçeveleri (yeşil = sıradaki)")
@@ -91,12 +110,36 @@ with vc2:
     else:
         st.info("Henüz tarama yok. BAŞLAT.")
 
+# --- derinlik haritasi + 3B nokta bulutu (her iki modda da: valiz / diger nesneler) ---
+section("🌊", "Derinlik & 3B Bulut")
+vc3, vc4 = st.columns(2)
+with vc3:
+    st.caption("Son tarama — derinlik haritası")
+    if s.depth_png:
+        st.image(s.depth_png, use_container_width=True)
+    else:
+        st.info("Henüz tarama yok.")
+with vc4:
+    st.caption("Son tarama — 3B nokta bulutu")
+    show_cloud = st.checkbox("Göster (canlı yenilemede ağır olabilir)", value=False,
+                             key="show_cloud")
+    if show_cloud:
+        if s.cloud_xyz_mm is not None and len(s.cloud_xyz_mm):
+            from src.pointcloud import PointCloud, plotly_figure
+            pc = PointCloud(xyz=s.cloud_xyz_mm / 10.0, rgb=s.cloud_rgb)  # mm -> cm
+            st.plotly_chart(plotly_figure(pc, title="Sahne", unit="cm"),
+                            use_container_width=True)
+        else:
+            st.info("Henüz bulut yok.")
+    else:
+        st.caption("Kutucuğu işaretle.")
+
 if s.objects:
-    st.subheader("Son taramadaki nesneler (buyukten kucuge)")
+    section("📦", "Son Taramadaki Nesneler (büyükten küçüğe)")
     st.dataframe(s.objects, use_container_width=True, hide_index=True)
 
 if s.plan:
-    st.subheader(f"KURU PLAN — {len(s.plan)} nesne, buyukten kucuge yerlestirme sirasi")
+    section("🗺️", f"Kuru Plan — {len(s.plan)} nesne, büyükten küçüğe yerleştirme sırası")
     st.caption("Kuru modda tek tarama yapilir ve masadaki TUM nesneler icin sira "
                "cikarilir. Gercek modda robot her nesneyi kaldirinca sahne degisir, "
                "dongu kalan en buyugu secer.")
@@ -105,8 +148,8 @@ if s.plan:
                "slot": p["slot"][:3], "adim": len(p["program"]["adimlar"])}
               for i, p in enumerate(s.plan)])
 
-st.subheader("Olay gunlugu")
-st.code("\n".join(s.events[-40:]) or "(hebuz yok)", language="text")
+section("📜", "Olay Günlüğü")
+st.code("\n".join(s.events[-40:]) or "(henüz yok)", language="text")
 
 if alive:
     time.sleep(2.0)
