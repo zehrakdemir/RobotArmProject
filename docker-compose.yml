@@ -1,16 +1,12 @@
 # Kullanım:
+#   docker compose up cobot          # ROS2 + MoveIt2 + web arayüzü  -> :8088
 #   docker compose run --rm test     # lint + test (ROS2 gerektirmez, saniyeler)
 #   docker compose run --rm verify   # tam ortam sağlıklı mı (robot gerekmez)
-#   docker compose run --rm cobot    # tam ortamda kabuk
+#   docker compose run --rm cobot bash   # aynı ortamda kabuk
 #
-# "verify" ile "cobot" aynı imajı kullanır. Önce verify'ı çalıştır: ortamın
-# doğru kurulduğunu robota hiç dokunmadan söyler.
-#
-# NE DOĞRULANDI: imaj derleniyor; sürücü bizim TAM yamamızla (UDP servo
-# kanalı, ölçülen cmdT, hız sınırlayıcı, boşta servo çıkışı) derleniyor;
-# moveit_py, MTC, Fairino SDK ve uygulama modüllerinin hepsi yükleniyor.
-# NE DOĞRULANMADI: container'dan GERÇEK ROBOT sürmek. Native kurulum
-# çalışıyor ve şimdilik desteklenen yol o. Ayrıntı: docs/DOCKER.md
+# ÖNCE .env: robotun IP'sini oraya yaz (cp .env.example .env). Container
+# içinden ağ TARAMASI çalışmaz - robotun ağı orada yerel değil, yönlendirilmiş
+# bir ağdır; tarama hiçbir şey bulamaz. IP verilince tarama zaten atlanır.
 
 services:
 
@@ -27,63 +23,84 @@ services:
   # verify - tam ortam doğru kuruldu mu? Robota BAĞLANMAZ.
   #
   # İmaj "başarıyla" derlenip işe yaramaz çıkabiliyor: gerçek bir örnekte
-  # colcon, seçilen paketi bulamayınca uyarı verip 0 ile çıkmıştı — build
+  # colcon, seçilen paketi bulamayınca uyarı verip 0 ile çıkmıştı - build
   # yeşil, install/ boş, robot hiç sürülemez. Bu servis onu yakalar.
   # -------------------------------------------------------------------------
   verify:
     build:
       context: .
       target: runtime
+    image: fairino-cobot:runtime
     command: ["bash", "/app/scripts/verify_container.sh"]
 
   # -------------------------------------------------------------------------
-  # cobot - gerçek robotu süren tam ortam
+  # cobot - GERÇEK ROBOTU SÜREN SERVİS. Web arayüzü dahil.
+  #
+  # İmajın CMD'si scripts/start_all.sh: önce fairino_launch (robotu algıla,
+  # doğru sürücü kaynağını kur/derle, move_group), sonra web arayüzü.
+  # Arayüz robot hazır olmasa da açılır ve sebebini ekranda gösterir;
+  # robot hazır olunca kendiliğinden bağlanır.
   # -------------------------------------------------------------------------
   cobot:
     build:
       context: .
       target: runtime
-    # ÜÇ AYAR DA ZORUNLU - biri eksikse ya robot bulunamaz ya hareket bozulur:
-    #
-    # 1) network_mode: host
-    #    Robota LAN üzerinden (port 20003/20004/20007) ulaşmak ve ROS2 DDS'in
-    #    multicast keşfi için. Bridge ağında DDS düğümleri birbirini görmez.
-    #    NOT: Docker Desktop for Windows'ta host networking Linux'takiyle aynı
-    #    davranmıyor. WSL2 içinde çalışan yerli docker engine ile kullan.
-    network_mode: host
+    # scripts/run_container.sh ile AYNI imaj - iki yol ayrismasin.
+    image: fairino-cobot:runtime
+    container_name: cobot
 
-    # 2) SYS_NICE + rtprio
-    #    ros2_control kontrol döngüsünü FIFO gerçek-zamanlı öncelikle çalıştırır.
-    #    Bu izin olmadan döngü gecikip patlama halinde yetişmeye çalışıyor,
-    #    ServoJ akışı düzensizleşiyor ve robot hız limiti faultu verebiliyor.
-    #    Native tarafta aynı sorun "Could not enable FIFO RT scheduling policy"
-    #    olarak görülmüştü; çözümü sudo/PAM üzerinden rtprio 99 almaktı.
+    # NEDEN host networking DEĞİL:
+    # Eskiden burada network_mode: host vardı ve "zorunlu" diye yazılmıştı.
+    # ÖLÇÜLDÜ, ZORUNLU DEĞİL: köprü ağında gerçek robot sorunsuz sürüldü.
+    # Sebebi basit - move_group, controller ve arayüz AYNI container'da,
+    # yani DDS keşfi container içinde kalıyor, multicast'e ihtiyaç yok.
+    # Robota giden trafik (20003/20004/20007) sıradan IP yönlendirmesiyle
+    # gidiyor, host ağına gerek duymuyor.
+    # Köprü ağının BEDELİ: host'tan "ros2 topic list" container'ın
+    # düğümlerini GÖRMEZ. Görmek istiyorsan: docs/DOCKER.md
+    ports:
+      - "${MOVECOBOT_WEB_PORT:-8088}:8088"
+
+    # SYS_NICE + rtprio: ros2_control kontrol döngüsünü FIFO gerçek-zamanlı
+    # önceliğe alır. Bu izin olmadan döngü gecikip patlama halinde yetişmeye
+    # çalışıyor, ServoJ akışı düzensizleşiyor ve robot hız limiti faultu
+    # verebiliyor. Doğrulaması: logda
+    #   Successful set up FIFO RT scheduling policy with priority 50
     cap_add:
       - SYS_NICE
     ulimits:
       rtprio: 99
       memlock: -1
 
-    # 3) X soketi (rviz2, gripper_gui)
-    #    WSLg altında DISPLAY ve /mnt/wslg gerekiyor. Saf Linux'ta /mnt/wslg
-    #    satırını kaldır, /tmp/.X11-unix yeter.
     environment:
+      # Robotun IP'si. .env'den gelir; verilmezse container içinde ağ
+      # taraması denenir ve büyük ihtimalle BULAMAZ (yukarıdaki nota bak).
+      - FAIRINO_ROBOT_IP=${FAIRINO_ROBOT_IP:-}
+      # rviz ve gripper GUI için X soketi (WSLg).
       - DISPLAY=${DISPLAY:-:0}
       - WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-}
       - XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/mnt/wslg/runtime-dir}
-      - PULSE_SERVER=${PULSE_SERVER:-}
       # rviz'in yazılım render'ına düşmesi (WSLg'de glamor/GBM tutarsız).
       - LIBGL_ALWAYS_SOFTWARE=1
-      # Robotun IP'si verilirse ağ taraması hiç yapılmaz.
-      - FAIRINO_ROBOT_IP=${FAIRINO_ROBOT_IP:-}
+
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # Saf Linux'ta (WSL değil) aşağıdaki satırı kaldır.
       - /mnt/wslg:/mnt/wslg:rw
       # Kayıtlı hareketler container silinince kaybolmasın.
       - fairino-state:/state
-      # Geliştirirken kaynağı canlı bağla (imajı yeniden derlemeden dene).
-      - ./src:/app/src:ro
 
+    # Arayüz gerçekten cevap veriyor mu? "Up" yazması yetmez.
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8088/api/state', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      # İlk açılışta sürücü derlenebiliyor - o yüzden uzun.
+      start_period: 300s
+
+    restart: unless-stopped
     stdin_open: true
     tty: true
 
