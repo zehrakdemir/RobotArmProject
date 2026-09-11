@@ -43,6 +43,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fairino_cobot import paths
+from fairino_cobot.safety import asiri_eklem_hareketi
 
 # SDK'nin yeri makineye gore degisiyor - tek yerden cozuluyor (paths.py).
 paths.ensure_sdk_on_path()
@@ -113,6 +114,33 @@ GRIPPER_LENGTH_FLOOR_M = 0.120
 # noktasi arasina (gercek tehlike=9.54mm / guvenli-ama-yapisal-yakin=16.7mm)
 # cekildi.
 MIN_CLEARANCE_M = 0.012
+
+# ---------------------------------------------------------------------------
+# GORECELI HAREKETTE ASIRI EKLEM SALINIMI SINIRI
+# ---------------------------------------------------------------------------
+# CANLI OLAY (bu sinirin var olma sebebi): arayuzden TCP'yi arac ekseninde
+# SADECE 10mm oteleme komutu verildi. Uretilen plan j1'i 37.08 -> 69.94
+# dereceye, yani 32.9 derece dondurecekti; kol genis bir yay cizerek
+# savruldu ve kullanici acil stopa basmak zorunda kaldi.
+#
+# SEBEP: Pilz PTP ve LIN, joint_limits.yaml'da ivme limiti tanimli olmadigi
+# icin ("acceleration limit not set for group") HIC planlayamiyor; her
+# hareket sessizce OMPL/RRTConnect'e duesuyor. RRTConnect rastgele bir
+# planlayici ve POZ hedefi verildiginde IK'nin BASKA BIR DALINI (kol
+# ters-dirsek konumu) secebiliyor - TCP 10mm gitsin diye kol komple yer
+# degistiriyor.
+#
+# NEDEN MEVCUT KONTROLLER YAKALAMADI: zemin ve self-collision kontrolleri
+# o yayin kendisinde bir ihlal gormuyor - yay bos havada. Carpilacak sey
+# MoveIt'in modelinde OLMAYAN gercek dunyadaki bir nesneydi. Yani o iki
+# kontrol bu sinif hatayi yakalayamaz, yakalayacak sey ORANTI kontrolu:
+# birkac milimetrelik bir oteleme icin kolun onlarca derece donmesi
+# BASLI BASINA anormaldir, nereye gittiginden bagimsiz olarak.
+#
+# Bu esik asilirsa hareket ICRA EDILMEDEN reddedilir ve sebebi arayuzde
+# gorunur. Sadece goreceli TCP hareketlerine (jog) uygulanir - mutlak
+# hedeflerde buyuk eklem hareketi mesru olabilir.
+MAX_JOG_JOINT_EXCURSION_DEG = 20.0
 
 # MIN_CLEARANCE_M artik SADECE plandan SONRA kontrol edilen bir esik degil -
 # MoveIt'in link padding mekanizmasiyla PLANLAMAYA da veriliyor (bkz.
@@ -831,7 +859,8 @@ class CobotArm:
             },
         }
 
-    def _plan_and_execute(self, confirm, speed_pct=None, accel_pct=None, prefer_lin=False):
+    def _plan_and_execute(self, confirm, speed_pct=None, accel_pct=None, prefer_lin=False,
+                          max_joint_excursion_deg=None):
         """speed_pct/accel_pct verilirse (adim-bazli kayitli hiz/ivme), o TEK
         plan() cagrisi icin oturumun varsayilanini (moveit_cpp.yaml'a init'te
         yazilan) PlanRequestParameters ile gecici olarak ezer - CobotArm'in
@@ -980,6 +1009,23 @@ class CobotArm:
                                f"mesafesinin ({MIN_CLEARANCE_M*1000:.0f}mm) altina dusuluyor - en "
                                f"kotusu adim {worst_step}/{len(plan_result.trajectory)}, mesafe="
                                f"{worst_dist*1000:.1f}mm"}
+
+        # ORANTI KONTROLU - bkz. MAX_JOG_JOINT_EXCURSION_DEG ustundeki olay
+        # kaydi. Zemin/self-collision kontrolleri bos havadaki genis bir yayi
+        # ihlal saymaz; bu kontrol tam olarak onu yakalar. Plandaki HER nokta
+        # baslangic acilariyla karsilastiriliyor - sadece bitis noktasi degil,
+        # cunku yayin kendisi ara noktalarda savruluyor.
+        if max_joint_excursion_deg is not None:
+            with self.sdk_lock:
+                baslangic = self.sdk.GetActualJointPosDegree()[1]
+            plan_acilari = [
+                [math.degrees(v) for v in
+                 plan_result.trajectory[adim].get_joint_group_positions(self.group_name)]
+                for adim in range(len(plan_result.trajectory))
+            ]
+            ihlal = asiri_eklem_hareketi(baslangic, plan_acilari, max_joint_excursion_deg)
+            if ihlal is not None:
+                return ihlal
 
         if confirm:
             answer = input("Bu hedefe uygulansin mi? (e/h): ").strip().lower()
@@ -1210,11 +1256,16 @@ class CobotArm:
         pose_goal.pose.orientation.w = quat[3]
         return pose_goal
 
-    def move_to_pose_base(self, x, y, z, rx, ry, rz, confirm=False, prefer_lin=False):
+    def move_to_pose_base(self, x, y, z, rx, ry, rz, confirm=False, prefer_lin=False,
+                          max_joint_excursion_deg=None):
+        """max_joint_excursion_deg SADECE goreceli (jog) cagrilardan
+        veriliyor - mutlak bir hedefe giderken buyuk eklem hareketi mesru
+        olabilir, orada sinir uygulanmaz."""
         self._set_start_state_from_sdk()
         pose_goal = self._goal_pose_from_tcp(x, y, z, rx, ry, rz)
         self._planning_component.set_goal_state(pose_stamped_msg=pose_goal, pose_link=TIP_LINK)
-        return self._plan_and_execute(confirm, prefer_lin=prefer_lin)
+        return self._plan_and_execute(confirm, prefer_lin=prefer_lin,
+                                      max_joint_excursion_deg=max_joint_excursion_deg)
 
     def move_to_pose_tool_xyz(self, dx, dy, dz, rx, ry, rz, confirm=False):
         """frame_choice='Tool': X/Y/Z mevcut Base-frame pozisyonuna eklenir (goreceli),
@@ -1241,7 +1292,8 @@ class CobotArm:
         tz = cz + dx * cur_x_axis[2] + dy * cur_y_axis[2] + dz * cur_z_axis[2]
         # TCP kendi ekseninde goreceli hareket - tipik yaklasma/geri cekilme,
         # duz cizgi olmali (bkz. prefer_lin aciklamasi).
-        return self.move_to_pose_base(tx, ty, tz, crx, cry, crz, confirm=confirm, prefer_lin=True)
+        return self.move_to_pose_base(tx, ty, tz, crx, cry, crz, confirm=confirm, prefer_lin=True,
+                                      max_joint_excursion_deg=MAX_JOG_JOINT_EXCURSION_DEG)
 
     def move_tcp_base(self, dx, dy, dz, confirm=False):
         """TCP'yi BASE (dunya) eksenlerine gore goreceli hareket ettirir;
@@ -1261,7 +1313,8 @@ class CobotArm:
         cx, cy, cz, crx, cry, crz = cur[0:6]
         # Donusum YOK - base ekseni zaten TCP pozunun ifade edildigi cerceve.
         return self.move_to_pose_base(cx + dx, cy + dy, cz + dz, crx, cry, crz,
-                                      confirm=confirm, prefer_lin=True)
+                                      confirm=confirm, prefer_lin=True,
+                                      max_joint_excursion_deg=MAX_JOG_JOINT_EXCURSION_DEG)
 
     def shutdown(self):
         if self._shutdown_called:
