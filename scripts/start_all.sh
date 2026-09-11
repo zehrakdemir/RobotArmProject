@@ -46,33 +46,38 @@ source "${FAIRINO_MOVEIT_WS:-/opt/moveit_py_ws}/install/setup.bash"
 source "${FAIRINO_ROS2_WS:-/opt/fairino_ws}/install/setup.bash"
 set -u
 
-echo "move_group bekleniyor..."
-hazir=0
-for _ in $(seq 1 120); do
+# ARAYUZ SINIRSIZ BEKLETILMEZ - BU BILEREK BOYLE.
+#
+# Eskiden arayuz, move_group gorunene kadar bekletiliyordu ve bekleme
+# basarisiz olursa container komple duesuyordu. Robot ya da simulator hazir
+# degilse kullanicinin elinde HICBIR SEY kalmiyordu: ne ekran ne hata,
+# sadece "localhost:8088 baglanamadi".
+#
+# Oysa arayuz zaten kendi basina yeniden deniyor (RobotSession.start) ve
+# baglanamadiginda NEDENINI ekranda gosteriyor - yani en cok ihtiyac duyuldugu
+# an, tam da launch'in takildigi andir.
+#
+# NEDEN YINE DE BIRAZ BEKLENIYOR: fairino_launch robotun modeline gore YENI
+# bir paket kurabiliyor (simulator FR5 ise fairino5_v6_moveit2_config).
+# Arayuz baslamadan once ortamin tazelenmesi gerek, yoksa:
+#   PackageNotFoundError: package 'fairino5_v6_moveit2_config' not found
+# Bu yuzden: sinirli sure bekle, olmazsa yine de ac.
+echo "move_group bekleniyor (en fazla 3 dakika; olmazsa arayuz yine acilir)..."
+for _ in $(seq 1 90); do
     if ! kill -0 "$LAUNCH_PID" 2> /dev/null; then
-        echo "HATA: fairino_launch cikti. Son satirlar:"
-        tail -25 "$LAUNCH_LOG"
-        exit 1
+        echo "UYARI: fairino_launch cikti. Son satirlar:"
+        tail -20 "$LAUNCH_LOG"
+        echo "Arayuz yine de aciliyor - sebebini orada da gorebilirsin."
+        break
     fi
     if ros2 node list 2> /dev/null | grep -q "move_group"; then
-        hazir=1
+        echo "move_group hazir."
         break
     fi
     sleep 2
 done
 
-if [ "$hazir" -ne 1 ]; then
-    echo "UYARI: move_group 240 saniyede gorunmedi. Arayuz yine de aciliyor;"
-    echo "       kola baglanamazsa fairino_launch loguna bak: $LAUNCH_LOG"
-else
-    echo "move_group hazir."
-fi
-
-# ORTAMI TAZELE. fairino_launch, robotun modeline gore YENI bir paket kurmus
-# olabilir (ornegin simulator FR5 ise fairino5_v6_moveit2_config). Yukarida
-# source edilen ortam o paket daha ortada yokken olustu; tazelenmezse arayuz
-# MoveIt'i acarken soyle patliyor:
-#   PackageNotFoundError: package 'fairino5_v6_moveit2_config' not found
+# ORTAMI TAZELE (yukaridaki nedenle).
 set +u
 # shellcheck source=/dev/null
 source "${FAIRINO_ROS2_WS:-/opt/fairino_ws}/install/setup.bash"
@@ -86,8 +91,17 @@ echo ""
 movecobot-web --port "$PORT" &
 WEB_PID=$!
 
-# Ikisinden biri olurse container'i duesur - sessizce yarim calismasin.
-wait -n "$LAUNCH_PID" "$WEB_PID"
-echo "Bilesenlerden biri sonlandi, container kapaniyor."
+# SADECE ARAYUZ OLURSE container kapanir.
+#
+# Eskiden "ikisinden biri olurse kapat" deniyordu. Ama fairino_launch robot
+# yokken oluyor ve o zaman arayuz de birlikte gidiyordu - oysa kullanicinin
+# tam o anda arayuze ihtiyaci var: sebebi orada yaziyor ve robot gelince
+# kendiliginden baglaniyor.
+#
+# Launch olurse container ayakta kalir; robotu takip fairino_launch'i elle
+# yeniden baslatmak yeterli:
+#   docker exec -d cobot bash /app/scripts/fairino_launch.sh
+wait "$WEB_PID"
+echo "Web arayuzu sonlandi, container kapaniyor."
 temizle
 exit 1
