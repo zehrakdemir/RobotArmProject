@@ -1,26 +1,23 @@
-# RobotArmProject — Fairino FR3 kol kontrolü
+# RobotArmProject — Fairino kol kontrolü
 
-Fairino FR3 iş birlikçi kolunu **ROS2 Humble + MoveIt2** üzerinden süren araçlar: hareket
-öğretme/kaydetme/oynatma, adaptif kavrama yapan gripper sürücüsü ve MoveIt Task Constructor
-tabanlı pick & place.
+Fairino iş birlikçi kollarını (FR3/FR5/FR10/FR16/FR20/FR30) **ROS2 Humble + MoveIt2**
+üzerinden süren araçlar: web arayüzü, hareket öğretme/kaydetme/oynatma, adaptif kavrama
+yapan gripper sürücüsü ve MoveIt Task Constructor tabanlı pick & place.
 
-Görüntü işleme tarafı ayrı bir projede
-([zehrakdemir/robot-arm-simulation](https://github.com/zehrakdemir/robot-arm-simulation)).
-Bu repo yalnızca **kol** tarafıdır; ikisi
-[`examples/vision_integration_example.py`](examples/vision_integration_example.py) üzerinden
-konuşur.
+Tamamı tek bir Docker imajında: ROS2, MoveIt2, MoveIt Task Constructor, yamalı Fairino
+sürücüsü ve Fairino Python SDK. Kendi makinene hiçbir şey kurmuyorsun.
 
 ```
-Robot algılama  ──►  ROS2 sürücü + MoveIt2  ──►  movecobot  ──►  gripper (Modbus RTU)
-(ağ taraması)        (frcobot_ros2, yamalı)     (planla/onayla/    (Jodell EPG40-050)
-                                                 çalıştır/doğrula)
+Robot algılama  ──►  ROS2 sürücü + MoveIt2  ──►  web arayüzü   ──►  gripper (Modbus RTU)
+(.env / tarama)      (frcobot_ros2, yamalı)     :8088              (Jodell EPG40-050)
+                                                 movecobot (CLI)
 ```
 
 Öne çıkanlar:
 
-- **Hiçbir IP kodda sabit değil.** `detect-robot` ağı tarayıp hangi model/sürüm robotun bağlı
-  olduğunu bulur, doğru sürücü kaynağını kurar ve derler. İstersen `.env` ile IP verip
-  taramayı tamamen atlarsın.
+- **Tek komutla ayağa kalkar.** `docker compose up cobot` → robotu algılar, modeline uyan
+  sürücü kaynağını kurup derler, MoveIt2'yi başlatır ve web arayüzünü açar.
+- **Hiçbir IP kodda sabit değil.** Robotun IP'si `.env` ile verilir; verilmezse ağ taranır.
 - **Çok katmanlı güvenlik.** Planlanan her yol zemin ve self-collision kontrolünden geçer,
   onay istenir, çalıştıktan sonra SDK üzerinden hedefe varıldığı doğrulanır.
   *(Manuel mod / drag-teach hariç — orada tek güvenlik ağı robotun kendi donanım seviyesindeki
@@ -28,95 +25,142 @@ Robot algılama  ──►  ROS2 sürücü + MoveIt2  ──►  movecobot  ─�
 - **Vendor yamaları yeniden uygulanabilir.** `frcobot_ros2` üzerindeki düzeltmeler tek bir
   komutla, desteklenen **her** Fairino modeline uygulanır.
 
+Görüntü işleme tarafı ayrı bir projede
+([zehrakdemir/robot-arm-simulation](https://github.com/zehrakdemir/robot-arm-simulation)).
+Bu repo yalnızca **kol** tarafıdır; ikisi
+[`examples/vision_integration_example.py`](examples/vision_integration_example.py) üzerinden
+konuşur.
+
 ## Önkoşullar
 
-| Gereksinim | Sürüm / not |
+| Gereksinim | Not |
 |---|---|
-| Ubuntu | 22.04 (WSL2 üzerinde de olur) |
-| ROS2 | Humble |
-| MoveIt2 | 2.5.9 — **kaynaktan derlenmiş olmalı**, `moveit_py` apt'te yok |
-| MoveIt Task Constructor | `ros-humble-moveit-task-constructor-core` (pick & place için) |
-| Python | 3.10+ |
-| Fairino Python SDK | [FAIR-INNOVATION/fairino-python-sdk](https://github.com/FAIR-INNOVATION/fairino-python-sdk) — PyPI'de yok, ayrıca klonlanır |
-| Fairino ROS2 sürücüsü | [FAIR-INNOVATION/frcobot_ros2](https://github.com/FAIR-INNOVATION/frcobot_ros2), `V3.0.0_RobotV3.9.3` tag'i |
+| Docker | Compose v2 ile. WSL2 üzerinde Docker Desktop ya da WSL içinde yerli docker engine |
+| Disk | İmaj için ~8 GB |
+| Robot | Açık, **WebApp'ten enable edilmiş** ve bilgisayarla aynı ağda ulaşılabilir |
 | Gripper (kullanılacaksa) | Jodell EPG40-050 + WebApp'te `End_Jodell_V1.0` protokolü uygulanmış ve Configure edilmiş |
 
-ROS2/MoveIt2 kurulumunun tamamı: **[`docs/SETUP.md`](docs/SETUP.md)**.
+Kendi makinene ROS2/MoveIt2 kurmak istersen (Docker olmadan): **[`docs/SETUP.md`](docs/SETUP.md)**.
 
 ## Kurulum
 
-```bash
-git clone https://github.com/zehrakdemir/RobotArmProject.git
-```
+### 1. Klonla
 
 ```bash
-cd RobotArmProject && git checkout huseyin && bash scripts/install.sh
+git clone -b huseyin https://github.com/zehrakdemir/RobotArmProject.git && cd RobotArmProject
 ```
 
-`install.sh` paketi kurar, `.env` dosyasını oluşturur ve çözülen yolları (SDK, durum dizini,
-robot IP) ekrana basar — bir şey bulunamazsa nereye bakıldığını da söyler.
-
-Ardından ROS2 sürücüsüne yamaları uygula:
-
-```bash
-python3 tools/apply_ros2_patches.py && cd ~/ros2_ws && colcon build
-```
-
-### Ayarlar
-
-Her şey `.env` ile, hepsi isteğe bağlı ([`.env.example`](.env.example)):
+### 2. Robotun IP adresini ver
 
 ```bash
 cp .env.example .env
 ```
 
-| Değişken | Ne işe yarar |
-|---|---|
-| `FAIRINO_ROBOT_IP` | Verilirse ağ taraması hiç yapılmaz |
-| `FAIRINO_SDK_DIR` | Fairino Python SDK'nın yeri |
-| `FAIRINO_ROS2_WS` | `frcobot_ros2`'nin kurulu olduğu colcon workspace'i |
-| `FAIRINO_STATE_DIR` | Kayıtlı hareketlerin tutulduğu dizin |
+`.env` içine robotun IP adresini yaz:
 
-## Çalıştırma
-
-Önce MoveIt2'yi başlat (robotu algılar, doğru paketi kurar/derler, rviz'i açar):
-
-```bash
-bash scripts/fairino_launch.sh
+```
+FAIRINO_ROBOT_IP=192.168.57.2
 ```
 
-Sonra ayrı bir terminalde:
+> **Bu adım Docker tarafında pratikte zorunlu.** Container içinden ağ taraması genelde
+> çalışmaz: robotun ağı container için yerel değil, yönlendirilmiş bir ağdır — tarama
+> hiçbir şey bulamaz. Adres verilince tarama zaten hiç yapılmaz.
+> Adresi bilmiyorsan robotun kendi WebApp adresi neyse odur.
+>
+> `.env` git'e **girmez** ([`.gitignore`](.gitignore)) — makineye özel.
+
+### 3. İmajı derle ve başlat
 
 ```bash
-movecobot
+docker compose up cobot
+```
+
+İlk derleme **~25-40 dakika** sürer (MoveIt2'nin `moveit_py` paketi ve Fairino sürücüsü
+kaynaktan derleniyor). Sonraki açılışlar saniyeler.
+
+### 4. Arayüzü aç
+
+**<http://localhost:8088>**
+
+Robot hazır değilse arayüz yine açılır ve **sebebini ekranda gösterir**; robot hazır olunca
+kendiliğinden bağlanır — container'ı yeniden başlatmaya gerek yok.
+
+Arka planda çalıştırmak için `docker compose up -d cobot`, logları izlemek için
+`docker compose logs -f cobot`.
+
+## Web arayüzü
+
+`http://localhost:8088` — `movecobot`'un yapabildiği her şey, artı fazlası.
+
+| Bölüm | Ne yapar |
+|---|---|
+| **E-STOP** | Süren yörüngeyi iptal eder ve SDK üzerinden `StopMotion` gönderir. Hareket kilidini beklemez. |
+| **Canlı durum** | Eklem açıları, TCP pozu, fault kodları, gripper durumu — WebSocket ile akar |
+| **Eklem kontrolü** | Her ekseni tek tek sür, ya da altı açıyı birden ver |
+| **Jog** | Eklem ve TCP (araç eksenine göre) adımlı hareket |
+| **Önizleme** | Hedefe gitmeden önce, ileri kinematikle TCP nerede olacak göster |
+| **Gripper** | Aç/kapa, kuvvet ve hız ayarı, durum okuma |
+| **Kayıtlı hareketler** | Listele, oynat, sil — `movecobot` ile aynı dosyaları kullanır |
+| **Günlük** | O anki işin adım adım çıktısı, başarısızsa sebebi |
+
+Arayüzde **kimlik doğrulaması yok** ve **gerçek robotu hareket ettirir**. Yalnızca güvendiğin
+bir ağda aç; `8088` portunu internete açma.
+
+## Terminal komutları
+
+Container içinde:
+
+```bash
+docker compose exec cobot movecobot
 ```
 
 | Komut | Ne yapar |
 |---|---|
 | `movecobot` | Kol + gripper kontrolü, hareket kaydetme/oynatma, pick & place |
-| `konumcobot` | Sadece konum okur (movecobot çalışırken güvenli — robota ikinci bağlantı açmaz) |
+| `movecobot --list` | Kayıtlı hareketleri listeler (robota bağlanmaz) |
+| `movecobot --replay <ad>` | Kayıtlı hareketi oynatır |
+| `konumcobot` | Sadece konum okur (movecobot çalışırken güvenli — ikinci bağlantı açmaz) |
 | `gripper-gui` | Gripper için Tkinter arayüzü |
 | `detect-robot` | Hangi robot bağlı, bulur ve yazdırır |
 
-## Docker
-
-```bash
-docker compose run --rm test
-```
-
-Tam çalışma ortamı da var: ROS2 + MoveIt2 + MTC + **yamalı** Fairino sürücüsü + SDK. Ortamın
-doğru kurulduğunu robota hiç dokunmadan doğrular:
+## Sorun mu var
 
 ```bash
 docker compose run --rm verify
 ```
 
-İmaj derlendi ve içi doğrulandı (sürücü tam yamamızla derleniyor, `moveit_py`/MTC/SDK ve
-uygulama modülleri yükleniyor), ama **kolu container'dan sürmek henüz denenmedi** — şimdilik
-desteklenen yol native kurulum. Zorunlu host ayarları (host network, RT önceliği, X soketi)
-ve gerekçeleri: [`docs/DOCKER.md`](docs/DOCKER.md).
+Ortamın doğru kurulduğunu **robota hiç dokunmadan** doğrular. Bir imaj "başarıyla" derlenip
+işe yaramaz çıkabiliyor — bu betik öyle sessiz boşlukları yakalar.
+
+Sonrası, ağ/RT/X ayarlarının gerekçeleri ve sık karşılaşılan hatalar:
+[`docs/DOCKER.md`](docs/DOCKER.md).
+
+## Docker olmadan (native)
+
+Native kurulum hâlâ destekleniyor ve çalışıyor:
+
+```bash
+bash scripts/install.sh
+```
+
+```bash
+python3 tools/apply_ros2_patches.py && cd ~/ros2_ws && colcon build
+```
+
+```bash
+bash scripts/fairino_launch.sh
+```
+
+Sonra ayrı bir terminalde `movecobot`. Tam kurulum adımları, karşılaşılan sorunlar ve kök
+sebepleri: [`docs/SETUP.md`](docs/SETUP.md).
 
 ## Geliştirme
+
+```bash
+docker compose run --rm test
+```
+
+Ya da yerelde:
 
 ```bash
 pip install -r requirements-dev.txt && pytest -q && ruff check .
@@ -131,8 +175,8 @@ uygulandığını doğrular.
 
 | Dosya | İçerik |
 |---|---|
-| [`docs/SETUP.md`](docs/SETUP.md) | ROS2 Humble + MoveIt2 + SDK kurulumunun tamamı, karşılaşılan sorunlar ve kök sebepleri |
-| [`docs/DOCKER.md`](docs/DOCKER.md) | Container hedefleri ve zorunlu host ayarları |
+| [`docs/DOCKER.md`](docs/DOCKER.md) | Container hedefleri, ağ/RT/X ayarları ve gerekçeleri, simülatörün neden çalışmadığı |
+| [`docs/SETUP.md`](docs/SETUP.md) | ROS2 Humble + MoveIt2 + SDK kurulumunun tamamı (native) |
 | [`docs/ALIASES.md`](docs/ALIASES.md) | `~/.bashrc` alias listesi |
 | [`docs/auto-launch.md`](docs/auto-launch.md) | Otomatik robot algılama/kurulum akışı |
 | [`ros2/README.md`](ros2/README.md) | Vendor sürücüsüne uygulanan yamalar ve gerekçeleri |
@@ -143,7 +187,7 @@ uygulandığını doğrular.
 
 ## Güvenlik notu
 
-`movecobot.py`'deki planlı hareketler (jog / kayıtlı oynatma) zemin + self-collision
-kontrolünden geçiyor ve onay istiyor. **Manuel mod (drag-teach)** ise robotu fiziksel olarak
-elle hareket ettirdiği için yazılımsal collision koruması **içermiyor** — tek güvenlik ağı
-robotun kendi donanım seviyesindeki çarpışma algılamasıdır. Acil stop elinin altında olsun.
+Planlı hareketler (jog / kayıtlı oynatma / web arayüzü) zemin ve self-collision kontrolünden
+geçiyor, onay isteniyor. **Manuel mod (drag-teach)** ise robotu fiziksel olarak elle hareket
+ettirdiği için yazılımsal collision koruması **içermiyor** — tek güvenlik ağı robotun kendi
+donanım seviyesindeki çarpışma algılamasıdır. Acil stop elinin altında olsun.
