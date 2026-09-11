@@ -142,6 +142,32 @@ MIN_CLEARANCE_M = 0.012
 # hedeflerde buyuk eklem hareketi mesru olabilir.
 MAX_JOG_JOINT_EXCURSION_DEG = 20.0
 
+# ---------------------------------------------------------------------------
+# LIN (DUZ CIZGI) DENEMESINDE KADEMELI YAVASLATMA
+# ---------------------------------------------------------------------------
+# OLCUM: eklem ivme limiti ayarlandiktan (0.7 rad/s^2) sonra LIN hala
+# planlanamiyordu, ama artik FARKLI bir sebeple:
+#   "Joint acceleration limit of j3 violated. Set the acceleration scaling
+#    factor lower! Actual joint acceleration is -1.07017, while the limit is 0.7"
+# Yani limit YOK degil; Pilz'in urettigi duz-cizgi profili onu asiyor.
+#
+# SEBEP: pilz_cartesian_limits.yaml'daki degerler (max_trans_vel 1.0,
+# max_trans_acc 2.25, max_trans_dec -5.0) MoveIt'in GENEL ornek degerleri -
+# Fairino'ya ozgu degil, Setup Assistant'in koydugu sablon. Kisa bir
+# harekette profil tamamen hizlanma/yavaslama fazindan ibaret oluyor ve
+# gereken eklem ivmesi limiti asiyor.
+#
+# NEDEN O YAML'I DEGISTIRMIYORUZ: oraya yazacagimiz her sayi uydurma olurdu
+# ve TUM LIN hareketlerinin tavan hizini kalici olarak duesururdu. Pilz
+# zaten istegin hiz/ivme olcegini kartezyen limitlere uyguluyor - yani
+# DAHA YAVAS ISTEMEK ayni ise yariyor, ustelik sadece gerektiginde.
+#
+# Bu yuzden LIN once istenen hizda deneniyor; ivme ihlaliyle kalirsa
+# kademeli olarak yavaslatilip tekrar deneniyor. Hicbiri tutmazsa PTP'ye
+# duesuluyor (guvenli ve monoton, sadece TCP yolu hafif kavisli).
+# Basarisiz bir plan denemesi ucuz - olcumde 4 ms.
+LIN_YAVASLATMA_KADEMELERI = (1.0, 0.5, 0.25)
+
 # MIN_CLEARANCE_M artik SADECE plandan SONRA kontrol edilen bir esik degil -
 # MoveIt'in link padding mekanizmasiyla PLANLAMAYA da veriliyor (bkz.
 # CobotArm.__init__). Her govde bu kadar "sismis" sayildigi icin iki govde
@@ -945,12 +971,18 @@ class CobotArm:
         _eff_speed = speed_pct if speed_pct is not None else self.speed_pct
         _eff_accel = accel_pct if accel_pct is not None else self.accel_pct
 
-        def _pilz(planner_id):
+        def _pilz(planner_id, yavaslatma=1.0):
+            """yavaslatma < 1.0: LIN'in ivme ihlaliyle kalmasi halinde ayni
+            hareketi daha yavas istemek icin (bkz. LIN_YAVASLATMA_KADEMELERI).
+            Pilz bu olcekleri kartezyen limitlere de uyguluyor, dolayisiyla
+            gereken eklem ivmesi de duesuyor."""
             prm = PlanRequestParameters(self._moveit)
             prm.planning_pipeline = "pilz_industrial_motion_planner"
             prm.planner_id = planner_id
-            prm.max_velocity_scaling_factor = max(0.01, min(1.0, _eff_speed / 100.0))
-            prm.max_acceleration_scaling_factor = max(0.01, min(1.0, _eff_accel / 100.0))
+            prm.max_velocity_scaling_factor = max(
+                0.01, min(1.0, _eff_speed / 100.0 * yavaslatma))
+            prm.max_acceleration_scaling_factor = max(
+                0.01, min(1.0, _eff_accel / 100.0 * yavaslatma))
             return prm
 
         # prefer_lin=True: TCP'ye gore GORECELI hareketler (yaklasma/geri
@@ -963,12 +995,17 @@ class CobotArm:
         # kavisli gidebilir.
         _sira = []
         if prefer_lin:
-            _sira.append(("LIN", "Duz cizgi (LIN)"))
-        _sira.append(("PTP", "Dogrudan yol (PTP)"))
+            # Once istenen hizda; ivme ihlaliyle kalirsa kademeli yavaslatip
+            # tekrar dene (bkz. LIN_YAVASLATMA_KADEMELERI).
+            for _kat in LIN_YAVASLATMA_KADEMELERI:
+                _etiket = ("Duz cizgi (LIN)" if _kat == 1.0
+                           else f"Duz cizgi (LIN, %{int(_kat * 100)} hizda)")
+                _sira.append(("LIN", _etiket, _kat))
+        _sira.append(("PTP", "Dogrudan yol (PTP)", 1.0))
 
         plan_result = None
-        for _pid, _ad in _sira:
-            _cand = _try_plan(_pilz(_pid))
+        for _pid, _ad, _kat in _sira:
+            _cand = _try_plan(_pilz(_pid, _kat))
             if not _cand:
                 print(f"  {_ad} planlanamadi - siradaki yonteme geciliyor.")
                 continue
