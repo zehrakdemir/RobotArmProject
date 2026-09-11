@@ -33,9 +33,18 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from fairino_cobot import paths
-
-paths.ensure_sdk_on_path()
+# SDK YOLU BURADA COZULMUYOR - BILEREK.
+#
+# Eskiden modul seviyesinde paths.ensure_sdk_on_path() cagriliyordu ve bu,
+# SDK'si olmayan bir makinede modulu IMPORT EDILEMEZ yapiyordu: PathError
+# ImportError degil, o yuzden testlerdeki importorskip de yakalayamiyordu ve
+# butun test toplama asamasi cokuyordu (CI dahil).
+#
+# Gerek de yok: SDK'ya ihtiyaci olan moduller (movecobot, gripper_controller)
+# ensure_sdk_on_path()'i zaten kendileri cagiriyor ve burada ancak
+# _baglanmayi_dene() icinde, yani gercekten robota baglanilacagi anda import
+# ediliyorlar. Boylece oturumun DAVRANISI (kilit, yeniden deneme, is kuyrugu)
+# robot/SDK olmadan da test edilebiliyor.
 
 
 class Busy(RuntimeError):

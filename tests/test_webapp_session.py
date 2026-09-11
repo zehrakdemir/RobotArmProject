@@ -1,7 +1,8 @@
 """Web arayuzu oturum mantigi testleri.
 
-ROBOT, ROS2 veya SDK GEREKTIRMEZ: session modulu import edilirken
-paths.ensure_sdk_on_path() cagriliyor ama SDK bulunamazsa test atlanir.
+ROBOT, ROS2 veya SDK GEREKTIRMEZ. session modulu SDK'ya ihtiyac duyan
+importlari (movecobot, gripper_controller) _baglanmayi_dene() icine
+erteliyor, o yuzden temiz bir makinede de import edilebiliyor.
 Burada test edilen sey robot degil, oturumun DAVRANISI.
 """
 
