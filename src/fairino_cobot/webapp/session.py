@@ -92,12 +92,32 @@ class RobotSession:
     # -- baslangic ---------------------------------------------------------
 
     def start(self) -> None:
-        """Robotu algila, kola ve gripper'a baglan. Uzun surer (MoveItPy),
-        bu yuzden sunucu bunu arka planda cagirir; arayuz o sirada
-        'hazirlaniyor' gosterir."""
+        """Hazir olana kadar DENEMEYE DEVAM EDER.
 
+        Eskiden tek seferlikti: basarisiz olursa arayuz kalici olarak
+        "baglanilamadi" ekraninda kaliyor ve container yeniden
+        baslatilmadan duzelmiyordu. Oysa sebep cogu zaman gecici:
+        robot henuz acilmamis, WebApp'ten enable edilmemis, kablo yeni
+        takilmis, ya da move_group hala hazirlaniyor.
+
+        Artik arka planda denemeye devam ediyor; robot hazir olunca arayuz
+        kendiliginden acilir - elle mudahale gerekmez.
+        """
+        bekleme = 10
+        while not self.ready:
+            self._baglanmayi_dene()
+            if self.ready:
+                return
+            # Hata mesaji arayuzde gorunmeye devam etsin, ama denemeler
+            # sussun diye gunluk her turda sifirlanmiyor - sadece kuyruk
+            # kirpiliyor (telemetry zaten son 12 satiri gonderiyor).
+            time.sleep(bekleme)
+            bekleme = min(bekleme * 2, 60)  # 10s -> 60s, sonra sabit
+
+    def _baglanmayi_dene(self) -> None:
         def log(msg: str) -> None:
             self.startup_log.append(msg)
+            del self.startup_log[:-40]
 
         try:
             from fairino_cobot.gripper_controller import GripperController
@@ -109,18 +129,17 @@ class RobotSession:
             self.model_num = info["ROBOT_MODEL_NUM"]
             log(f"FR{self.model_num} bulundu: {self.robot_ip}")
 
-            # MoveIt'e baglanma YENIDEN DENENIYOR. move_group ROS grafinde
-            # gorunmesiyle KULLANIMA HAZIR olmasi ayni an degil: planlama
-            # sahnesi monitoru robot_description ve ilk /joint_states'i
-            # bekliyor. Erken denenince su hatayi veriyor:
+            # MoveIt'e baglanma bu tur icinde de birkac kez deneniyor:
+            # move_group'un ROS grafinde GORUNMESI ile KULLANIMA HAZIR olmasi
+            # ayni an degil - planlama sahnesi monitoru robot_description ve
+            # ilk /joint_states'i bekliyor, erken denenince
             #   RuntimeError: Unable to configure planning scene monitor
-            # Sabit bir bekleme yerine deneyip tekrar etmek daha dogru -
-            # makineye gore sure degisiyor (container'da ilk acilista surucu
-            # derlenebiliyor).
+            # cikiyor. Disaridaki dongu zaten sonsuza kadar tekrar ediyor;
+            # buradaki kisa tekrar sadece o ilk birkac saniyeyi yumusatiyor.
             son_hata = None
-            for deneme in range(1, 7):
+            for deneme in range(1, 4):
                 try:
-                    log(f"MoveIt baglantisi kuruluyor (deneme {deneme}/6)...")
+                    log(f"MoveIt baglantisi kuruluyor (deneme {deneme}/3)...")
                     self.arm = CobotArm(
                         robot_ip=self.robot_ip,
                         model_num=self.model_num,
