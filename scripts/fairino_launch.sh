@@ -64,6 +64,25 @@ echo "================================================"
 echo " Algılanan: FR${ROBOT_MODEL_NUM}  ${ROBOT_VERSION_MAJ}.${ROBOT_VERSION_MIN}.${ROBOT_VERSION_MIN2}  (${ROBOT_IP})"
 echo "================================================"
 
+# Algılanan sürüm yerine belirli bir sürücü sürümü kullanmak için kaçış yolu:
+#   FAIRINO_FORCE_HW_VERSION=3.9.9
+#
+# NEDEN VAR: SimMachine simülatörü kendini 3.9.3 diye tanıtıyor, ama sürücü
+# yamamız UDP servo kanalı için ServoMoveStart/ServoJ'un comType parametresini
+# kullanıyor ve o parametre 3.9.3 SDK'sında YOK:
+#   error: no matching function for call to 'FRRobot::ServoMoveStart(int)'
+# Yani 3.9.3 kaynağı yamamızla derlenemiyor. Yamayı atmak da olmaz — sıçramayı
+# ve "command speed exceeds the limit" faultunu çözen şey o. Bu yüzden
+# simülatörde daha yeni sürücü kullanılıyor.
+#
+# GERÇEK ROBOTTA KULLANMA: sürücü sürümü robotun sürümüyle eşleşmeli.
+if [ -n "${FAIRINO_FORCE_HW_VERSION:-}" ]; then
+    IFS='.' read -r ROBOT_VERSION_MAJ ROBOT_VERSION_MIN ROBOT_VERSION_MIN2 \
+        <<< "$FAIRINO_FORCE_HW_VERSION"
+    echo "UYARI: surucu surumu elle zorlandi -> ${FAIRINO_FORCE_HW_VERSION}"
+    echo "       (robotun bildirdigi surum yerine bu kullanilacak)"
+fi
+
 echo ""
 echo "================================================"
 echo " Doğru kaynak kuruluyor ve derleniyor..."

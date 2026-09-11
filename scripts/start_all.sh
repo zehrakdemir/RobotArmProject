@@ -33,12 +33,18 @@ LAUNCH_PID=$!
 # move_group'un ROS grafinde gorunmesini bekle. Sabit bir "sleep 30" yerine
 # gercekten hazir olmasini beklemek gerekiyor: makineye gore sure degisiyor
 # ve surucu ilk acilista derleme yapabiliyor.
+# ROS2'nin setup.bash'i tanimsiz degiskenlere dokunuyor
+# (AMENT_TRACE_SETUP_FILES). "set -u" acikken bu betigi OLDURUYOR:
+#   /opt/ros/humble/setup.bash: line 8: AMENT_TRACE_SETUP_FILES: unbound variable
+# Bu yuzden source'lar suresince -u kapatiliyor, sonra geri aciliyor.
+set +u
 # shellcheck source=/dev/null
 source /opt/ros/humble/setup.bash
 # shellcheck source=/dev/null
-source /opt/moveit_py_ws/install/setup.bash
+source "${FAIRINO_MOVEIT_WS:-/opt/moveit_py_ws}/install/setup.bash"
 # shellcheck source=/dev/null
 source "${FAIRINO_ROS2_WS:-/opt/fairino_ws}/install/setup.bash"
+set -u
 
 echo "move_group bekleniyor..."
 hazir=0
@@ -61,6 +67,16 @@ if [ "$hazir" -ne 1 ]; then
 else
     echo "move_group hazir."
 fi
+
+# ORTAMI TAZELE. fairino_launch, robotun modeline gore YENI bir paket kurmus
+# olabilir (ornegin simulator FR5 ise fairino5_v6_moveit2_config). Yukarida
+# source edilen ortam o paket daha ortada yokken olustu; tazelenmezse arayuz
+# MoveIt'i acarken soyle patliyor:
+#   PackageNotFoundError: package 'fairino5_v6_moveit2_config' not found
+set +u
+# shellcheck source=/dev/null
+source "${FAIRINO_ROS2_WS:-/opt/fairino_ws}/install/setup.bash"
+set -u
 
 echo ""
 echo "=== 2/2  Web arayuzu: http://localhost:$PORT ==="

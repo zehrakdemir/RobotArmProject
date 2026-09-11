@@ -109,14 +109,33 @@ class RobotSession:
             self.model_num = info["ROBOT_MODEL_NUM"]
             log(f"FR{self.model_num} bulundu: {self.robot_ip}")
 
-            log("MoveIt baglantisi kuruluyor (birkac saniye surer)...")
-            self.arm = CobotArm(
-                robot_ip=self.robot_ip,
-                model_num=self.model_num,
-                speed_pct=self.speed_pct,
-                accel_pct=self.accel_pct,
-                node_name="movecobot_web",
-            )
+            # MoveIt'e baglanma YENIDEN DENENIYOR. move_group ROS grafinde
+            # gorunmesiyle KULLANIMA HAZIR olmasi ayni an degil: planlama
+            # sahnesi monitoru robot_description ve ilk /joint_states'i
+            # bekliyor. Erken denenince su hatayi veriyor:
+            #   RuntimeError: Unable to configure planning scene monitor
+            # Sabit bir bekleme yerine deneyip tekrar etmek daha dogru -
+            # makineye gore sure degisiyor (container'da ilk acilista surucu
+            # derlenebiliyor).
+            son_hata = None
+            for deneme in range(1, 7):
+                try:
+                    log(f"MoveIt baglantisi kuruluyor (deneme {deneme}/6)...")
+                    self.arm = CobotArm(
+                        robot_ip=self.robot_ip,
+                        model_num=self.model_num,
+                        speed_pct=self.speed_pct,
+                        accel_pct=self.accel_pct,
+                        node_name="movecobot_web",
+                    )
+                    son_hata = None
+                    break
+                except Exception as e:
+                    son_hata = e
+                    log(f"  hazir degil ({type(e).__name__}), 10 sn sonra tekrar...")
+                    time.sleep(10)
+            if son_hata is not None:
+                raise son_hata
             log("Kol hazir.")
 
             # Gripper KOLUN SDK baglantisini paylasiyor - ikinci bir baglanti
@@ -134,6 +153,22 @@ class RobotSession:
 
             self.ready = True
             log("Hazir.")
+        except TypeError as e:
+            # "'_ctypes.CField' object is not subscriptable" = SDK'nin durum
+            # paketi HIC olusmamis, yani robotun gercek-zamanli durum akisi
+            # (port 20004) gelmiyor. XML-RPC calisiyor olabilir - robot
+            # algilanir ama durum okunamaz.
+            #
+            # BILINEN DURUM: SimMachine simulatoru bu akisi HIC sunmuyor.
+            # Ayni hata native tarafta da aliniyor (olculdu), yani container'a
+            # ozgu degil. Simulatorle ROS2 yigini (move_group, controller,
+            # MTC) tam calisiyor; calismayan sey SDK'nin durum okumasi.
+            self.startup_error = (
+                f"{type(e).__name__}: {e} - robotun gercek-zamanli durum akisi "
+                "(port 20004) gelmiyor. SimMachine simulatoru bu akisi "
+                "SUNMUYOR; arayuz gercek robot gerektiriyor."
+            )
+            log(f"HATA: {self.startup_error}")
         except Exception as e:
             self.startup_error = f"{type(e).__name__}: {e}"
             log(f"HATA: {self.startup_error}")

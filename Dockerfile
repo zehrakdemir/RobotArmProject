@@ -160,6 +160,32 @@ RUN git clone --depth 1 --branch ${SDK_TAG} \
 RUN git clone --depth 1 --branch ${FRCOBOT_TAG} \
         https://github.com/FAIR-INNOVATION/frcobot_ros2.git /opt/fairino_mirror
 
+# SimMachine simülatörü sürüm **3.9.3** bildiriyor, ama yukarıdaki tag
+# fairino_hardware'in v3.8.2.11 / v3.9.0 / v3.9.4…v3.9.9 sürümlerini taşıyor —
+# 3.9.3 YOK. Eklenmezse setup_target simülatörde "kaynak bulunamadı" deyip
+# duruyor, yani container yalnızca gerçek robotla çalışıyordu.
+#
+# NEDEN AYNAYA DÜZ KOPYALAMIYORUZ: fairino_hardware, kendi sürümüne ait
+# fairino_msgs ile derlenmek zorunda. setup_target bunu kaynağın KARDEŞ
+# klasörüne bakarak buluyor (find_msgs_source). Aynaya düz kopyalanırsa
+# kardeşi aynanın kökü olur ve oradaki 3.9.9 mesajları seçilir; derleme şöyle
+# patlar:
+#   'fairino_msgs::msg::RobotNonrtState_' has no member named 'servoj_cmd_num'
+#
+# Bu yüzden setup_target'ın 3.9.3 için zaten tanımladığı yola kuruluyor:
+# $HOME/frcobot_ros2_v393 — yani üç paket kardeş olarak yan yana.
+ARG FRCOBOT_SIM_TAG=V3.0.0_RobotV3.9.3
+RUN git clone --depth 1 --branch ${FRCOBOT_SIM_TAG} --filter=blob:none --sparse \
+        https://github.com/FAIR-INNOVATION/frcobot_ros2.git /root/frcobot_ros2_v393 \
+    && git -C /root/frcobot_ros2_v393 sparse-checkout set \
+        fairino_hardware fairino_msgs fairino_description \
+    && rm -rf /root/frcobot_ros2_v393/.git \
+    # Üçü de gerçekten geldi mi? Biri eksikse hata ancak simülatörü
+    # çalıştırmaya kalkınca çıkar.
+    && test -f /root/frcobot_ros2_v393/fairino_hardware/src/fairino_hardware_interface.cpp \
+    && test -d /root/frcobot_ros2_v393/fairino_msgs \
+    && test -d /root/frcobot_ros2_v393/fairino_description
+
 ENV FAIRINO_SDK_DIR=/opt/fairino-python-sdk/linux
 ENV FAIRINO_ROS2_WS=/opt/fairino_ws
 # scripts/fairino_launch.sh bunu source ediyor. Verilmezse native varsayılana
