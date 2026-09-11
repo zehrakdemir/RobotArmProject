@@ -226,6 +226,63 @@ def patch_controllers(pkg: Path, dry: bool) -> str:
     return f"yazildi ({name}, {len(joints)} eklem, goal={GOAL_TOLERANCE_RAD} rad)"
 
 
+# ---------------------------------------------------------------------------
+# EKLEM IVME LIMITI
+# ---------------------------------------------------------------------------
+# CANLI OLAY: arayuzden TCP'ye 10mm oteleme verildi; uretilen plan j1'i 32.9
+# derece donduruyordu, kol savruldu, acil stopa basildi.
+#
+# SEBEP: FR3 (ve diger birkac model) config'inde ivme limiti KAPALI geliyor:
+#   has_acceleration_limits: false
+#   max_acceleration: 0
+# Pilz PTP ve LIN ivme limiti olmadan HIC planlayamiyor:
+#   "Exception caught: 'acceleration limit not set for group ...'"
+# Sonucta her hareket sessizce OMPL/RRTConnect'e duesuyor. RRTConnect
+# rastgele bir planlayici ve POZ hedefi verilince IK'nin BASKA BIR DALINI
+# secebiliyor - TCP 10mm gitsin diye kol komple yer degistiriyor. Yani
+# "once PTP dene, monoton gider; olmazsa OMPL'e dus" tasariminin PTP ayagi
+# bu yiginda hic calismamis.
+#
+# DEGER NEREDEN: uydurma DEGIL - Fairino'nun KENDI FR5 config'inden
+# (fairino5_v6_moveit2_config/config/joint_limits.yaml). O dosya FR3'unkiyle
+# hiz limitleri dahil birebir ayni, tek farki ivmenin acik ve 0.7 olmasi.
+# Yani ayni uretici, ayni hiz profili, kendi verdigi deger.
+#
+# ZATEN MUHAFAZAKAR: dosyadaki default_acceleration_scaling_factor 0.1, ustune
+# movecobot da kendi accel_pct'ini uyguluyor. Limit koymak robotu
+# HIZLANDIRMAZ - sadece planlayicinin uyacagi bir tavan tanimlar.
+JOINT_MAX_ACCEL_RAD_S2 = 0.7
+
+
+def patch_joint_limits(pkg: Path, dry: bool) -> str:
+    hedef = pkg / "config" / "joint_limits.yaml"
+    if not hedef.exists():
+        return "atlandi (joint_limits.yaml yok)"
+    text = hedef.read_text(encoding="utf-8")
+    if "has_acceleration_limits: true" in text:
+        return "zaten var (ivme limiti acik)"
+
+    # Satir bazli degistirme - basit string replace "max_acceleration: 0.7"
+    # ifadesini de vururdu ("max_acceleration: 0" onun on eki).
+    yeni, sayac = [], 0
+    for satir in text.splitlines():
+        kirpik = satir.strip()
+        girinti = satir[: len(satir) - len(satir.lstrip())]
+        if kirpik == "has_acceleration_limits: false":
+            yeni.append(f"{girinti}has_acceleration_limits: true")
+            sayac += 1
+        elif kirpik == "max_acceleration: 0":
+            yeni.append(f"{girinti}max_acceleration: {JOINT_MAX_ACCEL_RAD_S2}")
+        else:
+            yeni.append(satir)
+
+    if sayac == 0:
+        return "ATLANDI (beklenen 'has_acceleration_limits: false' satiri yok - elle bak)"
+    if not dry:
+        hedef.write_text("\n".join(yeni) + "\n", encoding="utf-8")
+    return f"yazildi ({sayac} eklem, max_acceleration={JOINT_MAX_ACCEL_RAD_S2} rad/s^2)"
+
+
 def patch_hardware(frcobot: Path, dry: bool) -> str:
     """fairino_hardware_interface.cpp yamasi (UDP servo kanali, olculen cmdT,
     hiz sinirlayici, bosta servo modundan cikis)."""
@@ -278,6 +335,7 @@ def main() -> int:
         print(f"{pkg.name}")
         print(f"  ompl_planning.yaml    : {patch_ompl(pkg, args.dry_run)}")
         print(f"  ros2_controllers.yaml : {patch_controllers(pkg, args.dry_run)}")
+        print(f"  joint_limits.yaml     : {patch_joint_limits(pkg, args.dry_run)}")
 
     print()
     print(f"{len(pkgler)} paket islendi. Simdi yeniden derle:")

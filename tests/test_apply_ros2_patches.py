@@ -220,3 +220,99 @@ def test_ompl_dry_run_da_dosya_olusturmuyor(arac, tmp_path, monkeypatch):
     arac.patch_ompl(pkg, dry=True)
 
     assert not (pkg / "config" / "ompl_planning.yaml").exists()
+
+
+# ---------------------------------------------------------------------------
+# Eklem ivme limiti
+#
+# CANLI OLAY: FR3 config'inde ivme limiti KAPALI geliyordu, bu yuzden Pilz PTP
+# ve LIN hic planlayamiyor ("acceleration limit not set for group") ve HER
+# hareket sessizce OMPL/RRTConnect'e duesuyordu. 10mm'lik bir TCP otelemesi
+# icin uretilen plan j1'i 32.9 derece donduruyordu; kol savruldu, kullanici
+# acil stopa basmak zorunda kaldi.
+# ---------------------------------------------------------------------------
+
+VENDOR_JOINT_LIMITS = """default_velocity_scaling_factor: 0.1
+default_acceleration_scaling_factor: 0.1
+
+joint_limits:
+  j1:
+    has_velocity_limits: true
+    max_velocity: 3.1499999999999999
+    has_acceleration_limits: false
+    max_acceleration: 0
+  j2:
+    has_velocity_limits: true
+    max_velocity: 3.2000000000000002
+    has_acceleration_limits: false
+    max_acceleration: 0
+"""
+
+
+def _limit_dosyasi(pkg: Path, icerik: str = VENDOR_JOINT_LIMITS) -> Path:
+    yol = pkg / "config" / "joint_limits.yaml"
+    yol.write_text(icerik, encoding="utf-8")
+    return yol
+
+
+def test_ivme_limiti_aciliyor(arac, tmp_path):
+    pkg = sahte_paket(tmp_path, "3")
+    yol = _limit_dosyasi(pkg)
+
+    sonuc = arac.patch_joint_limits(pkg, dry=False)
+
+    metin = yol.read_text(encoding="utf-8")
+    assert "has_acceleration_limits: false" not in metin
+    assert metin.count("has_acceleration_limits: true") == 2
+    assert "2 eklem" in sonuc
+
+
+def test_ivme_degeri_vendor_fr5_ile_ayni(arac, tmp_path):
+    """Deger uydurma DEGIL - Fairino'nun kendi FR5 config'indeki 0.7.
+
+    O dosya FR3'unkiyle hiz limitleri dahil birebir ayni; tek farki ivmenin
+    acik ve 0.7 olmasi. Ayni uretici, ayni hiz profili, kendi verdigi deger.
+    """
+    yaml = pytest.importorskip("yaml")
+    pkg = sahte_paket(tmp_path, "3")
+    yol = _limit_dosyasi(pkg)
+
+    arac.patch_joint_limits(pkg, dry=False)
+
+    d = yaml.safe_load(yol.read_text(encoding="utf-8"))
+    for eklem in ("j1", "j2"):
+        assert d["joint_limits"][eklem]["has_acceleration_limits"] is True
+        assert d["joint_limits"][eklem]["max_acceleration"] == 0.7
+    # Hiz limitleri DEGISMEMELI - sadece ivme aciliyor.
+    assert d["joint_limits"]["j1"]["max_velocity"] == pytest.approx(3.15)
+
+
+def test_mevcut_ivme_degeri_ezilmiyor(arac, tmp_path):
+    """Ivme zaten tanimliysa dokunma - kullanicinin kendi ayari olabilir."""
+    pkg = sahte_paket(tmp_path, "3")
+    ozel = VENDOR_JOINT_LIMITS.replace(
+        "has_acceleration_limits: false", "has_acceleration_limits: true"
+    ).replace("max_acceleration: 0\n", "max_acceleration: 1.5\n")
+    yol = _limit_dosyasi(pkg, ozel)
+
+    sonuc = arac.patch_joint_limits(pkg, dry=False)
+
+    assert "zaten var" in sonuc
+    assert "max_acceleration: 1.5" in yol.read_text(encoding="utf-8")
+
+
+def test_ivme_limiti_dry_run_yazmiyor(arac, tmp_path):
+    pkg = sahte_paket(tmp_path, "3")
+    yol = _limit_dosyasi(pkg)
+    onceki = yol.read_text(encoding="utf-8")
+
+    arac.patch_joint_limits(pkg, dry=True)
+
+    assert yol.read_text(encoding="utf-8") == onceki
+
+
+def test_ivme_limiti_dosya_yoksa_atliyor(arac, tmp_path):
+    """joint_limits.yaml olmayan bir pakette sessizce atlanmali, patlamamali."""
+    pkg = sahte_paket(tmp_path, "3")
+
+    assert "atlandi" in arac.patch_joint_limits(pkg, dry=False)
