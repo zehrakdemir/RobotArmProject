@@ -331,14 +331,16 @@ def apply_config_patches(config_target: Path):
       - eklem ivme limiti yok         -> Pilz PTP/LIN HIC planlayamiyor,
                                          her hareket OMPL/RRTConnect'e
                                          duesuyor
-    Sonuncusu canli bir olaya yol acti: 10mm'lik bir TCP otelemesi icin
+      - FR3'te J3 limiti +-162 derece -> MoveIt robotun +-150 derecelik soft
+                                         limitinin disini planlayabiliyor
+    Ivme maddesi canli bir olaya yol acti: 10mm'lik bir TCP otelemesi icin
     planlayici IK'nin baska bir dalina atladi, kol 32.9 derece savruldu ve
     acil stopa basildi.
 
     Yama araci tools/ altinda ve pakete dahil degil; dosyadan yukleniyor.
     Sadece CONFIG yamalari cagriliyor - donanim yamasi zaten
     apply_hardware_patch ile ayrica uygulaniyor ve 'patch' komutunu
-    gerektiriyor, buradaki uc yama ise saf Python.
+    gerektiriyor, buradaki yamalar ise saf Python.
     """
     import importlib.util
 
@@ -352,6 +354,7 @@ def apply_config_patches(config_target: Path):
     print(f"  ompl_planning.yaml    : {mod.patch_ompl(config_target, False)}")
     print(f"  ros2_controllers.yaml : {mod.patch_controllers(config_target, False)}")
     print(f"  joint_limits.yaml     : {mod.patch_joint_limits(config_target, False)}")
+    print(f"  j3 pozisyon limiti    : {mod.patch_j3_position_limit(config_target, False)}")
 
 
 def sync_shared_package(pkg_name: str, src: Path):

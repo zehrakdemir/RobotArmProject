@@ -9,6 +9,7 @@ Gercek robot veya ROS2 gerektirmez - sahte paket agaclari uzerinde calisir.
 """
 
 import importlib.util
+import math
 import sys
 from pathlib import Path
 
@@ -316,3 +317,100 @@ def test_ivme_limiti_dosya_yoksa_atliyor(arac, tmp_path):
     pkg = sahte_paket(tmp_path, "3")
 
     assert "atlandi" in arac.patch_joint_limits(pkg, dry=False)
+
+
+# ---------------------------------------------------------------------------
+# J3 pozisyon limiti (yalnizca FR3)
+#
+# CANLI OLAY (4 Eylul): robot "Shaft out of soft limit" verdi. FR3
+# kontrolcusundeki J3 limiti +-150 derece, Fairino URDF'i +-162 diyor; MoveIt
+# aradaki bolgeyi gecerli sanip planlayabiliyordu.
+# ---------------------------------------------------------------------------
+
+# j3 ortada: blok sinirinin dogru bulundugunu (j4'e tasmadigini) da test eder.
+VENDOR_JOINT_LIMITS_J3 = VENDOR_JOINT_LIMITS + """  j3:
+    has_velocity_limits: true
+    max_velocity: 3.1499999999999999
+    has_acceleration_limits: false
+    max_acceleration: 0
+  j4:
+    has_velocity_limits: true
+    max_velocity: 3.2000000000000002
+    has_acceleration_limits: false
+    max_acceleration: 0
+"""
+
+
+def test_j3_limiti_150_derece(arac, tmp_path):
+    yaml = pytest.importorskip("yaml")
+    pkg = sahte_paket(tmp_path, "3")
+    yol = _limit_dosyasi(pkg, VENDOR_JOINT_LIMITS_J3)
+
+    sonuc = arac.patch_j3_position_limit(pkg, dry=False)
+
+    assert "yazildi" in sonuc
+    d = yaml.safe_load(yol.read_text(encoding="utf-8"))["joint_limits"]
+    assert d["j3"]["has_position_limits"] is True
+    assert d["j3"]["max_position"] == math.radians(150)
+    assert d["j3"]["min_position"] == -math.radians(150)
+    # Diger eklemlere pozisyon limiti yazilmamali.
+    for eklem in ("j1", "j2", "j4"):
+        assert "max_position" not in d[eklem]
+        assert "min_position" not in d[eklem]
+
+
+def test_j3_limiti_ivme_yamasiyla_birlikte_gecerli_yaml(arac, tmp_path):
+    yaml = pytest.importorskip("yaml")
+    pkg = sahte_paket(tmp_path, "3")
+    yol = _limit_dosyasi(pkg, VENDOR_JOINT_LIMITS_J3)
+
+    arac.patch_joint_limits(pkg, dry=False)
+    arac.patch_j3_position_limit(pkg, dry=False)
+
+    j3 = yaml.safe_load(yol.read_text(encoding="utf-8"))["joint_limits"]["j3"]
+    assert j3["max_acceleration"] == 0.7
+    assert j3["max_position"] == math.radians(150)
+
+
+def test_j3_limiti_idempotent(arac, tmp_path):
+    pkg = sahte_paket(tmp_path, "3")
+    yol = _limit_dosyasi(pkg, VENDOR_JOINT_LIMITS_J3)
+
+    arac.patch_j3_position_limit(pkg, dry=False)
+    ilk = yol.read_text(encoding="utf-8")
+
+    assert "zaten var" in arac.patch_j3_position_limit(pkg, dry=False)
+    assert yol.read_text(encoding="utf-8") == ilk
+
+
+def test_j3_limiti_diger_modellere_uygulanmiyor(arac, tmp_path):
+    """+-150 yalnizca FR3'te olculdu; baska modele uydurma deger yazilmamali."""
+    pkg = sahte_paket(tmp_path, "5")
+    yol = _limit_dosyasi(pkg, VENDOR_JOINT_LIMITS_J3)
+    onceki = yol.read_text(encoding="utf-8")
+
+    assert "atlandi" in arac.patch_j3_position_limit(pkg, dry=False)
+    assert yol.read_text(encoding="utf-8") == onceki
+
+
+def test_j3_daha_genis_limit_varsa_sessizce_birakilmiyor(arac, tmp_path):
+    pkg = sahte_paket(tmp_path, "3")
+    genis = VENDOR_JOINT_LIMITS_J3.replace(
+        "  j4:", "    max_position: 2.8274\n    min_position: -2.8274\n  j4:"
+    )
+    yol = _limit_dosyasi(pkg, genis)
+
+    sonuc = arac.patch_j3_position_limit(pkg, dry=False)
+
+    assert "ATLANDI" in sonuc
+    assert yol.read_text(encoding="utf-8") == genis
+
+
+def test_j3_limiti_dry_run_yazmiyor(arac, tmp_path):
+    pkg = sahte_paket(tmp_path, "3")
+    yol = _limit_dosyasi(pkg, VENDOR_JOINT_LIMITS_J3)
+    onceki = yol.read_text(encoding="utf-8")
+
+    arac.patch_j3_position_limit(pkg, dry=True)
+
+    assert yol.read_text(encoding="utf-8") == onceki

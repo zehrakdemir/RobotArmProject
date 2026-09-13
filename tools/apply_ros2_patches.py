@@ -26,6 +26,7 @@ Kullanim:
 from __future__ import annotations
 
 import argparse
+import math
 import re
 import shutil
 import subprocess
@@ -283,6 +284,79 @@ def patch_joint_limits(pkg: Path, dry: bool) -> str:
     return f"yazildi ({sayac} eklem, max_acceleration={JOINT_MAX_ACCEL_RAD_S2} rad/s^2)"
 
 
+# ---------------------------------------------------------------------------
+# J3 POZISYON LIMITI (yalnizca FR3)
+# ---------------------------------------------------------------------------
+# CANLI OLAY (4 Eylul): robot "Shaft out of soft limit" hatasi verdi. FR3'un
+# kontrolcusundeki J3 yazilim limiti +-150 derece; Fairino'nun URDF'i
+# (fairino_description/urdf/fairino3_v6.urdf) ise +-2.8274 rad = +-162 derece
+# diyor. Yani MoveIt 150-162 arasini gecerli sanip planlayabiliyor, robot o
+# bolgeye girince fault verip duruyor.
+#
+# 4 Eylul'de URDF elle 150'ye cekilmisti ama KAYBOLDU: setup_target
+# fairino_description'i kaynaktan yeniden kopyaliyor. 13 Eylul olcumu: native
+# kaynak, ayna ve Docker imajindaki URDF'lerin hepsi yine +-162.
+#
+# NEDEN URDF DEGIL joint_limits.yaml: MoveIt robot modelini yuklerken
+# robot_description_planning.joint_limits.<eklem>.max_position/min_position
+# degerlerini okuyup URDF sinirinin yerine koyuyor (robot_model_loader.cpp
+# :133-159 -> setVariableBounds). OMPL, IK ve Pilz ayni modeli kullaniyor.
+# Config paketi hem bu aracla hem setup_target'ta zaten yamalaniyor, yeniden
+# kopyalanirken sessizce kaybolmaz.
+#
+# DEGER NEREDEN: robotun kendi soft limiti (4 Eylul, robotun hata mesaji).
+# Yalnizca FR3 icin olculdu; diger modellere UYGULANMIYOR.
+J3_SOFT_LIMIT_DEG = 150.0
+J3_LIMIT_PAKETLERI = ("fairino3_v6_moveit2_config",)
+
+
+def patch_j3_position_limit(pkg: Path, dry: bool) -> str:
+    if pkg.name not in J3_LIMIT_PAKETLERI:
+        return "atlandi (bu model icin olculmus J3 limiti yok)"
+    hedef = pkg / "config" / "joint_limits.yaml"
+    if not hedef.exists():
+        return "ATLANDI (joint_limits.yaml yok - J3 limiti UYGULANMADI)"
+    satirlar = hedef.read_text(encoding="utf-8").splitlines()
+
+    def girinti(s: str) -> int:
+        return len(s) - len(s.lstrip())
+
+    bas = next((i for i, s in enumerate(satirlar) if s.strip() == "j3:"), None)
+    if bas is None:
+        return "ATLANDI (j3 blogu bulunamadi - J3 limiti UYGULANMADI, elle bak)"
+    son = bas + 1
+    while son < len(satirlar) and satirlar[son].strip() and girinti(satirlar[son]) > girinti(satirlar[bas]):
+        son += 1
+    blok = satirlar[bas + 1:son]
+
+    limit_rad = math.radians(J3_SOFT_LIMIT_DEG)
+    mevcut = {}
+    for s in blok:
+        anahtar, _, deger = s.strip().partition(":")
+        if anahtar in ("min_position", "max_position"):
+            mevcut[anahtar] = float(deger)
+    if mevcut:
+        # Daha dar bir limit daha guvenlidir, dokunma. Daha genisi ise
+        # sessizce birakilmamali.
+        if (mevcut.get("max_position", math.inf) <= limit_rad
+                and mevcut.get("min_position", -math.inf) >= -limit_rad):
+            return f"zaten var (j3 +-{J3_SOFT_LIMIT_DEG:.0f} derece veya daha dar)"
+        return "ATLANDI (j3 icin DAHA GENIS bir pozisyon limiti yazili - J3 limiti UYGULANMADI, elle bak)"
+
+    cocuk = " " * (girinti(blok[0]) if blok else girinti(satirlar[bas]) + 2)
+    # Tam float degeri yaziliyor: yuvarlamak limiti 150'nin bir tik USTUNE
+    # tasiyabilirdi.
+    eklenen = [
+        f"{cocuk}# Robotun kendi J3 soft limiti +-{J3_SOFT_LIMIT_DEG:.0f} derece (tools/apply_ros2_patches.py)",
+        f"{cocuk}has_position_limits: true",
+        f"{cocuk}min_position: {-limit_rad!r}",
+        f"{cocuk}max_position: {limit_rad!r}",
+    ]
+    if not dry:
+        hedef.write_text("\n".join(satirlar[:son] + eklenen + satirlar[son:]) + "\n", encoding="utf-8")
+    return f"yazildi (j3 +-{J3_SOFT_LIMIT_DEG:.0f} derece = +-{limit_rad:.4f} rad)"
+
+
 def patch_hardware(frcobot: Path, dry: bool) -> str:
     """fairino_hardware_interface.cpp yamasi (UDP servo kanali, olculen cmdT,
     hiz sinirlayici, bosta servo modundan cikis)."""
@@ -336,6 +410,7 @@ def main() -> int:
         print(f"  ompl_planning.yaml    : {patch_ompl(pkg, args.dry_run)}")
         print(f"  ros2_controllers.yaml : {patch_controllers(pkg, args.dry_run)}")
         print(f"  joint_limits.yaml     : {patch_joint_limits(pkg, args.dry_run)}")
+        print(f"  j3 pozisyon limiti    : {patch_j3_position_limit(pkg, args.dry_run)}")
 
     print()
     print(f"{len(pkgler)} paket islendi. Simdi yeniden derle:")
