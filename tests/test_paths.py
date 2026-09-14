@@ -86,6 +86,16 @@ def test_bos_deger_varsayilana_dusuyor(monkeypatch):
     assert paths.ros2_ws() == paths.HOME / "ros2_ws"
 
 
+def test_kaynak_dizini_ortam_degiskenini_kullaniyor(monkeypatch, tmp_path):
+    monkeypatch.setenv("FAIRINO_SOURCES_DIR", str(tmp_path / "kaynak"))
+    assert paths.sources_dir() == tmp_path / "kaynak"
+
+
+def test_kaynak_dizini_varsayilani_state_altinda(temiz_ortam, tmp_path):
+    """Docker'da /state host'a bagli: indirilen kaynak container silinince kaybolmasin."""
+    assert paths.sources_dir() == tmp_path / "state" / "frcobot_sources"
+
+
 # ---------------------------------------------------------------------------
 # Robot IP
 # ---------------------------------------------------------------------------

@@ -7,9 +7,13 @@ workspace'e kurar ve derler. Elle "fr3"/"fr5" ya da "v393"/"v398" gibi
 sabit isimler YOK — her şey argüman olarak gelen model+sürüme göre.
 
 Kaynak öncelik sırası:
-  1) ~/fairino_official_mirror/fairino_hardware_v{MAJ}_{MIN}_{MIN2}
-  2) ~/frcobot_ros2_v393/fairino_hardware (3.9.3'e özel, tam depo klonu)
+  1) TAM TAG KLONU (fairino_msgs yanında, aynı sürümden):
+     FAIRINO_SOURCES_DIR/frcobot_ros2_v{MAJ}_{MIN}_{MIN2}  (fairino-fetch-source indirir)
+     ~/frcobot_ros2_v{MAJ}{MIN}{MIN2}                       (eski ad; imajdaki 3.9.3 klonu)
+  2) ~/fairino_official_mirror/fairino_hardware_v{MAJ}_{MIN}_{MIN2}
   3) ~/fairino_hardware_sources/v{MAJ}{MIN}{MIN2} (izole/kardeşsiz kopyalar)
+
+Aynada olmayan bir sürüm için: fairino-fetch-source <sürüm>
 
 Kullanım:
   python3 setup_fairino_target.py <model_num> <maj> <min> <min2> <robot_ip>
@@ -87,17 +91,50 @@ def source_is_complete(candidate: Path) -> bool:
     return True
 
 
-def find_hardware_source(maj, minr, min2):
-    tag = f"{maj}_{minr}_{min2}"
-    candidates = [
-        MIRROR / f"fairino_hardware_v{tag}",
+def tam_klon_yerleri(maj, minr, min2):
+    """Bu surumun TAM frcobot_ros2 tag klonunun olabilecegi klasorler.
+
+    Tam klonda fairino_hardware, fairino_msgs ve fairino_description AYNI
+    tag'den yan yana durur. Aynaya ya da izole bir klasore konan surucunun
+    yaninda ise dogru fairino_msgs yok; find_msgs_source aynanin kokundekine
+    (3.9.9) duser ve derleme kirilabilir. 3.9.3'te olan buydu:
+      'fairino_msgs::msg::RobotNonrtState_' has no member named 'servoj_cmd_num'
+    Eskiden bu yol YALNIZCA 3.9.3 icin koda yaziliydi; artik her surum icin.
+    """
+    return [
+        # fairino-fetch-source buraya indirir.
+        paths.sources_dir() / f"frcobot_ros2_v{maj}_{minr}_{min2}",
+        # Eski adlandirma - imajdaki 3.9.3 klonu bu adla duruyor.
+        HOME / f"frcobot_ros2_v{maj}{minr}{min2}",
     ]
-    # 3.9.3 icin ONCE frcobot_ros2_v393'e bakiyoruz (tam depo klonu, YANINDA
-    # dogru fairino_msgs/fairino_description KARDESI var) - LEGACY_SOURCES/v393
-    # sadece fairino_hardware'in kendisinin izole bir kopyasi, kardessiz, bu
-    # yuzden secilirse fairino_msgs yanlislikla mirror'a duser (surum uyusmazligi).
-    if (maj, minr, min2) == ("3", "9", "3"):
-        candidates.append(HOME / "frcobot_ros2_v393" / "fairino_hardware")
+
+
+def tam_klon_surucusu(klon: Path, maj, minr, min2):
+    """Tam tag klonunun icinde bu surume ait fairino_hardware klasoru.
+
+    frcobot_ros2 tag duzenleri (GitHub'da olculdu, 14 Eylul 2026):
+      - 3.9.4 ve oncesi: tek 'fairino_hardware' (o tag'in kendi surumu)
+      - 3.9.6 ve sonrasi: 'fairino_hardware' + 'fairino_hardware_v3_9_x'
+        surum klasorleri + TEK fairino_msgs
+    Surum klasoru varsa o secilir: aynada da ayni kalip kullaniliyor ve canli
+    robotta calisti (fairino_hardware_v3_9_8 + ayni tag'in fairino_msgs'i).
+    """
+    for ad in (f"fairino_hardware_v{maj}_{minr}_{min2}", "fairino_hardware"):
+        if (klon / ad).is_dir():
+            return klon / ad
+    return None
+
+
+def find_hardware_source(maj, minr, min2):
+    candidates = []
+    # 1) Tam tag klonlari ONCE: yanlarindaki fairino_msgs kesin ayni surumden.
+    for klon in tam_klon_yerleri(maj, minr, min2):
+        surucu = tam_klon_surucusu(klon, maj, minr, min2)
+        if surucu is not None:
+            candidates.append(surucu)
+    # 2) Ayna. 3) LEGACY_SOURCES: sadece fairino_hardware'in izole kopyasi,
+    # kardessiz - secilirse fairino_msgs aynaya duser (main() uyarir).
+    candidates.append(MIRROR / f"fairino_hardware_v{maj}_{minr}_{min2}")
     candidates.append(LEGACY_SOURCES / f"v{maj}{minr}{min2}")
 
     for c in candidates:
@@ -111,6 +148,15 @@ def find_hardware_source(maj, minr, min2):
 
 def list_available_versions():
     versions = []
+    kaynaklar = paths.sources_dir()
+    if kaynaklar.exists():
+        for d in kaynaklar.glob("frcobot_ros2_v*"):
+            m = re.fullmatch(r"frcobot_ros2_v(\d+)_(\d+)_(\d+)", d.name)
+            if not m:
+                continue
+            surucu = tam_klon_surucusu(d, *m.groups())
+            if surucu is not None and source_is_complete(surucu):
+                versions.append(".".join(m.groups()))
     if MIRROR.exists():
         for d in MIRROR.glob("fairino_hardware_v*"):
             if source_is_complete(d):
@@ -138,9 +184,9 @@ def apply_hardware_patch(frcobot_dir: Path, cpp_path: Path):
     uygulamak da MUMKUN OLMUYORDU: robot_ip blogu eklendigi icin patch'in
     baglami kayiyor ve yama tutmuyordu.
 
-    Artik tek kaynak var. Yama dosyasi bulunamazsa eski davranisa (yalniz
-    robot_ip) duesuluyor - hicbir sey yapmamaktansa iyi, ama yuksek sesle
-    uyariliyor.
+    Artik tek kaynak var. Yama dosyasi bulunamazsa (kurulum eksik) eski
+    davranisa (yalniz robot_ip) duesuluyor ve yuksek sesle uyariliyor. Yama
+    dosyasi VAR ama kaynaga TUTMUYORSA durulur - bkz. fonksiyonun sonu.
     """
     try:
         yama = paths.patches_dir() / "fairino_hardware_interface.patch"
@@ -169,10 +215,21 @@ def apply_hardware_patch(frcobot_dir: Path, cpp_path: Path):
         print("  hiz sinirlayici, bosta servo cikisi, robot_ip parametresi).")
         return
 
-    print(f"  UYARI: surucu yamasi uygulanamadi (rc={r.returncode}).")
-    print(f"  {(r.stdout + r.stderr).strip()[:300]}")
-    print("  Yedek olarak sadece robot_ip blogu ekleniyor.")
-    patch_on_init(cpp_path)
+    # YAMA DOSYASI VAR AMA BU KAYNAGA TUTMUYOR: DUR.
+    # Eskiden burada sadece robot_ip blogu eklenip devam ediliyordu. Sonuc,
+    # UDP servo kanali, olculen cmdT, hiz sinirlayici ve bosta servo cikisi
+    # OLMAYAN bir surucuydu. Aynada olmayan surumler artik fairino-fetch-source
+    # ile indirilebildigi icin yamanin tutmadigi bir kaynakla karsilasmak
+    # olagan hale geldi - yamasiz surucuyle robot surulmez.
+    die(
+        f"surucu yamasi bu kaynaga uygulanamadi (rc={r.returncode}):\n"
+        f"  {(r.stdout + r.stderr).strip()[:300]}\n"
+        "Yamasiz surucuyle DEVAM EDILMIYOR: UDP servo kanali, olculen cmdT, hiz "
+        "sinirlayici ve bosta servo cikisi olmadan robot sicramali calisir, "
+        "'axis N command speed exceeds the limit' faultu verebilir.\n"
+        "Bu surum icin ros2/patches/fairino_hardware_interface.patch uyarlanmali "
+        "(gerekceler: ros2/README.md)."
+    )
 
 
 def patch_on_init(cpp_path: Path):
@@ -400,7 +457,11 @@ def main():
         die(
             f"{maj}.{minr}.{min2} için fairino_hardware kaynağı bulunamadı.\n"
             f"Mevcut sürümler: {avail if avail else '(hiçbiri)'}\n"
-            f"Bu sürümü bana söyle, hazırlayayım."
+            f"Çözüm: bu sürümün kaynağını KENDİ tag'iyle indir (robota bağlanmaz):\n"
+            f"  fairino-fetch-source {maj}.{minr}.{min2}\n"
+            f"  (Docker: docker compose exec cobot fairino-fetch-source {maj}.{minr}.{min2})\n"
+            f"İndirileceği yer: {tam_klon_yerleri(maj, minr, min2)[0]}\n"
+            f"Sonra fairino_launch'i yeniden başlat (Docker: docker compose restart cobot)."
         )
     print(f"Kaynak bulundu: {hw_src}")
 
@@ -410,6 +471,10 @@ def main():
     desc_src = find_msgs_source(hw_src, "fairino_description")
     print(f"  fairino_msgs kaynağı: {msgs_src}")
     print(f"  fairino_description kaynağı: {desc_src}")
+    if msgs_src.parent != hw_src.parent:
+        print("  UYARI: fairino_msgs sürücüyle AYNI tag'den gelmiyor (sürücünün yanında yok).")
+        print("         Derleme kırılabilir; doğrusu bu sürümü tam tag olarak indirmek:")
+        print(f"         fairino-fetch-source {maj}.{minr}.{min2}")
     synced_msgs = sync_shared_package("fairino_msgs", msgs_src)
     synced_desc = sync_shared_package("fairino_description", desc_src)
 

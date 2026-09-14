@@ -213,6 +213,23 @@ def mirror_dir() -> Path:
     return _env_path("FAIRINO_MIRROR_DIR") or (HOME / "fairino_official_mirror")
 
 
+def sources_dir() -> Path:
+    """Aynada OLMAYAN robot surumlerinin TAM frcobot_ros2 tag klonlari.
+
+    NEDEN AYRI BIR YER: aynada bir suru fairino_hardware surumu var ama
+    fairino_msgs TEK (3.9.9'unki). Baska bir tag'den gelen surucu oraya
+    konursa 3.9.9 mesajlariyla derlenir ve kirilabilir (3.9.3'te oldu).
+    Burada her surum kendi tag'inden, uc paket yan yana durur:
+
+        <sources_dir>/frcobot_ros2_v3_9_2/{fairino_hardware, fairino_msgs, fairino_description}
+
+    fairino-fetch-source buraya indirir, setup_target buradan okur.
+    Varsayilan state dizininin altinda: Docker'da /state host'a bagli oldugu
+    icin container silinince kaybolmaz.
+    """
+    return _env_path("FAIRINO_SOURCES_DIR") or (state_dir() / "frcobot_sources")
+
+
 def moveit_ws() -> Path:
     return _env_path("FAIRINO_MOVEIT_WS") or (HOME / "ws_moveit2")
 

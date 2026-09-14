@@ -202,6 +202,33 @@ demek ve doğruluğu ancak gerçek robotla karşılaştırılarak doğrulanabili
   portunu güvenmediğin bir ağa açma.
 - Sürücü doğrudan LAN'a eriştiği için container'ın izole olması **güvenlik sınırı değil**.
 
+## Robotun sürümü aynada yoksa
+
+Aynadaki (`V3.0.0_RobotV3.9.9`) sürücü sürümleri: 3.8.2.11, 3.9.0, 3.9.0.1, 3.9.4–3.9.9.
+Robot başka bir sürüm bildirirse `fairino_launch` "kaynağı bulunamadı" deyip durur.
+
+Çözüm: o sürümün kaynağını **kendi tag'iyle** indir. Araç robota bağlanmaz.
+
+```bash
+docker compose exec cobot fairino-fetch-source 3.9.2
+```
+
+```bash
+docker compose restart cobot
+```
+
+- İndirilen yer: `/state/frcobot_sources/frcobot_ros2_v3_9_2/`
+  (host: `~/.local/state/fairino-cobot/frcobot_sources/`). Container silinince kaybolmaz.
+- **Neden aynaya kopyalanmıyor:** Aynada bir sürü `fairino_hardware` var ama `fairino_msgs`
+  tek (3.9.9'unki). Başka tag'den gelen sürücü onunla derlenince kırılabiliyor; 3.9.3'te
+  `'RobotNonrtState_' has no member named 'servoj_cmd_num'` hatası böyle çıktı.
+  Tam tag klonunda üç paket aynı sürümden yan yana durur.
+- Aynı sürümün ekli bir tag'i de varsa (ör. `v3.0.0_RobotV3.9.8_v1.1`) araç ekisiz olanı
+  seçer ve diğerlerini listeler. Farkını Fairino belgelemiyor; diğeri için `--tag`.
+- Araç, sürücü yamamızın yeni kaynağa tutup tutmadığını `--dry-run` ile söyler.
+  **Tutmazsa `setup_target` durur**, yamasız sürücüyle devam etmez.
+- GitHub'daki tag'ler: `fairino-fetch-source --list`
+
 ## Sürüm sabitlemeleri
 
 | Ne | Değer | Neden |
