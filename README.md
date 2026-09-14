@@ -46,7 +46,7 @@ konuşur.
 |---|---|
 | Robot | Açık, **WebApp'ten enable edilmiş**, Auto modda ve bilgisayarla aynı ağda ulaşılabilir |
 | Gripper (kullanılacaksa) | Jodell EPG40-050 + WebApp'te `End_Jodell_V1.0` protokolü uygulanmış ve Configure edilmiş |
-| İşlemci | 64-bit Intel/AMD (imaj `amd64`) |
+| İşlemci | 64-bit Intel/AMD (imaj `amd64`). Apple işlemcili Mac (M1–M4) desteklenmiyor |
 | Disk | Hazır imaj: ~0,9 GB indirme, açılınca ~4,2 GB. Kaynaktan derleme: ~8 GB |
 
 ## A. Hazır imajla kurulum
@@ -137,11 +137,22 @@ docker pull ghcr.io/huseyinai/fairino-cobot:latest
 Sonra 4. adımdaki `docker run` komutu. Kayıtlı hareketler `fairino-state` volume'unda durur,
 silinmez.
 
-### A2. Linux (Docker Engine)
+### A2. Linux ve Mac (Intel)
 
-**Gerekenler:** [Docker Engine](https://docs.docker.com/engine/install/). Komutları `sudo`'suz
-çalıştırmak için [kurulum sonrası adımlar](https://docs.docker.com/engine/install/linux-postinstall/).
-Linux'ta container doğrudan bilgisayarın çekirdeğinde çalışır, arada sanal makine yoktur.
+**Gerekenler:**
+
+- **Linux:** [Docker Engine](https://docs.docker.com/engine/install/). Komutları `sudo`'suz
+  çalıştırmak için [kurulum sonrası adımlar](https://docs.docker.com/engine/install/linux-postinstall/).
+  Linux'ta container doğrudan bilgisayarın çekirdeğinde çalışır, arada sanal makine yoktur.
+- **Mac (Intel işlemcili):** [Docker Desktop for Mac](https://docs.docker.com/desktop/setup/install/mac-install/)
+  (Intel chip sürümü) kur ve aç. Komutlar **Terminal** uygulamasında çalıştırılır. Windows'taki gibi
+  container Docker Desktop'ın sanal makinesinde çalışır; gerçek zamanlı zamanlama doğrudan
+  Linux'taki kadar garanti değil. **Mac'te denenmedi.**
+
+> **Apple işlemcili Mac (M1, M2, M3, M4) desteklenmiyor.** Robot sürücüsünün bağlı olduğu Fairino
+> kütüphanesi (`libfairino.so`) yalnızca x86-64 için derlenmiş; ARM sürümü yok. İmaj bu Mac'lerde
+> ancak emülasyonla çalışır, servo akışı düzensizleşebilir. Robotu sürmek için kullanma.
+> Mac'in işlemcisini görmek için: sol üstteki Apple menüsü → **Bu Mac Hakkında** → "İşlemci" ya da "Çip" satırı.
 
 ```bash
 docker login ghcr.io -u <github-kullanici-adin>
