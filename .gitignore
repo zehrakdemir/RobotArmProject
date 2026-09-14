@@ -252,9 +252,8 @@ movecobot_record_draft.json
 .random_motion.lock
 .fairino_last_target
 
-# Kullanicinin kendi ogrettigi hareketler makineye ozgu. Repoda ornek olarak
-# examples/movecobot_moves.example.json duruyor.
-movecobot_moves.json
+# Kullanicinin kendi ogrettigi hareketler makineye ozgu ve repoya girmez.
+movecobot_moves*.json
 
 # --- IDE / editor -----------------------------------------------------------
 .idea/

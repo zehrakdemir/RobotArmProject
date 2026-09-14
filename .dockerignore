@@ -13,6 +13,9 @@
 .env.*
 !.env.example
 
+# Kayitli hareketler kullaniciya ozgu; imaja girmez.
+**/movecobot_moves*.json
+
 # Vendor ve derleme ciktilari - imaj bunlari kendisi klonluyor/derliyor.
 vendor/
 build/
