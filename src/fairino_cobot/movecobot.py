@@ -138,8 +138,11 @@ MIN_CLEARANCE_M = 0.012
 # BASLI BASINA anormaldir, nereye gittiginden bagimsiz olarak.
 #
 # Bu esik asilirsa hareket ICRA EDILMEDEN reddedilir ve sebebi arayuzde
-# gorunur. Sadece goreceli TCP hareketlerine (jog) uygulanir - mutlak
-# hedeflerde buyuk eklem hareketi mesru olabilir.
+# gorunur. Mutlak hedeflerde buyuk eklem hareketi mesru olabilir.
+#
+# KALDIRILDI (kullanici karari, 14 Eylul): jog'lar artik bu siniri
+# UYGULAMIYOR (bkz. _jog_to_pose). Mekanizma _plan_and_execute'ta
+# max_joint_excursion_deg parametresiyle duruyor; su an hicbir cagri vermiyor.
 MAX_JOG_JOINT_EXCURSION_DEG = 20.0
 
 # ---------------------------------------------------------------------------
@@ -1329,8 +1332,43 @@ class CobotArm:
         tz = cz + dx * cur_x_axis[2] + dy * cur_y_axis[2] + dz * cur_z_axis[2]
         # TCP kendi ekseninde goreceli hareket - tipik yaklasma/geri cekilme,
         # duz cizgi olmali (bkz. prefer_lin aciklamasi).
-        return self.move_to_pose_base(tx, ty, tz, crx, cry, crz, confirm=confirm, prefer_lin=True,
-                                      max_joint_excursion_deg=MAX_JOG_JOINT_EXCURSION_DEG)
+        return self._jog_to_pose(tx, ty, tz, crx, cry, crz, confirm=confirm)
+
+    def _jog_to_pose(self, tx, ty, tz, trx, trye, trz, confirm=False):
+        """Goreceli TCP hedefine (jog) EN YAKIN IK cozumuyle gider.
+
+        NEDEN: hedef poz olarak verildiginde IK'yi planlayici kendi icinde
+        cozuyor; hangi cozumu (kolun hangi durusunu) sectigi ancak plan
+        ciktiktan sonra goruluyordu. OMPL hedefi rastgele tohumla ornekledigi
+        icin baska bir dala atlayabiliyor.
+
+        Burada IK once, kolun SU ANKI acilari tohum verilerek cozuluyor
+        (RobotState.set_from_ik - KDL ilk denemede bu tohumdan baslar) ve
+        hedef EKLEM acisi olarak veriliyor; planlama sirasi ayni kalir
+        (LIN -> PTP -> OMPL).
+
+        "En yakin" garantisi yok: KDL tohumla zaman asiminda
+        (kinematics.yaml) bulamazsa rastgele tohuma gecer.
+
+        EKLEM DONUSU SINIRI YOK (kullanici karari, 14 Eylul): jog'da
+        MAX_JOG_JOINT_EXCURSION_DEG ne IK cozumune ne plana uygulaniyor.
+        Uzak bir cozum/savrulma artik reddedilmez - acil stop elin altinda.
+        """
+        from moveit.core.robot_state import RobotState
+        with self.sdk_lock:
+            baslangic = list(self.sdk.GetActualJointPosDegree()[1])
+        pose_goal = self._goal_pose_from_tcp(tx, ty, tz, trx, trye, trz)
+        ik_state = RobotState(self.robot_model)
+        ik_state.set_joint_group_positions(self.group_name, [math.radians(v) for v in baslangic])
+        ik_state.update()
+        # timeout verilmiyor: 0 -> grubun varsayilani (kinematics.yaml).
+        if not ik_state.set_from_ik(self.group_name, pose_goal.pose, TIP_LINK):
+            return {"success": False, "reason": "ik_failed",
+                    "details": "hedef poz icin IK cozumu bulunamadi (erisilemeyen nokta olabilir). "
+                               "Planlanmadi - robot hareket etmedi."}
+        cozum = [math.degrees(v) for v in ik_state.get_joint_group_positions(self.group_name)]
+        return self.move_to_joints(cozum, confirm=confirm, known_start_joints_deg=baslangic,
+                                   prefer_lin=True)
 
     def move_tcp_base(self, dx, dy, dz, confirm=False):
         """TCP'yi BASE (dunya) eksenlerine gore goreceli hareket ettirir;
@@ -1349,9 +1387,7 @@ class CobotArm:
             cur = self.sdk.GetActualTCPPose()[1]
         cx, cy, cz, crx, cry, crz = cur[0:6]
         # Donusum YOK - base ekseni zaten TCP pozunun ifade edildigi cerceve.
-        return self.move_to_pose_base(cx + dx, cy + dy, cz + dz, crx, cry, crz,
-                                      confirm=confirm, prefer_lin=True,
-                                      max_joint_excursion_deg=MAX_JOG_JOINT_EXCURSION_DEG)
+        return self._jog_to_pose(cx + dx, cy + dy, cz + dz, crx, cry, crz, confirm=confirm)
 
     def shutdown(self):
         if self._shutdown_called:
