@@ -40,9 +40,6 @@ konuşur.
 | **A. Hazır imaj** (önerilen) | Robotu kullanacak kişi | Docker + imaja erişimi olan bir GitHub hesabı |
 | **B. Kaynaktan derleme** | Kodu değiştiren geliştirici | Linux ya da WSL2, Docker, bu repo |
 
-> **Durum (14 Eylül 2026):** `ghcr.io/huseyinai/fairino-cobot` imajı henüz yüklenmedi.
-> Yüklenene kadar yalnızca B yolu çalışır.
-
 ### Ortak önkoşullar
 
 | Gereksinim | Not |
