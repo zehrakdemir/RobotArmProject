@@ -1254,27 +1254,27 @@ class CobotArm:
         target = [current[i] + joint_deltas_deg[i] for i in range(6)]
         return self.move_to_joints(target, confirm=confirm, speed_pct=speed_pct, accel_pct=accel_pct)
 
-    def move_to_joints_nearest(self, joint_degrees, confirm=False, speed_pct=None, accel_pct=None):
-        """MUTLAK eklem hedefi - standart prosedur (bkz. _ik_adaylariyla_git).
+    def move_to_joints_absolute(self, joint_degrees, confirm=False, speed_pct=None, accel_pct=None):
+        """MUTLAK eklem hedefi: kol girilen acilara AYNEN gider.
 
-        Verilen acilarin TCP pozu robotun kendi ileri kinematigiyle (SDK
-        GetForwardKin) hesaplanir ve o poza en yakin kol durusuyla gidilir.
-        Verilen acilar da aday listesindedir: en yakin onlarsa aynen onlara
-        gidilir; degilse kol AYNI TCP pozuna FARKLI eklem acilariyla varir.
+        Robotun IK adaylari (bkz. _ik_adaylariyla_git) burada KULLANILMAZ
+        (kullanici karari, 14 Eylul): en yakin durus secilince kol ayni TCP
+        pozuna girilenden farkli acilarla gidiyordu (canli: ev pozu girildi,
+        kol ters dirsek [0, -8.8, -90, 8.8, -90, 0] durusuna gitti).
 
-        Eklem jog'u (move_relative_joints) ve kayitli hareketler
-        (replay_sequence) bunu KULLANMAZ - move_to_joints ile verilen acilara
-        gider.
+        GUVENLIK: acilar planlamadan ONCE MoveIt modelinin eklem sinirlariyla
+        (FR3 J3 +-150) kontrol edilir; disindaysa robot hareket etmeden
+        reddedilir. Sebep: OMPL sinir disi hedefi reddetmeyip sinira kirpiyor
+        (GUNCEL_DURUM 7), movecobot da kirpilmis noktaya varisi basarili
+        sayiyordu.
         """
-        with self.sdk_lock:
-            hata, tcp = self.sdk.GetForwardKin([float(v) for v in joint_degrees])
-        if hata != 0 or tcp is None:
-            return {"success": False, "reason": "fk_failed",
-                    "details": (f"verilen eklem acilarinin TCP pozu hesaplanamadi (SDK hata "
-                                f"kodu {hata}). Robot hareket etmedi.")}
-        return self._ik_adaylariyla_git(*tcp, confirm=confirm, prefer_lin=False,
-                                        speed_pct=speed_pct, accel_pct=accel_pct,
-                                        ek_adaylar=[joint_degrees])
+        jmg = self.robot_model.get_joint_model_group(self.group_name)
+        if not jmg.satisfies_position_bounds([math.radians(v) for v in joint_degrees]):
+            return {"success": False, "reason": "joint_limit",
+                    "details": (f"hedef eklem acilari {[round(float(v), 2) for v in joint_degrees]} "
+                                f"eklem sinirlari disinda. Planlanmadi - robot hareket etmedi.")}
+        return self.move_to_joints(joint_degrees, confirm=confirm,
+                                   speed_pct=speed_pct, accel_pct=accel_pct)
 
     def _goal_pose_from_tcp(self, tx, ty, tz, trx, trye, trz):
         from geometry_msgs.msg import PoseStamped
@@ -1367,16 +1367,13 @@ class CobotArm:
         {"planning_failed", "floor_collision", "self_collision", "excessive_joint_motion"})
 
     def _ik_adaylariyla_git(self, tx, ty, tz, trx, trye, trz, confirm=False, prefer_lin=False,
-                            speed_pct=None, accel_pct=None, ek_adaylar=None):
-        """STANDART PROSEDUR (kullanici karari, 14 Eylul): poz ya da mutlak
-        eklem hedefli TUM kol hareketleri bu yoldan gider - TCP pozuna git,
-        Tool XYZ, TCP local/base jog, mutlak eklem hedefi. Hedef TCP pozuna
-        EN YAKIN kol durusuyla gidilir; o planlanamazsa bir sonraki en yakin
-        durus denenir. Eklem jog'u, kayitli hareketler ve pick & place bu
-        yoldan GECMEZ.
-
-        ek_adaylar: robotun IK'sina ek olarak aday listesine konacak eklem
-        acilari (mutlak eklem hedefinde kullanicinin girdigi acilar).
+                            speed_pct=None, accel_pct=None):
+        """STANDART PROSEDUR (kullanici karari, 14 Eylul): POZ hedefli TUM kol
+        hareketleri bu yoldan gider - TCP pozuna git, Tool XYZ, TCP
+        local/base jog. Hedef TCP pozuna EN YAKIN kol durusuyla gidilir; o
+        planlanamazsa bir sonraki en yakin durus denenir. Mutlak eklem hedefi
+        (move_to_joints_absolute), eklem jog'u, kayitli hareketler ve pick &
+        place bu yoldan GECMEZ.
 
         NEDEN: hedef poz olarak verildiginde IK'yi planlayici kendi icinde
         cozuyor; hangi durusu sectigi ancak plan ciktiktan sonra goruluyordu
@@ -1407,7 +1404,7 @@ class CobotArm:
             baslangic = list(self.sdk.GetActualJointPosDegree()[1])
         hedef_tcp = [float(v) for v in (tx, ty, tz, trx, trye, trz)]
 
-        ham_adaylar = [[float(v) for v in a] for a in (ek_adaylar or [])]
+        ham_adaylar = []
         robottan = 0
         for config in (-1, 0, 1, 2, 3, 4, 5, 6, 7):
             with self.sdk_lock:
@@ -1422,15 +1419,14 @@ class CobotArm:
         sinir_ici = [a for a in ham_adaylar
                      if jmg.satisfies_position_bounds([math.radians(v) for v in a])]
         sirali = ik_adaylarini_sirala(baslangic, sinir_ici)
-        print(f"  IK: robottan {robottan} cozum (+{len(ek_adaylar or [])} verilen), eklem "
-              f"siniri icinde {len(sinir_ici)}, farkli {len(sirali)} durus.")
+        print(f"  IK: robottan {robottan} cozum, eklem siniri icinde {len(sinir_ici)}, "
+              f"farkli {len(sirali)} durus.")
 
         if not sirali:
             return {"success": False, "reason": "ik_failed",
                     "details": (f"hedef icin kullanilabilir kol durusu yok (robottan "
-                                f"{robottan} cozum geldi, toplam {len(ham_adaylar)} adaydan "
-                                f"{len(sinir_ici)} tanesi eklem siniri icinde). Planlanmadi - "
-                                f"robot hareket etmedi.")}
+                                f"{robottan} cozum geldi, {len(sinir_ici)} tanesi eklem siniri "
+                                f"icinde). Planlanmadi - robot hareket etmedi.")}
 
         son_sonuc = None
         for sira, (aday, fark) in enumerate(sirali, 1):
@@ -1606,8 +1602,8 @@ def jog_arm(arm):
                   f"X={predicted['x']:.1f} Y={predicted['y']:.1f} Z={predicted['z']:.1f} "
                   f"RX={predicted['rx']:.1f} RY={predicted['ry']:.1f} RZ={predicted['rz']:.1f}")
             if joint_mode == 1:
-                # Mutlak eklem hedefi: standart prosedur (en yakin kol durusu).
-                result = arm.move_to_joints_nearest(targets, confirm=True)
+                # Mutlak eklem hedefi: girilen acilara aynen (sinir kontrolu ile).
+                result = arm.move_to_joints_absolute(targets, confirm=True)
             else:
                 result = arm.move_to_joints(targets, confirm=True)
         elif move_type == 2:

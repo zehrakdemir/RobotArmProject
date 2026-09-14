@@ -184,8 +184,8 @@ def eklem_hedefi(istek: JointHedef) -> dict[str, Any]:
 
     def calistir(job):
         job.log.append(f"Eklem hedefi: {istek.joints_deg} (hiz %{hiz:g}, ivme %{ivme:g})")
-        # Standart prosedur: ayni TCP pozuna en yakin kol durusu.
-        return oturum.arm.move_to_joints_nearest(
+        # Girilen acilara aynen; once eklem siniri kontrolu.
+        return oturum.arm.move_to_joints_absolute(
             istek.joints_deg,
             confirm=False,
             speed_pct=hiz,

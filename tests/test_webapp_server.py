@@ -46,8 +46,8 @@ class SahteKol:
         self.hizlar.append((speed_pct, accel_pct))
         return {"success": True}
 
-    def move_to_joints_nearest(self, joints, confirm=False, speed_pct=None, accel_pct=None):
-        # Web'den mutlak eklem hedefi standart prosedurle (en yakin durus) gider.
+    def move_to_joints_absolute(self, joints, confirm=False, speed_pct=None, accel_pct=None):
+        # Web'den mutlak eklem hedefi girilen acilara aynen (sinir kontrolu ile) gider.
         self.cagrilar.append(("joints", *joints))
         self.hizlar.append((speed_pct, accel_pct))
         return {"success": True}
