@@ -83,6 +83,16 @@ class OynatIstek(BaseModel):
     grip_force: int | None = None
 
 
+class Ayarlar(BaseModel):
+    """Ayarlar penceresi. Aralik arayuzdeki diger yuzde alanlariyla ayni
+    (1-100); _plan_and_execute de olcegi 0.01-1.0'a kirpiyor."""
+
+    speed_pct: float = Field(..., ge=1, le=100)
+    accel_pct: float = Field(..., ge=1, le=100)
+    grip_speed: int = Field(..., ge=1, le=100)
+    grip_force: int = Field(..., ge=1, le=100)
+
+
 # ---------------------------------------------------------------------------
 # Yardimcilar
 # ---------------------------------------------------------------------------
@@ -104,6 +114,13 @@ def _is_baslat(kind: str, label: str, fn) -> dict[str, Any]:
     return job.as_dict()
 
 
+def _kol_hizi() -> tuple[float, float]:
+    """Ayarlar penceresindeki kol hiz/ivmesi. Istek aninda okunur; suren
+    bir hareketi degistirmez."""
+    a = oturum.ayarlar
+    return a["speed_pct"], a["accel_pct"]
+
+
 # ---------------------------------------------------------------------------
 # Durum
 # ---------------------------------------------------------------------------
@@ -111,6 +128,25 @@ def _is_baslat(kind: str, label: str, fn) -> dict[str, Any]:
 @app.get("/api/state")
 def durum() -> dict[str, Any]:
     return oturum.telemetry()
+
+
+# ---------------------------------------------------------------------------
+# Ayarlar
+# ---------------------------------------------------------------------------
+# Eklem jog, TCP jog, mutlak TCP pozu ve mutlak eklem hedefi bu degerleri
+# kullanir. Kayitli hareketler (/api/moves) ve Gripper paneli (/api/gripper)
+# KULLANMAZ: onlar kendi alanlarini gonderiyor.
+
+@app.get("/api/settings")
+def ayarlari_oku() -> dict[str, Any]:
+    return dict(oturum.ayarlar)
+
+
+@app.post("/api/settings")
+def ayarlari_kaydet(istek: Ayarlar) -> dict[str, Any]:
+    """Robota bir sey gondermez; yalnizca sonraki isteklerde kullanilir."""
+    oturum.ayarlar = istek.model_dump()
+    return dict(oturum.ayarlar)
 
 
 @app.get("/api/gripper/status")
@@ -139,13 +175,21 @@ async def ws_durum(ws: WebSocket) -> None:
 
 @app.post("/api/arm/joints")
 def eklem_hedefi(istek: JointHedef) -> dict[str, Any]:
+    hiz, ivme = _kol_hizi()
+    # Istekte hiz/ivme verilmisse o gecerli; arayuz gondermiyor.
+    if istek.speed_pct is not None:
+        hiz = istek.speed_pct
+    if istek.accel_pct is not None:
+        ivme = istek.accel_pct
+
     def calistir(job):
-        job.log.append(f"Eklem hedefi: {istek.joints_deg}")
-        return oturum.arm.move_to_joints(
+        job.log.append(f"Eklem hedefi: {istek.joints_deg} (hiz %{hiz:g}, ivme %{ivme:g})")
+        # Standart prosedur: ayni TCP pozuna en yakin kol durusu.
+        return oturum.arm.move_to_joints_nearest(
             istek.joints_deg,
             confirm=False,
-            speed_pct=istek.speed_pct,
-            accel_pct=istek.accel_pct,
+            speed_pct=hiz,
+            accel_pct=ivme,
         )
 
     return _is_baslat("arm", "Eklem hedefine git", calistir)
@@ -153,9 +197,13 @@ def eklem_hedefi(istek: JointHedef) -> dict[str, Any]:
 
 @app.post("/api/arm/jog")
 def eklem_jog(istek: JointFark) -> dict[str, Any]:
+    hiz, ivme = _kol_hizi()
+
     def calistir(job):
-        job.log.append(f"Eklem farki: {istek.deltas_deg}")
-        return oturum.arm.move_relative_joints(istek.deltas_deg, confirm=False)
+        job.log.append(f"Eklem farki: {istek.deltas_deg} (hiz %{hiz:g}, ivme %{ivme:g})")
+        return oturum.arm.move_relative_joints(
+            istek.deltas_deg, confirm=False, speed_pct=hiz, accel_pct=ivme
+        )
 
     return _is_baslat("arm", "Eklem jog", calistir)
 
@@ -164,10 +212,14 @@ def eklem_jog(istek: JointFark) -> dict[str, Any]:
 def tcp_yerel(istek: TcpFark) -> dict[str, Any]:
     """TCP'nin KENDI eksenlerine gore goreceli hareket - eksenler aletle
     birlikte doner."""
+    hiz, ivme = _kol_hizi()
+
     def calistir(job):
-        job.log.append(f"TCP yerel: dx={istek.dx_mm} dy={istek.dy_mm} dz={istek.dz_mm}")
+        job.log.append(f"TCP yerel: dx={istek.dx_mm} dy={istek.dy_mm} dz={istek.dz_mm} "
+                       f"(hiz %{hiz:g}, ivme %{ivme:g})")
         return oturum.arm.move_tcp_local(
-            istek.dx_mm, istek.dy_mm, istek.dz_mm, confirm=False
+            istek.dx_mm, istek.dy_mm, istek.dz_mm, confirm=False,
+            speed_pct=hiz, accel_pct=ivme,
         )
 
     return _is_baslat("arm", "TCP yerel hareket", calistir)
@@ -177,10 +229,14 @@ def tcp_yerel(istek: TcpFark) -> dict[str, Any]:
 def tcp_baz(istek: TcpFark) -> dict[str, Any]:
     """TCP'yi BASE (dunya) eksenlerine gore goreceli hareket ettirir -
     eksenler SABIT, alet nasil durursa dursun +Z yukaridir."""
+    hiz, ivme = _kol_hizi()
+
     def calistir(job):
-        job.log.append(f"TCP base: dx={istek.dx_mm} dy={istek.dy_mm} dz={istek.dz_mm}")
+        job.log.append(f"TCP base: dx={istek.dx_mm} dy={istek.dy_mm} dz={istek.dz_mm} "
+                       f"(hiz %{hiz:g}, ivme %{ivme:g})")
         return oturum.arm.move_tcp_base(
-            istek.dx_mm, istek.dy_mm, istek.dz_mm, confirm=False
+            istek.dx_mm, istek.dy_mm, istek.dz_mm, confirm=False,
+            speed_pct=hiz, accel_pct=ivme,
         )
 
     return _is_baslat("arm", "TCP base hareket", calistir)
@@ -188,11 +244,14 @@ def tcp_baz(istek: TcpFark) -> dict[str, Any]:
 
 @app.post("/api/arm/pose")
 def tcp_mutlak(istek: TcpMutlak) -> dict[str, Any]:
+    hiz, ivme = _kol_hizi()
+
     def calistir(job):
-        job.log.append(f"TCP hedefi: {istek.x},{istek.y},{istek.z}")
+        job.log.append(f"TCP hedefi: {istek.x},{istek.y},{istek.z} (hiz %{hiz:g}, ivme %{ivme:g})")
         return oturum.arm.move_to_pose_base(
             istek.x, istek.y, istek.z, istek.rx, istek.ry, istek.rz,
             confirm=False, prefer_lin=istek.prefer_lin,
+            speed_pct=hiz, accel_pct=ivme,
         )
 
     return _is_baslat("arm", "TCP pozuna git", calistir)

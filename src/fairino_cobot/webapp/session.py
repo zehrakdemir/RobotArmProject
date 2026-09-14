@@ -84,6 +84,21 @@ class RobotSession:
         self.speed_pct = speed_pct
         self.accel_pct = accel_pct
 
+        # Arayuzdeki "Ayarlar" penceresi. Yalnizca jog ve mutlak hedeflere
+        # uygulanir; kayitli hareketler kendi kayitli degerlerini, Gripper
+        # paneli kendi alanlarini kullanir.
+        #
+        # self.speed_pct/accel_pct'ten BILEREK AYRI: onlar CobotArm'in
+        # varsayilani oluyor ve kayitli hareketlerde hizi olmayan adimlar
+        # (replay_sequence, run_pick_place) arm.speed_pct'e dusuyor. Ayar
+        # onlara yazilsaydi kayitli hareketleri de degistirirdi.
+        self.ayarlar: dict[str, float] = {
+            "speed_pct": speed_pct,
+            "accel_pct": accel_pct,
+            "grip_speed": 50,
+            "grip_force": 50,
+        }
+
         self.arm = None
         self.gripper = None
         self.robot_ip: str | None = None
@@ -221,6 +236,7 @@ class RobotSession:
             "model": f"FR{self.model_num}" if self.model_num else None,
             "speed_pct": self.speed_pct,
             "accel_pct": self.accel_pct,
+            "settings": dict(self.ayarlar),
             "busy": self._motion_lock.locked(),
             "job": self.job_dict(),
         }

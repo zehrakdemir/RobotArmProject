@@ -22,14 +22,49 @@ class SahteKol:
 
     def __init__(self):
         self.cagrilar = []
+        self.hizlar = []  # her cagrinin (speed_pct, accel_pct) degeri
+        self.speed_pct = 10.0  # CobotArm'in oturum varsayilani
+        self.accel_pct = 10.0
 
-    def move_tcp_base(self, dx, dy, dz, confirm=False):
+    def move_tcp_base(self, dx, dy, dz, confirm=False, speed_pct=None, accel_pct=None):
         self.cagrilar.append(("base", dx, dy, dz))
+        self.hizlar.append((speed_pct, accel_pct))
         return {"success": True}
 
-    def move_tcp_local(self, dx, dy, dz, confirm=False):
+    def move_tcp_local(self, dx, dy, dz, confirm=False, speed_pct=None, accel_pct=None):
         self.cagrilar.append(("local", dx, dy, dz))
+        self.hizlar.append((speed_pct, accel_pct))
         return {"success": True}
+
+    def move_relative_joints(self, deltas, confirm=False, speed_pct=None, accel_pct=None):
+        self.cagrilar.append(("jog", *deltas))
+        self.hizlar.append((speed_pct, accel_pct))
+        return {"success": True}
+
+    def move_to_joints(self, joints, confirm=False, speed_pct=None, accel_pct=None):
+        self.cagrilar.append(("joints", *joints))
+        self.hizlar.append((speed_pct, accel_pct))
+        return {"success": True}
+
+    def move_to_joints_nearest(self, joints, confirm=False, speed_pct=None, accel_pct=None):
+        # Web'den mutlak eklem hedefi standart prosedurle (en yakin durus) gider.
+        self.cagrilar.append(("joints", *joints))
+        self.hizlar.append((speed_pct, accel_pct))
+        return {"success": True}
+
+    def move_to_pose_base(self, x, y, z, rx, ry, rz, confirm=False, prefer_lin=False,
+                          speed_pct=None, accel_pct=None):
+        self.cagrilar.append(("pose", x, y, z))
+        self.hizlar.append((speed_pct, accel_pct))
+        return {"success": True}
+
+
+class SahteGripper:
+    def __init__(self):
+        self.cagrilar = []
+
+    def open(self, speed, force):
+        self.cagrilar.append(("open", speed, force))
 
 
 @pytest.fixture
@@ -37,6 +72,9 @@ def kol(monkeypatch):
     sahte = SahteKol()
     monkeypatch.setattr(server.oturum, "arm", sahte)
     monkeypatch.setattr(server.oturum, "ready", True)
+    monkeypatch.setattr(server.oturum, "ayarlar", {
+        "speed_pct": 10.0, "accel_pct": 10.0, "grip_speed": 50, "grip_force": 50,
+    })
     return sahte
 
 

@@ -21,6 +21,7 @@
   <span class="pill"><span class="dot" id="d-busy"></span><span id="t-busy">boşta</span></span>
   <span class="pill" id="t-robot">—</span>
   <span class="sep"></span>
+  <button id="settings-open">Ayarlar</button>
   <button id="estop">ACİL DUR</button>
 </header>
 
@@ -176,13 +177,36 @@
 
 </main>
 
-<div id="modal">
+<div id="modal" class="modal">
   <div class="card">
     <h3 id="m-title">Onay</h3>
     <div class="msg" id="m-msg"></div>
     <div class="btns">
       <button id="m-no">Vazgeç</button>
       <button id="m-yes" class="primary">Uygula</button>
+    </div>
+  </div>
+</div>
+
+<div id="settings" class="modal">
+  <div class="card">
+    <h3>Ayarlar</h3>
+    <div class="row">
+      <label class="field"><span>Hız %</span><input type="number" id="s-speed" min="1" max="100" step="1"></label>
+      <label class="field"><span>İvme %</span><input type="number" id="s-accel" min="1" max="100" step="1"></label>
+    </div>
+    <div class="row">
+      <label class="field"><span>Gripper hız %</span><input type="number" id="s-gspeed" min="1" max="100" step="1"></label>
+      <label class="field"><span>Gripper kuvvet %</span><input type="number" id="s-gforce" min="1" max="100" step="1"></label>
+    </div>
+    <div class="note">
+      Eklem jog, TCP jog ve mutlak hedeflerde kullanılır.
+      <b>Kayıtlı hareketler</b> ve <b>Gripper</b> paneli bu ayarları kullanmaz.
+    </div>
+    <div class="note warn" id="s-err" hidden></div>
+    <div class="btns">
+      <button id="s-no">Vazgeç</button>
+      <button id="s-yes" class="primary">Kaydet</button>
     </div>
   </div>
 </div>

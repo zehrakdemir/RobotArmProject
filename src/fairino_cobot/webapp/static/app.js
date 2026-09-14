@@ -33,7 +33,9 @@ async function api(yol, secenek) {
   let veri = null;
   try { veri = await cevap.json(); } catch (_) { /* govde yok */ }
   if (!cevap.ok) {
-    const mesaj = (veri && veri.detail) || cevap.statusText;
+    let mesaj = (veri && veri.detail) || cevap.statusText;
+    // 422 dogrulama hatasinda detail bir liste
+    if (Array.isArray(mesaj)) mesaj = mesaj.map((d) => d.msg).join("; ");
     throw new Error(mesaj);
   }
   return veri;
@@ -261,6 +263,47 @@ async function hareketleriYukle() {
     satir.appendChild(sil);
     kap.appendChild(satir);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Ayarlar penceresi
+// ---------------------------------------------------------------------------
+// Eklem jog, TCP jog ve mutlak hedeflerde kullanilir. Kayitli hareketler ve
+// Gripper paneli kendi alanlarini gonderir; bu ayrim sunucuda (server.py).
+const AYAR_ALAN = [
+  ["speed_pct", "#s-speed", "Hız"], ["accel_pct", "#s-accel", "İvme"],
+  ["grip_speed", "#s-gspeed", "Gripper hız"], ["grip_force", "#s-gforce", "Gripper kuvvet"],
+];
+
+function kurAyarlar() {
+  const hata = (mesaj) => { $("#s-err").textContent = mesaj; $("#s-err").hidden = !mesaj; };
+  const kapat = () => { $("#settings").classList.remove("open"); hata(""); };
+
+  $("#settings-open").onclick = async () => {
+    try {
+      const a = await api("/api/settings");
+      AYAR_ALAN.forEach(([ad, id]) => { $(id).value = a[ad]; });
+      hata("");
+      $("#settings").classList.add("open");
+    } catch (e) { yaz("Ayarlar okunamadı: " + e.message, "err"); }
+  };
+
+  $("#s-no").onclick = kapat;
+
+  $("#s-yes").onclick = async () => {
+    const govde = {};
+    for (const [ad, id, etiket] of AYAR_ALAN) {
+      const v = parseFloat($(id).value);
+      if (isNaN(v) || v < 1 || v > 100) { hata(`${etiket} 1 ile 100 arasında olmalı.`); return; }
+      govde[ad] = ad.startsWith("grip") ? Math.round(v) : v;
+    }
+    try {
+      const a = await api("/api/settings", { method: "POST", body: govde });
+      kapat();
+      yaz(`Ayarlar kaydedildi: hız %${a.speed_pct}, ivme %${a.accel_pct}, ` +
+          `gripper hız %${a.grip_speed}, kuvvet %${a.grip_force}`, "ok");
+    } catch (e) { hata("Kaydedilemedi: " + e.message); }
+  };
 }
 
 // ---------------------------------------------------------------------------
