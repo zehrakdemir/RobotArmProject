@@ -108,6 +108,9 @@ services:
       # İlk açılışta sürücü derlenebiliyor - o yüzden uzun.
       start_period: 300s
 
-    restart: unless-stopped
+    # Otomatik yeniden başlatma YOK - bilerek. Bu servis gerçek robota
+    # bağlanıyor; Docker Desktop açılınca ya da container çökünce kendiliğinden
+    # kalkmamalı. Kullanıcı elle başlatır: docker compose up -d cobot
+    restart: "no"
     stdin_open: true
     tty: true
