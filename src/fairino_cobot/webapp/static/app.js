@@ -7,13 +7,28 @@ const el = (t, c, x) => { const n = document.createElement(t); if (c) n.classNam
 let sonDurum = {};
 let sonIsId = null;
 
+// Sayi alani oku. Bos ya da gecersiz deger robota 0 olarak GITMESIN: alanin
+// yaninda tarayici uyarisi cikar, null doner ve cagiran komutu gondermez.
+// pozitif=true: adim alanlari - eksi adim "+" butonunu ters yone goturuyordu.
+function sayiAlan(inp, pozitif) {
+  const v = parseFloat(inp.value);
+  let hata = "";
+  if (inp.value.trim() === "" || isNaN(v)) hata = "Enter a number.";
+  else if (pozitif && v <= 0) hata = "Must be greater than 0.";
+  if (!hata) { inp.setCustomValidity(""); return v; }
+  inp.setCustomValidity(hata);
+  inp.reportValidity();
+  inp.addEventListener("input", () => inp.setCustomValidity(""), { once: true });
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Gunluk
 // ---------------------------------------------------------------------------
 function yaz(mesaj, sinif) {
   const kutu = $("#log");
   const satir = el("div");
-  const saat = new Date().toLocaleTimeString("tr-TR", { hour12: false });
+  const saat = new Date().toLocaleTimeString("en-GB", { hour12: false });
   satir.appendChild(el("span", "t", saat + "  "));
   satir.appendChild(el("span", sinif || "", mesaj));
   kutu.appendChild(satir);
@@ -41,30 +56,76 @@ async function api(yol, secenek) {
   return veri;
 }
 
+// Basarida null, reddedilirse hata mesaji doner (panelin yaninda gostermek icin).
 async function isGonder(yol, govde, etiket) {
   try {
     await api(yol, { method: "POST", body: govde });
-    yaz(etiket + " gönderildi");
+    yaz(etiket + " sent");
+    return null;
   } catch (e) {
-    yaz(etiket + " REDDEDİLDİ: " + e.message, "err");
+    yaz(etiket + " REJECTED: " + e.message, "err");
+    return e.message;
   }
 }
 
 // ---------------------------------------------------------------------------
-// Onay penceresi
+// Acilir pencereler
 // ---------------------------------------------------------------------------
-function onayla(baslik, mesaj) {
+// Onay ve hiz/ivme penceresi sayfanin ortasinda degil, basilan butonun
+// ALTINDA acilir. Disari tiklamak ya da Esc vazgecmek demek. Onayda odak
+// "Cancel"da baslar: Enter'a yanlislikla basmak robotu hareket ettirmesin.
+
+// Tek seferde tek dinleyici: kapatinca document'tan kaldirilir.
+function disariKapat(kap, kapat) {
+  const fare = (e) => { if (!kap.contains(e.target)) kapat(); };
+  const tus = (e) => { if (e.key === "Escape") kapat(); };
+  document.addEventListener("mousedown", fare, true);
+  document.addEventListener("keydown", tus, true);
+  return () => {
+    document.removeEventListener("mousedown", fare, true);
+    document.removeEventListener("keydown", tus, true);
+  };
+}
+
+// Pencereyi butonun hemen altina, ekran icinde kalacak sekilde koyar.
+// Sayfa kaydirilinca butonla birlikte kayar (belge koordinatlari).
+function butonunAltina(pop, capa) {
+  const r = capa.getBoundingClientRect();
+  const genislik = pop.offsetWidth;
+  const ekran = document.documentElement.clientWidth;
+  const sol = Math.max(12, Math.min(r.left, ekran - genislik - 12));
+  pop.style.left = (sol + window.scrollX) + "px";
+  pop.style.top = (r.bottom + window.scrollY + 6) + "px";
+  pop.scrollIntoView({ block: "nearest" });
+}
+
+let acikOnayiKapat = null;
+
+function onayla(baslik, mesaj, capa) {
+  if (acikOnayiKapat) acikOnayiKapat(false);
   return new Promise((coz) => {
+    const pop = $("#confirm");
     $("#m-title").textContent = baslik;
     $("#m-msg").textContent = mesaj;
-    $("#modal").classList.add("open");
+    pop.hidden = false;
+    butonunAltina(pop, capa);
+
+    let birak = null;
     const kapat = (sonuc) => {
-      $("#modal").classList.remove("open");
+      // Odak penceredeyse basilan butona don (klavyeyle kullanan yerini kaybetmesin).
+      if (pop.contains(document.activeElement)) capa.focus();
+      pop.hidden = true;
       $("#m-yes").onclick = null; $("#m-no").onclick = null;
+      if (birak) birak();
+      acikOnayiKapat = null;
       coz(sonuc);
     };
     $("#m-yes").onclick = () => kapat(true);
     $("#m-no").onclick = () => kapat(false);
+    // Ayni butona tekrar basmak pencereyi yeniden acar (onclick), disari sayma.
+    birak = disariKapat({ contains: (n) => pop.contains(n) || capa.contains(n) }, () => kapat(false));
+    acikOnayiKapat = kapat;
+    $("#m-no").focus();
   });
 }
 
@@ -79,7 +140,8 @@ function kurJog() {
     [-1, 1].forEach((yon) => {
       const b = el("button", null, (yon < 0 ? "− " : "+ ") + ad);
       b.onclick = () => {
-        const adim = parseFloat($("#jstep").value) || 0;
+        const adim = sayiAlan($("#jstep"), true);
+        if (adim === null) { yaz("Joint jog not sent: step must be greater than 0", "err"); return; }
         const farklar = [0, 0, 0, 0, 0, 0];
         farklar[i] = adim * yon;
         isGonder("/api/arm/jog", { deltas_deg: farklar }, `${ad} ${yon > 0 ? "+" : "−"}${adim}°`);
@@ -92,20 +154,24 @@ function kurJog() {
   // Arac eksenleri: eksenler aletle birlikte doner.
   document.querySelectorAll("[data-t]").forEach((b) => {
     b.onclick = () => {
-      const adim = (parseFloat($("#tstep").value) || 0) * parseInt(b.dataset.s, 10);
+      const deger = sayiAlan($("#tstep"), true);
+      if (deger === null) { yaz("Tool jog not sent: step must be greater than 0", "err"); return; }
+      const adim = deger * parseInt(b.dataset.s, 10);
       const govde = { dx_mm: 0, dy_mm: 0, dz_mm: 0 };
       govde["d" + b.dataset.t + "_mm"] = adim;
-      isGonder("/api/arm/tcp_local", govde, `TCP araç ${b.dataset.t.toUpperCase()} ${adim}mm`);
+      isGonder("/api/arm/tcp_local", govde, `Tool jog ${b.dataset.t.toUpperCase()} ${adim} mm`);
     };
   });
 
   // Base eksenleri: eksenler SABIT - alet nasil durursa dursun +Z yukari.
   document.querySelectorAll("[data-b]").forEach((b) => {
     b.onclick = () => {
-      const adim = (parseFloat($("#bstep").value) || 0) * parseInt(b.dataset.s, 10);
+      const deger = sayiAlan($("#bstep"), true);
+      if (deger === null) { yaz("Base jog not sent: step must be greater than 0", "err"); return; }
+      const adim = deger * parseInt(b.dataset.s, 10);
       const govde = { dx_mm: 0, dy_mm: 0, dz_mm: 0 };
       govde["d" + b.dataset.b + "_mm"] = adim;
-      isGonder("/api/arm/tcp_base", govde, `TCP base ${b.dataset.b.toUpperCase()} ${adim}mm`);
+      isGonder("/api/arm/tcp_base", govde, `Base jog ${b.dataset.b.toUpperCase()} ${adim} mm`);
     };
   });
 
@@ -114,7 +180,7 @@ function kurJog() {
       action: b.dataset.g,
       speed: parseInt($("#g-speed").value, 10) || 50,
       force: parseInt($("#g-force").value, 10) || 50,
-    }, "Gripper " + b.textContent);
+    }, "Gripper " + b.textContent.toLowerCase());
   });
 }
 
@@ -124,42 +190,57 @@ function kurMutlak() {
     const l = el("label", "field");
     l.appendChild(el("span", null, ad));
     const inp = el("input"); inp.type = "number"; inp.step = "0.1";
-    inp.id = "abs-" + ad; inp.value = "0";
+    // Bos baslar (0 degil): "Current" basmadan Go denirse hedef tum eklemler
+    // 0 = tekil poz oluyordu. Bos alan asagida hata verir.
+    inp.id = "abs-" + ad;
     l.appendChild(inp);
     kap.appendChild(l);
   });
 
-  const oku = () => EKLEMLER.map((a) => parseFloat($("#abs-" + a).value) || 0);
+  // Biri bos/gecersizse null (alanin yaninda uyari cikar), yoksa 6 aci.
+  const oku = () => {
+    const acilar = [];
+    for (const a of EKLEMLER) {
+      const v = sayiAlan($("#abs-" + a), false);
+      if (v === null) return null;
+      acilar.push(v);
+    }
+    return acilar;
+  };
 
   $("#abs-now").onclick = () => {
     const j = sonDurum.joints_deg;
-    if (!j) { yaz("Şu anki pozisyon henüz okunmadı", "warn"); return; }
+    if (!j) { yaz("Current joint angles not read yet", "warn"); return; }
     EKLEMLER.forEach((a, i) => { $("#abs-" + a).value = j[i].toFixed(2); });
-    yaz("Alanlara şu anki pozisyon yazıldı");
+    yaz("Fields filled with the current joint angles");
   };
 
   $("#abs-preview").onclick = async () => {
+    const acilar = oku();
+    if (!acilar) { yaz("Preview: fill all six joint fields (use Current)", "err"); return; }
     try {
-      const r = await api("/api/arm/preview", { method: "POST", body: { joints_deg: oku() } });
+      const r = await api("/api/arm/preview", { method: "POST", body: { joints_deg: acilar } });
       const p = r.tcp_pose;
       $("#abs-out").textContent =
-        `Bu açılarda TCP: x=${p.x} y=${p.y} z=${p.z}  rx=${p.rx} ry=${p.ry} rz=${p.rz}`;
-      yaz("FK önizleme hesaplandı");
-    } catch (e) { yaz("Önizleme hatası: " + e.message, "err"); }
+        `TCP at these angles: x=${p.x} y=${p.y} z=${p.z}  rx=${p.rx} ry=${p.ry} rz=${p.rz}`;
+      yaz("FK preview computed");
+    } catch (e) { yaz("Preview error: " + e.message, "err"); }
   };
 
   $("#abs-go").onclick = async () => {
     const hedef = oku();
-    const ok = await onayla("Mutlak eklem hedefi",
-      "Kol şu açılara gidecek:\n" + EKLEMLER.map((a, i) => `${a} = ${hedef[i]}°`).join("\n"));
+    if (!hedef) { yaz("Absolute joint target not sent: fill all six fields (use Current)", "err"); return; }
+    const ok = await onayla("Absolute joint target",
+      "The arm will move to:\n" + EKLEMLER.map((a, i) => `${a} = ${hedef[i]}°`).join("\n"),
+      $("#abs-go"));
     if (!ok) return;
-    isGonder("/api/arm/joints", { joints_deg: hedef }, "Mutlak hedef");
+    isGonder("/api/arm/joints", { joints_deg: hedef }, "Absolute joint target");
   };
 }
 
 // Mutlak TCP pozu - hepsi BASE cercevesinde.
 //
-// NEDEN "Su anki" butonu once: alti alanin hepsini elle doldurmak, robotu
+// NEDEN "Current" butonu once: alti alanin hepsini elle doldurmak, robotu
 // beklenmedik bir yonelime birden dondurmenin en kolay yolu. Once mevcut poz
 // yazilip TEK bir deger degistirilince hareket ongorulebilir oluyor.
 const POZ_ALAN = [
@@ -173,28 +254,34 @@ function kurTcpMutlak() {
     const l = el("label", "field");
     l.appendChild(el("span", null, etiket));
     const inp = el("input"); inp.type = "number"; inp.step = "0.1";
-    inp.id = "pose-" + ad; inp.value = "0";
+    inp.id = "pose-" + ad;   // bos baslar; bos alan 0 (ornegin z=0) olarak gitmez
     l.appendChild(inp);
     kap.appendChild(l);
   });
 
+  // Biri bos/gecersizse null (alanin yaninda uyari cikar).
   const oku = () => {
     const o = {};
-    POZ_ALAN.forEach(([ad]) => { o[ad] = parseFloat($("#pose-" + ad).value) || 0; });
+    for (const [ad] of POZ_ALAN) {
+      const v = sayiAlan($("#pose-" + ad), false);
+      if (v === null) return null;
+      o[ad] = v;
+    }
     return o;
   };
 
   const doldur = () => {
     const p = sonDurum.tcp_pose;
-    if (!p) { yaz("TCP pozu henüz okunmadı", "warn"); return false; }
+    if (!p) { yaz("TCP pose not read yet", "warn"); return false; }
     POZ_ALAN.forEach(([ad]) => { $("#pose-" + ad).value = Number(p[ad]).toFixed(2); });
     return true;
   };
 
-  $("#pose-now").onclick = () => { if (doldur()) yaz("Alanlara şu anki TCP pozu yazıldı"); };
+  $("#pose-now").onclick = () => { if (doldur()) yaz("Fields filled with the current TCP pose"); };
 
   $("#pose-go").onclick = async () => {
     const h = oku();
+    if (!h) { yaz("Absolute TCP pose not sent: fill all six fields (use Current)", "err"); return; }
     const p = sonDurum.tcp_pose;
     // Mevcut pozdan farki da goster - "sadece Z'yi 20mm indiriyorum" demek
     // isteyen biri, yanlislikla yonelimi de degistirdiyse burada gorur.
@@ -205,15 +292,16 @@ function kurTcpMutlak() {
         .filter(([, d]) => d !== 0)
         .map(([ad, d]) => `${ad.toUpperCase()} ${d > 0 ? "+" : ""}${d}`);
       fark = degisen.length
-        ? "\n\nŞu ankinden fark:\n" + degisen.join("   ")
-        : "\n\n(şu anki pozla aynı)";
+        ? "\n\nChange from current:\n" + degisen.join("   ")
+        : "\n\n(same as the current pose)";
     }
-    const ok = await onayla("Mutlak TCP pozu (base)",
-      `TCP şuraya gidecek:\nx=${h.x} y=${h.y} z=${h.z}\n` +
-      `rx=${h.rx} ry=${h.ry} rz=${h.rz}` + fark);
+    const ok = await onayla("Absolute TCP pose (base)",
+      `The TCP will move to:\nx=${h.x} y=${h.y} z=${h.z}\n` +
+      `rx=${h.rx} ry=${h.ry} rz=${h.rz}` + fark,
+      $("#pose-go"));
     if (!ok) return;
     h.prefer_lin = $("#pose-lin").checked;
-    isGonder("/api/arm/pose", h, "Mutlak TCP pozu");
+    isGonder("/api/arm/pose", h, "Absolute TCP pose");
   };
 }
 
@@ -225,40 +313,43 @@ async function hareketleriYukle() {
   kap.innerHTML = "";
   let veri;
   try { veri = await api("/api/moves"); } catch (e) {
-    kap.appendChild(el("div", "note", "Yüklenemedi: " + e.message)); return;
+    kap.appendChild(el("div", "note", "Could not load: " + e.message)); return;
   }
   if (!veri.moves.length) {
-    kap.appendChild(el("div", "note", "Henüz kayıtlı hareket yok."));
+    kap.appendChild(el("div", "note", "No saved moves yet."));
     return;
   }
   veri.moves.forEach((m) => {
     const satir = el("div", "move");
-    satir.appendChild(el("span", "name", m.name));
+    const adEl = el("span", "name", m.name);
+    adEl.title = m.name;   // uzun ad CSS'te kisaltiliyor, tami ustune gelince gorunsun
+    satir.appendChild(adEl);
     if (m.type === "pick_place") satir.appendChild(el("span", "tag", "pick & place"));
-    else satir.appendChild(el("span", "meta", m.steps + " adım"));
+    else satir.appendChild(el("span", "meta", m.steps + (m.steps === 1 ? " step" : " steps")));
     satir.appendChild(el("span", "sep"));
 
-    const oynat = el("button", "primary", "Oynat");
+    const oynat = el("button", "primary", "Play");
     oynat.onclick = async () => {
-      const ok = await onayla("Hareketi oynat",
-        `'${m.name}' oynatılacak. Robot hareket edecek — acil stop elinin altında olsun.`);
+      const ok = await onayla("Play move",
+        `'${m.name}' will be played. The robot will move — keep the emergency stop within reach.`,
+        oynat);
       if (!ok) return;
       const sayi = (id) => { const v = parseFloat($(id).value); return isNaN(v) ? null : v; };
       isGonder(`/api/moves/${encodeURIComponent(m.name)}/play`, {
         speed_pct: sayi("#p-speed"), accel_pct: sayi("#p-accel"),
         grip_speed: sayi("#p-gspeed"), grip_force: sayi("#p-gforce"),
-      }, `'${m.name}' oynat`);
+      }, `Play '${m.name}'`);
     };
     satir.appendChild(oynat);
 
-    const sil = el("button", "danger", "Sil");
+    const sil = el("button", "danger", "Delete");
     sil.onclick = async () => {
-      const ok = await onayla("Kaydı sil", `'${m.name}' kalıcı olarak silinecek.`);
+      const ok = await onayla("Delete move", `'${m.name}' will be permanently deleted.`, sil);
       if (!ok) return;
       try {
         await api(`/api/moves/${encodeURIComponent(m.name)}`, { method: "DELETE" });
-        yaz(`'${m.name}' silindi`); hareketleriYukle();
-      } catch (e) { yaz("Silinemedi: " + e.message, "err"); }
+        yaz(`'${m.name}' deleted`); hareketleriYukle();
+      } catch (e) { yaz("Could not delete: " + e.message, "err"); }
     };
     satir.appendChild(sil);
     kap.appendChild(satir);
@@ -266,25 +357,39 @@ async function hareketleriYukle() {
 }
 
 // ---------------------------------------------------------------------------
-// Ayarlar penceresi
+// Hiz / ivme penceresi
 // ---------------------------------------------------------------------------
 // Eklem jog, TCP jog ve mutlak hedeflerde kullanilir. Kayitli hareketler ve
 // Gripper paneli kendi alanlarini gonderir; bu ayrim sunucuda (server.py).
 const AYAR_ALAN = [
-  ["speed_pct", "#s-speed", "Hız"], ["accel_pct", "#s-accel", "İvme"],
+  ["speed_pct", "#s-speed", "Speed"], ["accel_pct", "#s-accel", "Acceleration"],
 ];
 
 function kurAyarlar() {
+  const pop = $("#settings");
+  const buton = $("#settings-open");
   const hata = (mesaj) => { $("#s-err").textContent = mesaj; $("#s-err").hidden = !mesaj; };
-  const kapat = () => { $("#settings").classList.remove("open"); hata(""); };
 
-  $("#settings-open").onclick = async () => {
+  let birak = null;
+  const kapat = () => {
+    if (pop.contains(document.activeElement)) buton.focus();
+    pop.hidden = true;
+    buton.setAttribute("aria-expanded", "false");
+    hata("");
+    if (birak) { birak(); birak = null; }
+  };
+
+  buton.onclick = async () => {
+    if (!pop.hidden) { kapat(); return; }
     try {
       const a = await api("/api/settings");
       AYAR_ALAN.forEach(([ad, id]) => { $(id).value = a[ad]; });
       hata("");
-      $("#settings").classList.add("open");
-    } catch (e) { yaz("Ayarlar okunamadı: " + e.message, "err"); }
+      pop.hidden = false;
+      buton.setAttribute("aria-expanded", "true");
+      birak = disariKapat($("#settings-wrap"), kapat);
+      $("#s-speed").focus();
+    } catch (e) { yaz("Could not read speed/accel: " + e.message, "err"); }
   };
 
   $("#s-no").onclick = kapat;
@@ -293,14 +398,14 @@ function kurAyarlar() {
     const govde = {};
     for (const [ad, id, etiket] of AYAR_ALAN) {
       const v = parseFloat($(id).value);
-      if (isNaN(v) || v < 1 || v > 100) { hata(`${etiket} 1 ile 100 arasında olmalı.`); return; }
+      if (isNaN(v) || v < 1 || v > 100) { hata(`${etiket} must be between 1 and 100.`); return; }
       govde[ad] = v;
     }
     try {
       const a = await api("/api/settings", { method: "POST", body: govde });
       kapat();
-      yaz(`Ayarlar kaydedildi: hız %${a.speed_pct}, ivme %${a.accel_pct}`, "ok");
-    } catch (e) { hata("Kaydedilemedi: " + e.message); }
+      yaz(`Speed/accel saved: speed ${a.speed_pct}%, accel ${a.accel_pct}%`, "ok");
+    } catch (e) { hata("Could not save: " + e.message); }
   };
 }
 
@@ -316,32 +421,46 @@ async function ppTaslakGoster() {
     const satir = (ad, etiket) =>
       `${etiket}: ${t[ad] ? t[ad].map((v) => Number(v).toFixed(1)).join(", ") : "—"}`;
     $("#pp-out").textContent = [
-      satir("pick", "Alma"), satir("pre_pick", "Alma ön-poz"),
-      satir("place", "Bırakma"), satir("pre_place", "Bırakma ön-poz"),
-    ].join("\n") + (t.approach_mm ? `\nYaklaşma: ${t.approach_mm} mm` : "");
-  } catch (e) { $("#pp-out").textContent = "Taslak okunamadı: " + e.message; }
+      satir("pick", "Pick"), satir("pre_pick", "Pick approach"),
+      satir("place", "Place"), satir("pre_place", "Place approach"),
+    ].join("\n") + (t.approach_mm ? `\nApproach: ${t.approach_mm} mm` : "");
+  } catch (e) { $("#pp-out").textContent = "Could not read draft: " + e.message; }
+}
+
+// Hata panelin butonlarinin hemen altinda da gorunsun: Log sag sutunun en
+// altinda, ekranda olmayabilir. Bos mesaj kutuyu gizler.
+function ppHata(mesaj) {
+  $("#pp-err").textContent = mesaj || "";
+  $("#pp-err").hidden = !mesaj;
 }
 
 function kurPickPlace() {
-  const pozKaydet = async (etiket, ad) => {
+  const pozKaydet = async (etiket, ad, buton) => {
     const mm = parseFloat($("#pp-approach").value);
-    if (isNaN(mm) || mm <= 0) { yaz("Yaklaşma mesafesi 0'dan büyük olmalı", "err"); return; }
-    const ok = await onayla(`Pick & place: ${ad} pozu`,
-      `Kolun şu anki pozu ${ad.toLowerCase()} pozu olarak kaydedilecek.\n` +
-      `Sonra kol kendi Z ekseninde ${mm} mm GERİ çekilecek (robot hareket eder) ` +
-      `ve ön-poz kaydedilecek.`);
+    if (isNaN(mm) || mm <= 0) {
+      yaz("Approach distance must be greater than 0", "err");
+      ppHata("Approach distance must be greater than 0.");
+      return;
+    }
+    ppHata("");
+    const ok = await onayla(`Pick & place: ${ad} pose`,
+      `The arm's current pose will be saved as the ${ad.toLowerCase()} pose.\n` +
+      `The arm then retracts ${mm} mm along its own Z axis (the robot moves) ` +
+      `and the approach pose is saved.`,
+      buton);
     if (!ok) return;
-    isGonder("/api/pickplace/pose", { etiket, approach_mm: mm }, `${ad} pozu kaydı`);
+    const red = await isGonder("/api/pickplace/pose", { etiket, approach_mm: mm }, `Save ${ad.toLowerCase()} pose`);
+    if (red) ppHata(`Save ${ad.toLowerCase()} pose rejected: ${red}`);
   };
-  $("#pp-pick").onclick = () => pozKaydet("pick", "Alma");
-  $("#pp-place").onclick = () => pozKaydet("place", "Bırakma");
+  $("#pp-pick").onclick = () => pozKaydet("pick", "Pick", $("#pp-pick"));
+  $("#pp-place").onclick = () => pozKaydet("place", "Place", $("#pp-place"));
 
   $("#pp-reset").onclick = async () => {
     try {
       await api("/api/pickplace/draft", { method: "DELETE" });
-      yaz("Pick & place taslağı sıfırlandı");
+      yaz("Pick & place draft reset");
       ppTaslakGoster();
-    } catch (e) { yaz("Sıfırlanamadı: " + e.message, "err"); }
+    } catch (e) { yaz("Could not reset: " + e.message, "err"); }
   };
 
   $("#pp-save").onclick = async () => {
@@ -354,18 +473,21 @@ function kurPickPlace() {
       object_h_mm: parseFloat($("#pp-objh").value),
       overwrite: false,
     };
+    const kaydedilemedi = (mesaj) => { yaz("Could not save: " + mesaj, "err"); ppHata("Could not save: " + mesaj); };
+    ppHata("");
     try {
       await api("/api/pickplace/save", { method: "POST", body: govde });
     } catch (e) {
-      if (!e.message.includes("zaten kayıtlı")) { yaz("Kaydedilemedi: " + e.message, "err"); return; }
-      const ok = await onayla("Kaydın üzerine yaz", `'${govde.name}' zaten kayıtlı. Üzerine yazılsın mı?`);
+      // server.py pp_kaydet: ayni isim varsa 409 "'ad' already exists."
+      if (!e.message.includes("already exists")) { kaydedilemedi(e.message); return; }
+      const ok = await onayla("Overwrite move", `'${govde.name}' already exists. Overwrite it?`, $("#pp-save"));
       if (!ok) return;
       govde.overwrite = true;
       try { await api("/api/pickplace/save", { method: "POST", body: govde }); } catch (e2) {
-        yaz("Kaydedilemedi: " + e2.message, "err"); return;
+        kaydedilemedi(e2.message); return;
       }
     }
-    yaz(`'${govde.name}' pick & place olarak kaydedildi`, "ok");
+    yaz(`'${govde.name}' saved as pick & place`, "ok");
     ppTaslakGoster();
     hareketleriYukle();
   };
@@ -388,16 +510,21 @@ function durumCiz(s) {
 
   const bagli = !!s.ready;
   $("#d-conn").className = "dot " + (bagli ? "ok" : (s.startup_error ? "err" : "warn"));
-  $("#t-conn").textContent = bagli ? "bağlı" : (s.startup_error ? "hata" : "hazırlanıyor");
-  $("#t-robot").textContent = s.model ? `${s.model} · ${s.robot_ip} · hız %${s.speed_pct}` : "—";
+  $("#t-conn").textContent = bagli ? "connected" : (s.startup_error ? "error" : "starting");
+  // Hiz/ivme: Ayarlar penceresinin degeri (s.settings). s.speed_pct oturumun
+  // acilis varsayilani, pencere onu degistirmiyor (bkz. session.py ayarlar).
+  const ayar = s.settings || { speed_pct: s.speed_pct, accel_pct: s.accel_pct };
+  $("#t-robot").textContent = s.model
+    ? `${s.model} · ${s.robot_ip} · speed ${ayar.speed_pct}% · accel ${ayar.accel_pct}%`
+    : "—";
 
   const f = s.fault;
   const fvar = f && (f.main_code !== 0 || f.sub_code !== 0);
   $("#d-fault").className = "dot " + (f ? (fvar ? "err" : "ok") : "");
-  $("#t-fault").textContent = f ? (fvar ? `fault ${f.main_code}/${f.sub_code}` : "fault yok") : "fault ?";
+  $("#t-fault").textContent = f ? (fvar ? `fault ${f.main_code}/${f.sub_code}` : "no fault") : "fault ?";
 
   $("#d-busy").className = "dot " + (s.busy ? "busy" : "ok");
-  $("#t-busy").textContent = s.busy ? "hareket ediyor" : "boşta";
+  $("#t-busy").textContent = s.busy ? "moving" : "idle";
 
   const je = $("#joints"); je.innerHTML = "";
   (s.joints_deg || []).forEach((v, i) => kutu(je, EKLEMLER[i], v.toFixed(2), "°"));
@@ -413,10 +540,13 @@ function durumCiz(s) {
   const j = s.job;
   if (j && !j.running && j.id !== sonIsId) {
     sonIsId = j.id;
-    if (j.ok) yaz(`${j.label} — tamam (${j.seconds}s)`, "ok");
-    else yaz(`${j.label} — BAŞARISIZ: ${j.detail}`, "err");
+    if (j.ok) yaz(`${j.label} — done (${j.seconds}s)`, "ok");
+    else yaz(`${j.label} — FAILED: ${j.detail}`, "err");
     hareketleriYukle();
-    if (j.label.startsWith("Pick & place")) ppTaslakGoster();
+    if (j.label.startsWith("Pick & place")) {
+      ppTaslakGoster();
+      ppHata(j.ok ? "" : `${j.label} failed: ${j.detail}`);
+    }
   }
 
   // Acilis ekrani
@@ -424,7 +554,7 @@ function durumCiz(s) {
   if (bagli) ov.classList.add("hidden");
   else {
     ov.classList.remove("hidden");
-    $("#ovtitle").textContent = s.startup_error ? "Bağlanılamadı" : "Robota bağlanılıyor…";
+    $("#ovtitle").textContent = s.startup_error ? "Connection failed" : "Connecting to robot…";
     $("#ovlog").textContent = (s.startup_log || []).join("\n");
   }
 }
@@ -434,12 +564,12 @@ async function gripperDurum() {
   try {
     const g = await api("/api/gripper/status");
     const kap = $("#gstat"); kap.innerHTML = "";
-    if (g.error) { kutu(kap, "durum", g.error); return; }
-    const anlam = { 0: "hareket ediyor", 1: "bitti · nesne yok", 2: "bitti · nesne var" };
-    kutu(kap, "durum", anlam[g.motion_status] || g.motion_status);
+    if (g.error) { kutu(kap, "state", g.error); return; }
+    const anlam = { 0: "moving", 1: "done · no object", 2: "done · object held" };
+    kutu(kap, "state", anlam[g.motion_status] || g.motion_status);
     kutu(kap, "fault", g.fault);
-    kutu(kap, "pozisyon", g.position_pct, " %");
-    kutu(kap, "hız", g.speed_pct, " %");
+    kutu(kap, "position", g.position_pct, " %");
+    kutu(kap, "speed", g.speed_pct, " %");
   } catch (_) { /* gripper okunamadi - arayuz kararmasin */ }
 }
 
@@ -452,7 +582,7 @@ function baglan() {
   ws.onmessage = (olay) => { try { durumCiz(JSON.parse(olay.data)); } catch (_) {} };
   ws.onclose = () => {
     $("#d-conn").className = "dot err";
-    $("#t-conn").textContent = "bağlantı koptu";
+    $("#t-conn").textContent = "connection lost";
     setTimeout(baglan, 1500);   // sunucu yeniden basladiysa kendiliginden donsun
   };
 }
@@ -472,9 +602,9 @@ setInterval(gripperDurum, 1200);
 $("#stopmove").onclick = async () => {
   try {
     const r = await api("/api/stop", { method: "POST" });
-    if (r.durduruldu) yaz("Hareket durduruldu.", "warn");
-    else yaz("Hareket durdurulamadı: " + (r.hata || JSON.stringify(r)), "err");
-  } catch (e) { yaz("Hareket durdurma hatası: " + e.message, "err"); }
+    if (r.durduruldu) yaz("Motion stopped.", "warn");
+    else yaz("Could not stop motion: " + (r.hata || JSON.stringify(r)), "err");
+  } catch (e) { yaz("Stop error: " + e.message, "err"); }
 };
 
-yaz("Arayüz hazır.");
+yaz("Interface ready.");

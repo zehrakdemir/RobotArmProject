@@ -1,8 +1,10 @@
 <!doctype html>
-<html lang="tr">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0f1115">
 <title>movecobot</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -10,29 +12,46 @@
 
 <div id="overlay">
   <div class="spin"></div>
-  <div id="ovtitle">Robota bağlanılıyor…</div>
+  <div id="ovtitle">Connecting to robot…</div>
   <pre id="ovlog"></pre>
 </div>
 
 <header>
   <h1>movecobot</h1>
-  <span class="pill"><span class="dot" id="d-conn"></span><span id="t-conn">bağlanıyor</span></span>
+  <span class="pill"><span class="dot" id="d-conn"></span><span id="t-conn">connecting</span></span>
   <span class="pill"><span class="dot" id="d-fault"></span><span id="t-fault">fault ?</span></span>
-  <span class="pill"><span class="dot" id="d-busy"></span><span id="t-busy">boşta</span></span>
+  <span class="pill"><span class="dot" id="d-busy"></span><span id="t-busy">idle</span></span>
   <span class="pill" id="t-robot">—</span>
   <span class="sep"></span>
-  <button id="settings-open">Ayarlar</button>
-  <button id="stopmove">Hareketi durdur</button>
+  <div class="dd" id="settings-wrap">
+    <button id="settings-open" aria-expanded="false" aria-controls="settings">Speed / Accel</button>
+    <div id="settings" class="pop" hidden>
+      <div class="row">
+        <label class="field"><span>Speed %</span><input type="number" id="s-speed" min="1" max="100" step="1"></label>
+        <label class="field"><span>Acceleration %</span><input type="number" id="s-accel" min="1" max="100" step="1"></label>
+      </div>
+      <div class="note">
+        Used by joint jog, TCP jog and absolute targets.
+        <b>Saved moves</b> and the <b>Gripper</b> panel do not use these values.
+      </div>
+      <div class="note warn" id="s-err" hidden></div>
+      <div class="btns">
+        <button id="s-no">Cancel</button>
+        <button id="s-yes" class="primary">Save</button>
+      </div>
+    </div>
+  </div>
+  <button id="stopmove">Stop motion</button>
 </header>
 
 <main>
 
-  <!-- ---------------- sol sütun ---------------- -->
+  <!-- ---------------- sol sutun ---------------- -->
   <div>
     <section>
-      <h2>Durum</h2>
+      <h2>Status</h2>
       <div class="body">
-        <div class="sub">Eklemler</div>
+        <div class="sub">Joints</div>
         <div class="grid6" id="joints"></div>
         <div class="sub">TCP · base</div>
         <div class="grid6" id="tcp"></div>
@@ -45,38 +64,38 @@
         <div class="grid6" id="gstat"></div>
         <div style="height:10px"></div>
         <div class="row">
-          <label class="field"><span>Hız %</span><input type="number" id="g-speed" value="50" min="1" max="100"></label>
-          <label class="field"><span>Kuvvet %</span><input type="number" id="g-force" value="50" min="1" max="100"></label>
+          <label class="field"><span>Speed %</span><input type="number" id="g-speed" value="50" min="1" max="100"></label>
+          <label class="field"><span>Force %</span><input type="number" id="g-force" value="50" min="1" max="100"></label>
         </div>
         <div class="row3">
-          <button data-g="open">Aç</button>
-          <button data-g="close">Kapat</button>
-          <button data-g="grip" class="primary">Kavra</button>
+          <button data-g="open">Open</button>
+          <button data-g="close">Close</button>
+          <button data-g="grip" class="primary">Grip</button>
         </div>
         <div class="note">
-          <b>Kavra</b> nesne büyüklüğünü bilmez — basınçtan anlar. Kayıtlarda da
-          sabit pozisyon değil, “kavra” eylemi saklanır.
+          <b>Grip</b> closes until the object is held, so the object size is not needed.
+          Saved moves store the grip action, not a fixed position.
         </div>
       </div>
     </section>
   </div>
 
-  <!-- ---------------- orta sütun ---------------- -->
+  <!-- ---------------- orta sutun ---------------- -->
   <div>
     <section>
-      <h2>Eklem jog</h2>
+      <h2>Joint jog</h2>
       <div class="body">
-        <label class="field"><span>Adım (derece)</span>
-          <input type="number" id="jstep" value="5" step="0.5"></label>
+        <label class="field"><span>Step (deg)</span>
+          <input type="number" id="jstep" value="5" min="0" step="0.5"></label>
         <div id="jog"></div>
       </div>
     </section>
 
     <section>
-      <h2>TCP jog (base eksenleri, mm)</h2>
+      <h2>Base jog (mm)</h2>
       <div class="body">
-        <label class="field"><span>Adım (mm)</span>
-          <input type="number" id="bstep" value="10" step="1"></label>
+        <label class="field"><span>Step (mm)</span>
+          <input type="number" id="bstep" value="10" min="0" step="1"></label>
         <div class="jogrow"><span class="lbl">X</span>
           <button data-b="x" data-s="-1">− X</button><button data-b="x" data-s="1">+ X</button></div>
         <div class="jogrow"><span class="lbl">Y</span>
@@ -84,18 +103,18 @@
         <div class="jogrow"><span class="lbl">Z</span>
           <button data-b="z" data-s="-1">− Z</button><button data-b="z" data-s="1">+ Z</button></div>
         <div class="note">
-          Eksenler <b>sabit</b>: alet nasıl dönmüş olursa olsun <b>+Z yukarı</b>,
-          +X robotun önü. Masaya dik inip çıkmak, tezgâh boyunca kaydırmak için
-          bunu kullan. Yönelim değişmez.
+          Axes are <b>fixed</b>: whatever the tool orientation, <b>+Z is up</b> and
+          +X is the robot's front. Use this to move straight up or down from the table
+          or to slide along it. Orientation does not change.
         </div>
       </div>
     </section>
 
     <section>
-      <h2>TCP jog (araç eksenleri, mm)</h2>
+      <h2>Tool jog (mm)</h2>
       <div class="body">
-        <label class="field"><span>Adım (mm)</span>
-          <input type="number" id="tstep" value="10" step="1"></label>
+        <label class="field"><span>Step (mm)</span>
+          <input type="number" id="tstep" value="10" min="0" step="1"></label>
         <div class="jogrow"><span class="lbl">X</span>
           <button data-t="x" data-s="-1">− X</button><button data-t="x" data-s="1">+ X</button></div>
         <div class="jogrow"><span class="lbl">Y</span>
@@ -103,106 +122,107 @@
         <div class="jogrow"><span class="lbl">Z</span>
           <button data-t="z" data-s="-1">− Z</button><button data-t="z" data-s="1">+ Z</button></div>
         <div class="note">
-          Eksenler <b>aletle birlikte döner</b>: +Z, aletin baktığı yöndür.
-          Yaklaşma/geri çekilme için uygundur.
+          Axes <b>rotate with the tool</b>: +Z is the direction the tool points.
+          Suitable for approach and retreat.
         </div>
       </div>
     </section>
 
     <section>
-      <h2>Mutlak TCP pozu (base)</h2>
+      <h2>Absolute TCP pose (base)</h2>
       <div class="body">
         <div class="row3" id="pose"></div>
         <div style="height:8px"></div>
-        <label class="field" style="flex-direction:row;align-items:center;gap:8px">
+        <label class="field" style="display:flex;align-items:center;gap:8px">
           <input type="checkbox" id="pose-lin" checked>
-          <span>Düz çizgi (LIN) dene</span></label>
+          <span style="margin:0">Try straight line (LIN)</span></label>
         <div style="height:8px"></div>
         <div class="row3">
-          <button id="pose-now">Şu anki</button>
-          <button id="pose-go" class="primary">Git</button>
+          <button id="pose-now">Current</button>
+          <button id="pose-go" class="primary">Go</button>
         </div>
         <div id="pose-out" class="note">
-          X/Y/Z mm, RX/RY/RZ derece — hepsi <b>base</b> çerçevesinde.
-          Önce “Şu anki” ile doldurup tek bir değeri değiştirmek en güvenlisi.
+          X/Y/Z in mm, RX/RY/RZ in degrees — all in the <b>base</b> frame.
+          Safest: fill the fields with “Current”, then change a single value.
         </div>
       </div>
     </section>
 
     <section>
-      <h2>Mutlak eklem hedefi</h2>
+      <h2>Absolute joint target</h2>
       <div class="body">
         <div class="row3" id="abs"></div>
         <div style="height:8px"></div>
         <div class="row3">
-          <button id="abs-now">Şu anki</button>
-          <button id="abs-preview">Önizle (FK)</button>
-          <button id="abs-go" class="primary">Git</button>
+          <button id="abs-now">Current</button>
+          <button id="abs-preview">Preview (FK)</button>
+          <button id="abs-go" class="primary">Go</button>
         </div>
         <div id="abs-out" class="note"></div>
       </div>
     </section>
   </div>
 
-  <!-- ---------------- sağ sütun ---------------- -->
+  <!-- ---------------- sag sutun ---------------- -->
   <div>
     <section>
-      <h2>Pick &amp; place kaydı</h2>
+      <h2>Pick &amp; place recording</h2>
       <div class="body">
         <div class="row">
-          <label class="field"><span>Kayıt adı</span><input type="text" id="pp-name" placeholder="kutu_tasi"></label>
-          <label class="field"><span>Yaklaşma (mm)</span><input type="number" id="pp-approach" value="80" min="1" step="1"></label>
+          <label class="field"><span>Name</span><input type="text" id="pp-name" placeholder="move_box"></label>
+          <label class="field"><span>Approach (mm)</span><input type="number" id="pp-approach" value="80" min="1" step="1"></label>
         </div>
         <div class="row">
-          <label class="field"><span>Kavrama hız %</span><input type="number" id="pp-gspeed" value="50" min="1" max="100"></label>
-          <label class="field"><span>Kavrama kuvvet %</span><input type="number" id="pp-gforce" value="30" min="1" max="100"></label>
+          <label class="field"><span>Grip speed %</span><input type="number" id="pp-gspeed" value="50" min="1" max="100"></label>
+          <label class="field"><span>Grip force %</span><input type="number" id="pp-gforce" value="30" min="1" max="100"></label>
         </div>
         <div class="row">
-          <label class="field"><span>Nesne derinliği (mm)</span><input type="number" id="pp-objd" value="40" min="1"></label>
-          <label class="field"><span>Nesne yüksekliği (mm)</span><input type="number" id="pp-objh" value="60" min="1"></label>
+          <label class="field"><span>Object depth (mm)</span><input type="number" id="pp-objd" value="40" min="1"></label>
+          <label class="field"><span>Object height (mm)</span><input type="number" id="pp-objh" value="60" min="1"></label>
         </div>
         <div class="row">
-          <button id="pp-pick">1) Alma pozunu kaydet</button>
-          <button id="pp-place">2) Bırakma pozunu kaydet</button>
+          <button id="pp-pick">1) Save pick pose</button>
+          <button id="pp-place">2) Save place pose</button>
         </div>
         <div id="pp-out" class="note" style="white-space:pre-wrap"></div>
+        <div id="pp-err" class="note warn" role="alert" hidden></div>
         <div style="height:8px"></div>
         <div class="row">
-          <button id="pp-reset">Sıfırla</button>
-          <button id="pp-save" class="primary">Kaydet</button>
+          <button id="pp-reset">Reset</button>
+          <button id="pp-save" class="primary">Save</button>
         </div>
         <div class="note">
-          Kolu jog ile nesneyi <b>kavrayacağı</b> konuma getirip pozu kaydet. Kol kendi
-          ekseninde yaklaşma mesafesi kadar <b>geri çekilir</b> (robot hareket eder) ve
-          ön-poz da kaydedilir. Nesne ölçüleri yalnızca çarpışma kontrolü için;
-          genişlik kavrarken ölçülür.
+          Jog the arm to where it should <b>grip</b> the object and save the pose. The arm
+          then <b>retracts</b> along its own Z axis by the approach distance (the robot
+          moves) and the approach pose is saved too. Object size is only used for
+          collision checking; the width is measured while gripping.
         </div>
       </div>
     </section>
 
     <section>
-      <h2>Kayıtlı hareketler</h2>
+      <h2>Saved moves</h2>
       <div class="body">
         <div class="row">
-          <label class="field"><span>Hız %</span><input type="number" id="p-speed" placeholder="kayıtlı" min="1" max="100"></label>
-          <label class="field"><span>İvme %</span><input type="number" id="p-accel" placeholder="kayıtlı" min="1" max="100"></label>
+          <label class="field"><span>Speed %</span><input type="number" id="p-speed" placeholder="saved" min="1" max="100"></label>
+          <label class="field"><span>Acceleration %</span><input type="number" id="p-accel" placeholder="saved" min="1" max="100"></label>
         </div>
         <div class="row">
-          <label class="field"><span>Gripper hız %</span><input type="number" id="p-gspeed" placeholder="kayıtlı" min="1" max="100"></label>
-          <label class="field"><span>Gripper kuvvet %</span><input type="number" id="p-gforce" placeholder="kayıtlı" min="1" max="100"></label>
+          <label class="field"><span>Gripper speed %</span><input type="number" id="p-gspeed" placeholder="saved" min="1" max="100"></label>
+          <label class="field"><span>Gripper force %</span><input type="number" id="p-gforce" placeholder="saved" min="1" max="100"></label>
         </div>
         <div id="moves"></div>
-        <div class="note">Boş bırakılan alanlar kaydın kendi değerini kullanır.</div>
+        <div class="note">Empty fields use the values stored in the move.</div>
       </div>
     </section>
 
     <section>
-      <h2>Günlük</h2>
+      <h2>Log</h2>
       <div class="body">
-        <div id="log"></div>
+        <div id="log" role="log" aria-live="polite"></div>
         <div class="note warn">
-          Fault olursa robotun kendi WebApp'inde <b>Clear</b>'a bas, sonra container'ı
-          yeniden başlat: <code>docker restart cobot</code>
+          If the robot faults, press <b>Clear</b> in the robot's own WebApp, then restart
+          the container: <code>docker restart cobot</code>
         </div>
       </div>
     </section>
@@ -210,33 +230,12 @@
 
 </main>
 
-<div id="modal" class="modal">
-  <div class="card">
-    <h3 id="m-title">Onay</h3>
-    <div class="msg" id="m-msg"></div>
-    <div class="btns">
-      <button id="m-no">Vazgeç</button>
-      <button id="m-yes" class="primary">Uygula</button>
-    </div>
-  </div>
-</div>
-
-<div id="settings" class="modal">
-  <div class="card">
-    <h3>Ayarlar</h3>
-    <div class="row">
-      <label class="field"><span>Hız %</span><input type="number" id="s-speed" min="1" max="100" step="1"></label>
-      <label class="field"><span>İvme %</span><input type="number" id="s-accel" min="1" max="100" step="1"></label>
-    </div>
-    <div class="note">
-      Eklem jog, TCP jog ve mutlak hedeflerde kullanılır.
-      <b>Kayıtlı hareketler</b> ve <b>Gripper</b> paneli bu ayarları kullanmaz.
-    </div>
-    <div class="note warn" id="s-err" hidden></div>
-    <div class="btns">
-      <button id="s-no">Vazgeç</button>
-      <button id="s-yes" class="primary">Kaydet</button>
-    </div>
+<div id="confirm" class="pop confirm" role="dialog" aria-labelledby="m-title" hidden>
+  <h3 id="m-title">Confirm</h3>
+  <div class="msg" id="m-msg"></div>
+  <div class="btns">
+    <button id="m-no">Cancel</button>
+    <button id="m-yes" class="primary">Confirm</button>
   </div>
 </div>
 
