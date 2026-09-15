@@ -9,6 +9,8 @@ listeleri alip karar donduruyor, boylece temiz bir makinede de kosuyorlar.
 
 from __future__ import annotations
 
+import math
+
 
 def asiri_eklem_hareketi(
     baslangic_deg: list[float],
@@ -55,5 +57,81 @@ def asiri_eklem_hareketi(
             "Plan REDDEDILDI - robot hareket etmedi. Planlayici buyuk ihtimalle "
             "IK'nin baska bir daline atliyor; hedefe eklem acilariyla gitmeyi dene "
             "ya da once kolu biraz farkli bir duruma getir."
+        ),
+    }
+
+
+def tekil_ihlali(kosul_sayilari: list[float], esik: float, ne: str) -> dict | None:
+    """Plan (ya da tek bir durus) tekile cok yakin mi?
+
+    kosul_sayilari: her nokta icin flanstaki Jacobian'in kosul sayisi
+    (movecobot.jacobian_kosul_sayisi). ne: mesajda neyin kontrol edildigi.
+
+    NEDEN: tekil yakininda TCP'ye gore bir hareket (TCP/Tool jog, TCP pozu,
+    LIN) icin eklemlerin cok fazla ve cok hizli donmesi gerekir; bilek ya da
+    taban savrulur. Zemin ve self-collision kontrolleri bunu gormez, yol bos
+    havada. Eklem hareketleri bu kontrolden GECMEZ: tekilden etkilenmezler
+    ve tekilden cikmanin yolu onlardir.
+
+    NaN tekil sayilir (hesap bozulduysa guvenli taraf). Esigin tam kendisi
+    ihlal degil, ustu ihlal. Ihlal varsa sebebi anlatan sozluk, yoksa None.
+    """
+    if not kosul_sayilari:
+        return None
+    degerler = [math.inf if math.isnan(k) else k for k in kosul_sayilari]
+    en_kotu_adim = max(range(len(degerler)), key=lambda i: degerler[i])
+    en_kotu = degerler[en_kotu_adim]
+    if en_kotu <= esik:
+        return None
+
+    deger = "infinite" if math.isinf(en_kotu) else f"{en_kotu:.0f}"
+    konum = f" (step {en_kotu_adim}/{len(degerler)})" if len(degerler) > 1 else ""
+    return {
+        "success": False,
+        "reason": "singularity",
+        "details": (
+            f"{ne} is too close to a singular pose: Jacobian condition number {deger} "
+            f"> {esik:.0f}{konum}. Not planned - robot did not move. Move away with "
+            "joint jog or an absolute joint target, then try again."
+        ),
+    }
+
+
+def bilek_tekili(duruslar_deg: list[list[float]], pay_deg: float, ne: str) -> dict | None:
+    """Bir durus (ya da planin bir noktasi) bilek tekiline cok yakin mi?
+
+    Bilek tekili: j5 = 0 ya da 180 derece (Fairino kilavuzu 9.21). duruslar_deg:
+    [j1..j6] derece listeleri. pay_deg: j5'in 0/180'e en az ne kadar uzak
+    olmasi gerektigi.
+
+    NEDEN KOSUL SAYISINA EK (canli, 15 Eylul): j5=0 durusunda base +Y 10 mm
+    jog'u PTP'ye dustu; bilek j4 -109, j6 +90 derece dondu, uc 10 mm'lik
+    dogrudan ~39 mm sapti (modelle hesap). Varilan durusta j5=1.69 derece ama
+    kosul sayisi 99.3 idi - esik 100'un altinda, kosul sayisi tek basina
+    bir sonraki jog'u durdurmayacakti. Kosul sayisi kolun diger acilarina gore
+    degisiyor (ev pozunda j5=2 derece 324), bilek payi ise acidan dogrudan.
+
+    NaN tekil sayilir. Payin tam kendisi ihlal degil, alti ihlal.
+    """
+    en_yakin, en_yakin_adim = None, 0
+    for adim, q in enumerate(duruslar_deg):
+        if math.isnan(q[4]):
+            uzaklik = 0.0
+        else:
+            m = abs(q[4]) % 180.0
+            uzaklik = min(m, 180.0 - m)
+        if en_yakin is None or uzaklik < en_yakin:
+            en_yakin, en_yakin_adim = uzaklik, adim
+    if en_yakin is None or en_yakin >= pay_deg:
+        return None
+
+    konum = f" (step {en_yakin_adim}/{len(duruslar_deg)})" if len(duruslar_deg) > 1 else ""
+    return {
+        "success": False,
+        "reason": "singularity",
+        "details": (
+            f"{ne} is too close to a wrist singularity: j5 is {en_yakin:.1f} degrees from "
+            f"0/180 (minimum {pay_deg:.0f}){konum}. Not planned - robot did not move. Move j5 "
+            "away with joint jog or an absolute joint target, then try again."
         ),
     }

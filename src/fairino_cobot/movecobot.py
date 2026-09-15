@@ -44,7 +44,7 @@ from pathlib import Path
 
 from fairino_cobot import paths
 from fairino_cobot.ik_secimi import ik_adaylarini_sirala
-from fairino_cobot.safety import asiri_eklem_hareketi
+from fairino_cobot.safety import asiri_eklem_hareketi, bilek_tekili, tekil_ihlali
 
 # SDK'nin yeri makineye gore degisiyor - tek yerden cozuluyor (paths.py).
 paths.ensure_sdk_on_path()
@@ -447,6 +447,63 @@ def check_trajectory_for_self_collision(scene, trajectory, group_name):
         if res.collision:
             violations.append((i, res.distance + 2 * LINK_PADDING_M))
     return violations
+
+
+# ---------------------------------------------------------------------------
+# TEKIL (SINGULARITY) KORUMASI
+# ---------------------------------------------------------------------------
+# Tekil: kolun ucu bazi yonlere gidemez; o yone gitmek icin eklemlerin cok
+# fazla ve cok hizli donmesi gerekir (TCP jog'da bilek ya da taban savrulur).
+# Eklem hareketleri (eklem hedefi, joint jog) tekilden etkilenmez.
+#
+# OLCU: flansta 6x6 Jacobian'in kosul sayisi (en buyuk / en kucuk tekil
+# deger). MoveIt Servo'nun olcusu (moveit_servo/src/utilities.cpp,
+# velocityScalingFactorForSingularity). Bilek, dirsek ve omuz tekilinin
+# ucunu de yakalar. Fairino kilavuzunun (9.21) omuz tanimi "bilek merkezi,
+# j1 ekseni etrafinda d4=102 mm yaricapli silindirde", bilek merkezi j5
+# eklemi alinarak olculdu ve FR3 modelinde tekili gostermedi: bu mesafe
+# hicbir durusta 102 mm'nin altina inmiyor, kosul sayisinin tepe yaptigi yer
+# baska (15 Eylul robotsuz olcum).
+#
+# ESIK 100: Universal Robots'un resmi ROS2 surucusundeki MoveIt Servo ayari
+# (ur_moveit_config/config/ur_servo.yaml: lower_singularity_threshold 100,
+# hard_stop_singularity_threshold 200). FR3'un eklem yapisi UR'ye benzer.
+# FR3 modelinde olculen kosul sayilari (15 Eylul, robotsuz):
+#   ev pozu 12.6 | kayitli gercek pozlar 12.6-88.1 (en yuksek sigara place,
+#   j3 11.6 derece) | ev pozunda j5=10 derece 64.8, j5=5 derece 129.5 |
+#   j3=10 derece 101.4, j3=5 derece 202.6 | j5=0 ~6e17 (fiilen sonsuz).
+# Yani 100 kayitli hicbir pozu engellemiyor; bilekte ~6, dirsekte ~10
+# dereceden yakini reddediyor. MoveIt'in kendi Jacobian'iyla ayni sayilar
+# cikti (--network none container, fairino3_v6.urdf + srdf).
+#
+# BASKA MODEL: Jacobian yuklu modelden hesaplandigi icin kol olculeri
+# kendiliginden degisir, ESIK DEGISMEZ. Kol boyu farkli bir modelde (FR5,
+# FR10...) ayni tekil yakinligi baska bir sayiya denk gelebilir; o modelde
+# ayni olcum (ev pozu, kayitli pozlar, j5/j3 taramasi) yapilip esik
+# gozden gecirilmeli. Olculmeden baska modelde bu esige guvenme.
+TEKIL_KOSUL_ESIGI = 100.0
+
+# BILEK PAYI (kosul sayisina EK, bkz. safety.bilek_tekili): j5, 0 ya da 180
+# dereceye bundan yakinsa TCP'ye gore hareket reddedilir. KAYNAK: Fairino
+# kilavuzu 9.21 (bilek tekili J5=0/180) ve SDK SingularAvoidStart
+# minWristPos varsayilani 10 derece (fairino/Robot.py, SDK belgesi 4.57).
+# NEDEN: canli j5=1.69 derece durusunda kosul sayisi 99.3 cikti (esigin
+# altinda). Kayitli gercek pozlarin j5'i 0/180'e en yakin 15.1 derece
+# (winstob 3), yani bu pay hicbirini engellemiyor. Aci oldugu icin modelden
+# bagimsiz; tum Fairino 6 eksen kollarinda bilek tekili j5=0/180.
+BILEK_TEKIL_PAYI_DEG = 10.0
+
+
+def jacobian_kosul_sayisi(state, group_name):
+    """state: moveit RobotState. Grubun son linkinde (flans) 6x6 Jacobian'in
+    kosul sayisi. Tam tekilde sonsuz."""
+    import numpy as np
+    state.update()
+    jacobian = np.asarray(state.get_jacobian(group_name, np.zeros(3)))
+    tekil_degerler = np.linalg.svd(jacobian, compute_uv=False)
+    if tekil_degerler[-1] <= 0.0:
+        return float("inf")
+    return float(tekil_degerler[0] / tekil_degerler[-1])
 
 
 # ---------------------------------------------------------------------------
@@ -893,7 +950,7 @@ class CobotArm:
         }
 
     def _plan_and_execute(self, confirm, speed_pct=None, accel_pct=None, prefer_lin=False,
-                          max_joint_excursion_deg=None):
+                          max_joint_excursion_deg=None, tekil_kontrolu=False):
         """speed_pct/accel_pct verilirse (adim-bazli kayitli hiz/ivme), o TEK
         plan() cagrisi icin oturumun varsayilanini (moveit_cpp.yaml'a init'te
         yazilan) PlanRequestParameters ile gecici olarak ezer - CobotArm'in
@@ -962,16 +1019,18 @@ class CobotArm:
             if v:
                 w = min(v, key=lambda x: x[2])
                 return {"success": False, "reason": "floor_collision",
-                        "details": f"adim {w[0]}, link '{w[1]}', Z={w[2]*1000:.1f}mm"}
+                        "details": f"step {w[0]}, link '{w[1]}', Z={w[2]*1000:.1f}mm"}
             psm_local = self._moveit.get_planning_scene_monitor()
             with psm_local.read_only() as sc:
                 steps = check_trajectory_for_self_collision(sc, candidate.trajectory, self.group_name)
             if steps:
                 ws, wd = min(steps, key=lambda x: x[1])
                 return {"success": False, "reason": "self_collision",
-                        "details": f"plandaki {len(steps)} noktada minimum guvenlik mesafesinin "
-                                   f"({MIN_CLEARANCE_M*1000:.0f}mm) altina dusuluyor - en kotusu adim "
-                                   f"{ws}/{len(candidate.trajectory)}, mesafe={wd*1000:.1f}mm"}
+                        "details": f"{len(steps)} points in the plan fall below the minimum clearance "
+                                   f"({MIN_CLEARANCE_M*1000:.0f}mm) - worst step "
+                                   f"{ws}/{len(candidate.trajectory)}, distance={wd*1000:.1f}mm"}
+            if tekil_kontrolu:
+                return self._plan_tekil_ihlali(candidate.trajectory)
             return None
 
         from moveit.planning import PlanRequestParameters
@@ -1034,7 +1093,7 @@ class CobotArm:
         if violations:
             worst = min(violations, key=lambda v: v[2])
             return {"success": False, "reason": "floor_collision",
-                    "details": f"adim {worst[0]}, link '{worst[1]}', Z={worst[2]*1000:.1f}mm"}
+                    "details": f"step {worst[0]}, link '{worst[1]}', Z={worst[2]*1000:.1f}mm"}
 
         # OMPL'in kendi planlama-zamani kontrolu KABA bir ornekleme
         # cozunurlugunde calisiyor (bkz. check_trajectory_for_self_collision
@@ -1049,10 +1108,18 @@ class CobotArm:
         if self_collision_steps:
             worst_step, worst_dist = min(self_collision_steps, key=lambda v: v[1])
             return {"success": False, "reason": "self_collision",
-                    "details": f"plandaki {len(self_collision_steps)} noktada minimum guvenlik "
-                               f"mesafesinin ({MIN_CLEARANCE_M*1000:.0f}mm) altina dusuluyor - en "
-                               f"kotusu adim {worst_step}/{len(plan_result.trajectory)}, mesafe="
+                    "details": f"{len(self_collision_steps)} points in the plan fall below the "
+                               f"minimum clearance ({MIN_CLEARANCE_M*1000:.0f}mm) - worst step "
+                               f"{worst_step}/{len(plan_result.trajectory)}, distance="
                                f"{worst_dist*1000:.1f}mm"}
+
+        # TEKIL KONTROLU (bkz. TEKIL_KOSUL_ESIGI): yalnizca TCP'ye gore
+        # hareketlerde istenir. Pilz adaylari _check icinde de bakildi; bu
+        # satir OMPL'e dusen plani da kapsar.
+        if tekil_kontrolu:
+            ihlal = self._plan_tekil_ihlali(plan_result.trajectory)
+            if ihlal is not None:
+                return ihlal
 
         # ORANTI KONTROLU - bkz. MAX_JOG_JOINT_EXCURSION_DEG ustundeki olay
         # kaydi. Zemin/self-collision kontrolleri bos havadaki genis bir yayi
@@ -1088,7 +1155,7 @@ class CobotArm:
         # Planlama sirasinda "Hareketi durdur"a basildiysa hic yurutme.
         if self.stop_requested.is_set():
             return {"success": False, "reason": "stopped_by_user",
-                    "details": "hareket kullanici tarafindan durduruldu - robot hareket etmedi."}
+                    "details": "motion stopped by user - robot did not move."}
 
         # bkz. __init__ icindeki self.executing yorumu - grippergui'nin arka
         # plan durum sorgulama thread'i bu pencere sirasinda kendi SDK
@@ -1103,7 +1170,7 @@ class CobotArm:
         # yapilmaz: kol bilerek yolda durduruldu, hedefe varmamasi hata degil.
         if self.stop_requested.is_set():
             return {"success": False, "reason": "stopped_by_user",
-                    "details": "hareket kullanici tarafindan yolda durduruldu."}
+                    "details": "motion stopped by user before reaching the target."}
 
         # Hareket bittikten SONRAKI dogrulama okumasi.
         #
@@ -1168,18 +1235,17 @@ class CobotArm:
                     mc = self.sdk.robot_state_pkg.main_code
                     sc = self.sdk.robot_state_pkg.sub_code
                 if mc != 0 or sc != 0:
-                    fault_note = (f" ROBOT FAULT TESPIT EDILDI (main_code={mc}, sub_code={sc}) - "
-                                  f"WebApp'teki hata mesajini kontrol et, 'Clear' ile temizleyip "
-                                  f"tekrar dene.")
+                    fault_note = (f" ROBOT FAULT DETECTED (main_code={mc}, sub_code={sc}) - "
+                                  f"check the error message in the robot WebApp, press 'Clear' "
+                                  f"and try again.")
             except Exception:
                 pass
             return {
                 "success": False,
                 "reason": "execution_not_confirmed",
-                "details": (f"hedeften {max_err_deg:.1f} derece uzakta kaldi - robot hareket etmemis "
-                            f"olabilir (ROS2/ros2_control tarafinda sorun var mi kontrol et: "
-                            f"'ros2 node list' icinde controller_manager/joint_state_broadcaster "
-                            f"gorunuyor mu?)." + fault_note),
+                "details": (f"arm stopped {max_err_deg:.1f} degrees away from the target - the robot "
+                            f"may not have moved (check ROS2/ros2_control: are controller_manager "
+                            f"and joint_state_broadcaster listed in 'ros2 node list'?)." + fault_note),
                 "final_state": final_state,
             }
         return {"success": True, "final_state": final_state}
@@ -1252,6 +1318,30 @@ class CobotArm:
             "rx": rx, "ry": ry, "rz": rz,
         }
 
+    def tekil_kosul_sayisi(self, joint_degrees):
+        """Robotu hareket ettirmeden, verilen eklem acilarindaki Jacobian kosul
+        sayisi (bkz. TEKIL_KOSUL_ESIGI)."""
+        from moveit.core.robot_state import RobotState
+        state = RobotState(self.robot_model)
+        state.set_joint_group_positions(self.group_name, [math.radians(v) for v in joint_degrees])
+        return jacobian_kosul_sayisi(state, self.group_name)
+
+    def _durus_tekil_ihlali(self, joint_degrees, ne):
+        """Tek bir durus icin bilek payi + kosul sayisi; ihlal sozlugu ya da None."""
+        return (bilek_tekili([list(joint_degrees)], BILEK_TEKIL_PAYI_DEG, ne)
+                or tekil_ihlali([self.tekil_kosul_sayisi(joint_degrees)], TEKIL_KOSUL_ESIGI, ne))
+
+    def _plan_tekil_ihlali(self, trajectory):
+        """Planin HER noktasinda bilek payi ve kosul sayisi; ihlal varsa sozluk."""
+        acilar = [[math.degrees(v) for v in trajectory[i].get_joint_group_positions(self.group_name)]
+                  for i in range(len(trajectory))]
+        ihlal = bilek_tekili(acilar, BILEK_TEKIL_PAYI_DEG, "the planned path")
+        if ihlal is not None:
+            return ihlal
+        kosullar = [jacobian_kosul_sayisi(trajectory[i], self.group_name)
+                    for i in range(len(trajectory))]
+        return tekil_ihlali(kosullar, TEKIL_KOSUL_ESIGI, "the planned path")
+
     def stop_trajectory(self):
         """Suren kol hareketini durdurur (web "Hareketi durdur").
 
@@ -1272,14 +1362,14 @@ class CobotArm:
         self._moveit.get_trajectory_execution_manager().stop_execution()
 
     def move_to_joints(self, joint_degrees, confirm=False, speed_pct=None, accel_pct=None,
-                       known_start_joints_deg=None, prefer_lin=False):
+                       known_start_joints_deg=None, prefer_lin=False, tekil_kontrolu=False):
         from moveit.core.robot_state import RobotState
         self._set_start_state_from_sdk(known_joints_deg=known_start_joints_deg)
         target_state = RobotState(self.robot_model)
         target_state.set_joint_group_positions(self.group_name, [math.radians(v) for v in joint_degrees])
         self._planning_component.set_goal_state(robot_state=target_state)
         return self._plan_and_execute(confirm, speed_pct=speed_pct, accel_pct=accel_pct,
-                                      prefer_lin=prefer_lin)
+                                      prefer_lin=prefer_lin, tekil_kontrolu=tekil_kontrolu)
 
     def move_relative_joints(self, joint_deltas_deg, confirm=False, speed_pct=None, accel_pct=None):
         with self.sdk_lock:
@@ -1304,8 +1394,8 @@ class CobotArm:
         jmg = self.robot_model.get_joint_model_group(self.group_name)
         if not jmg.satisfies_position_bounds([math.radians(v) for v in joint_degrees]):
             return {"success": False, "reason": "joint_limit",
-                    "details": (f"hedef eklem acilari {[round(float(v), 2) for v in joint_degrees]} "
-                                f"eklem sinirlari disinda. Planlanmadi - robot hareket etmedi.")}
+                    "details": (f"target joint angles {[round(float(v), 2) for v in joint_degrees]} "
+                                f"are outside the joint limits. Not planned - robot did not move.")}
         return self.move_to_joints(joint_degrees, confirm=confirm,
                                    speed_pct=speed_pct, accel_pct=accel_pct)
 
@@ -1397,7 +1487,8 @@ class CobotArm:
     # (execution_not_confirmed) gelirse DURUR - hareket etmis bir robotla
     # baska aday denemek otomatik yeniden deneme olurdu (yasak).
     _HAREKETSIZ_RED_SEBEPLERI = frozenset(
-        {"planning_failed", "floor_collision", "self_collision", "excessive_joint_motion"})
+        {"planning_failed", "floor_collision", "self_collision", "excessive_joint_motion",
+         "singularity"})
 
     def _ik_adaylariyla_git(self, tx, ty, tz, trx, trye, trz, confirm=False, prefer_lin=False,
                             speed_pct=None, accel_pct=None):
@@ -1437,6 +1528,14 @@ class CobotArm:
             baslangic = list(self.sdk.GetActualJointPosDegree()[1])
         hedef_tcp = [float(v) for v in (tx, ty, tz, trx, trye, trz)]
 
+        # TEKIL (bkz. TEKIL_KOSUL_ESIGI): kol su an tekile cok yakinsa TCP'ye
+        # gore hareket hic denenmez. Tekil yakininda IK cozumleri birbirinden
+        # cok farkli olabilir, en yakini bile bilegi savurabilir. Cikis yolu
+        # eklem hareketi (tekilden etkilenmez).
+        ihlal = self._durus_tekil_ihlali(baslangic, "the current arm pose")
+        if ihlal is not None:
+            return ihlal
+
         ham_adaylar = []
         robottan = 0
         for config in (-1, 0, 1, 2, 3, 4, 5, 6, 7):
@@ -1457,17 +1556,21 @@ class CobotArm:
 
         if not sirali:
             return {"success": False, "reason": "ik_failed",
-                    "details": (f"hedef icin kullanilabilir kol durusu yok (robottan "
-                                f"{robottan} cozum geldi, {len(sinir_ici)} tanesi eklem siniri "
-                                f"icinde). Planlanmadi - robot hareket etmedi.")}
+                    "details": (f"no usable arm configuration for the target (robot returned "
+                                f"{robottan} IK solutions, {len(sinir_ici)} within joint limits). "
+                                f"Not planned - robot did not move.")}
 
         son_sonuc = None
         for sira, (aday, fark) in enumerate(sirali, 1):
             print(f"  IK adayi {sira}/{len(sirali)}: {[round(v, 2) for v in aday]} "
                   f"(en cok donen eklem {fark:.1f} derece)")
-            sonuc = self.move_to_joints(aday, confirm=confirm, known_start_joints_deg=baslangic,
-                                        prefer_lin=(prefer_lin and sira == 1),
-                                        speed_pct=speed_pct, accel_pct=accel_pct)
+            # Hedef durus tekile cok yakinsa planlamadan siradaki adaya gec.
+            sonuc = self._durus_tekil_ihlali(aday, "this arm configuration")
+            if sonuc is None:
+                sonuc = self.move_to_joints(aday, confirm=confirm, known_start_joints_deg=baslangic,
+                                            prefer_lin=(prefer_lin and sira == 1),
+                                            speed_pct=speed_pct, accel_pct=accel_pct,
+                                            tekil_kontrolu=True)
             if sonuc.get("reason") not in self._HAREKETSIZ_RED_SEBEPLERI:
                 if sonuc.get("success"):
                     print(f"  IK adayi {sira} kullanildi.")
@@ -1477,8 +1580,8 @@ class CobotArm:
 
         detay = son_sonuc.get("details") or son_sonuc["reason"]
         return {"success": False, "reason": son_sonuc["reason"],
-                "details": (f"{len(sirali)} kol durusunun hicbiri planlanamadi; sonuncusu: "
-                            f"{detay}. Robot hareket etmedi.")}
+                "details": (f"none of the {len(sirali)} arm configurations could be planned; "
+                            f"last one: {detay}. Robot did not move.")}
 
     def move_tcp_base(self, dx, dy, dz, confirm=False, speed_pct=None, accel_pct=None):
         """TCP'yi BASE (dunya) eksenlerine gore goreceli hareket ettirir;
@@ -2142,9 +2245,9 @@ def sync_bashrc_aliases(moves):
 
 def valid_move_name(name):
     if not NAME_RE.match(name):
-        return False, "isim harfle baslamali, sadece harf/rakam/alt cizgi icerebilir."
+        return False, "name must start with a letter and contain only letters, digits and underscores."
     if name in RESERVED_NAMES:
-        return False, f"'{name}' zaten baska bir alias tarafindan kullaniliyor."
+        return False, f"'{name}' is already used by another alias."
     return True, ""
 
 
