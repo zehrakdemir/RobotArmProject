@@ -116,6 +116,12 @@ def test_tekil_nan_tekil_sayiliyor():
     assert tekil_ihlali([12.6, math.nan], 100.0, "the planned path") is not None
 
 
+def test_tekil_sonsuz_ve_eksi_sonsuz_reddediliyor():
+    """Kosul sayisi eksi olamaz; eksi sonsuz bozuk hesap demek, reddet."""
+    assert tekil_ihlali([12.6, -math.inf], 100.0, "the planned path") is not None
+    assert tekil_ihlali([math.inf, 12.6], 100.0, "the planned path") is not None
+
+
 def test_tekil_esikte_reddedilmiyor():
     assert tekil_ihlali([100.0], 100.0, "x") is None
     assert tekil_ihlali([100.1], 100.0, "x") is not None
@@ -171,6 +177,18 @@ def test_bilek_planin_ortasinda_yakalaniyor():
 
 def test_bilek_nan_tekil_sayiliyor():
     assert bilek_tekili([[0, 0, 0, 0, math.nan, 0]], 10.0, "x") is not None
+
+
+def test_bilek_sonsuz_planin_herhangi_bir_noktasinda_yakalaniyor():
+    """OLCULEN HATA (15 Eylul): sonsuz j5 yalnizca ilk noktadaysa
+    yakalaniyordu; ikinci noktada sessizce atlaniyordu."""
+    ev = [0, -90, 90, -90, -90, 0]
+
+    ihlal = bilek_tekili([ev, [0, -90, 90, -90, math.inf, 0]], 10.0, "the planned path")
+
+    assert ihlal is not None
+    assert "step 1/2" in ihlal["details"]
+    assert bilek_tekili([ev, [0, -90, 90, -90, -math.inf, 0]], 10.0, "x") is not None
 
 
 def test_bilek_bos_liste():

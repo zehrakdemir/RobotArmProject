@@ -73,12 +73,13 @@ def tekil_ihlali(kosul_sayilari: list[float], esik: float, ne: str) -> dict | No
     havada. Eklem hareketleri bu kontrolden GECMEZ: tekilden etkilenmezler
     ve tekilden cikmanin yolu onlardir.
 
-    NaN tekil sayilir (hesap bozulduysa guvenli taraf). Esigin tam kendisi
-    ihlal degil, ustu ihlal. Ihlal varsa sebebi anlatan sozluk, yoksa None.
+    NaN ya da eksi sonsuz tekil sayilir (hesap bozulduysa guvenli taraf;
+    kosul sayisi eksi olamaz). Esigin tam kendisi ihlal degil, ustu ihlal.
+    Ihlal varsa sebebi anlatan sozluk, yoksa None.
     """
     if not kosul_sayilari:
         return None
-    degerler = [math.inf if math.isnan(k) else k for k in kosul_sayilari]
+    degerler = [k if math.isfinite(k) else math.inf for k in kosul_sayilari]
     en_kotu_adim = max(range(len(degerler)), key=lambda i: degerler[i])
     en_kotu = degerler[en_kotu_adim]
     if en_kotu <= esik:
@@ -111,11 +112,15 @@ def bilek_tekili(duruslar_deg: list[list[float]], pay_deg: float, ne: str) -> di
     bir sonraki jog'u durdurmayacakti. Kosul sayisi kolun diger acilarina gore
     degisiyor (ev pozunda j5=2 derece 324), bilek payi ise acidan dogrudan.
 
-    NaN tekil sayilir. Payin tam kendisi ihlal degil, alti ihlal.
+    Gercek bir sayi olmayan aci (NaN, sonsuz) tekil sayilir: "emin degilsem
+    dur". Eskiden yalnizca NaN yakalaniyordu; sonsuz % 180 NaN verdigi ve NaN
+    ile her karsilastirma yanlis oldugu icin sonsuz, planin ilk noktasi
+    degilse sessizce atlaniyordu (guvenlik-inceleyici, 15 Eylul; olculdu).
+    Payin tam kendisi ihlal degil, alti ihlal.
     """
     en_yakin, en_yakin_adim = None, 0
     for adim, q in enumerate(duruslar_deg):
-        if math.isnan(q[4]):
+        if not math.isfinite(q[4]):
             uzaklik = 0.0
         else:
             m = abs(q[4]) % 180.0

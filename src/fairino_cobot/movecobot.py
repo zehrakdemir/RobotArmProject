@@ -455,6 +455,9 @@ def check_trajectory_for_self_collision(scene, trajectory, group_name):
 # Tekil: kolun ucu bazi yonlere gidemez; o yone gitmek icin eklemlerin cok
 # fazla ve cok hizli donmesi gerekir (TCP jog'da bilek ya da taban savrulur).
 # Eklem hareketleri (eklem hedefi, joint jog) tekilden etkilenmez.
+# DIKKAT: pick & place'in duz yaklasma/kaldirma/geri cekilme asamalari (MTC
+# MoveRelative + CartesianPath, pickplace.py) eklem hareketi DEGIL, tekilden
+# ETKILENIR - ama bu kontrolden GECMEZ (ayri is, GUNCEL_DURUM 9-27).
 #
 # OLCU: flansta 6x6 Jacobian'in kosul sayisi (en buyuk / en kucuk tekil
 # deger). MoveIt Servo'nun olcusu (moveit_servo/src/utilities.cpp,
