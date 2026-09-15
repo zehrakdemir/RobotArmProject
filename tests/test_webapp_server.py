@@ -7,6 +7,7 @@ kaydeden bir sahte nesne konuyor.
 Burada test edilen sey robot degil, ISTEGIN DOGRU YERE GITTIGI.
 """
 
+import asyncio
 import sys
 import threading
 import time
@@ -262,6 +263,21 @@ def test_web_kayitli_hareket_oynatma_terminal_onayi_istemiyor(kol, monkeypatch):
 
     assert cagri == {"onay_iste": False, "adim": 2}
     assert j["ok"] is True
+
+
+def test_arayuz_dosyalari_tarayici_onbelleginden_eski_gelmiyor():
+    """Imaj yenilenince tarayici eski app.js'i kullanmamali (15 Eylul: eski
+    app.js yuzunden Ayarlar penceresi acilmiyor gorundu)."""
+    async def sonraki(_istek):
+        return server.Response()
+
+    def cagir(yol):
+        istek = types.SimpleNamespace(url=types.SimpleNamespace(path=yol))
+        return asyncio.run(server.onbellek_kapat(istek, sonraki))
+
+    assert cagir("/").headers["Cache-Control"] == "no-cache"
+    assert cagir("/static/app.js").headers["Cache-Control"] == "no-cache"
+    assert "Cache-Control" not in cagir("/api/state").headers
 
 
 def test_hazir_degilken_reddediliyor(monkeypatch):

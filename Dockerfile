@@ -33,6 +33,8 @@ RUN pip install --no-cache-dir -r requirements-dev.txt
 COPY pyproject.toml README.md ./
 COPY src/ ./src/
 COPY tests/ ./tests/
+# scripts/: tests/test_starting_page.py bekleme sayfasini buradan yukluyor.
+COPY scripts/ ./scripts/
 COPY tools/ ./tools/
 COPY ros2/ ./ros2/
 COPY examples/ ./examples/

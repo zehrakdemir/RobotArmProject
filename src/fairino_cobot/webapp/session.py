@@ -149,11 +149,11 @@ class RobotSession:
             from fairino_cobot.gripper_controller import GripperController
             from fairino_cobot.movecobot import CobotArm, detect_robot
 
-            log("Robot algilaniyor...")
+            log("Detecting robot...")
             info = detect_robot()
             self.robot_ip = info["ROBOT_IP"]
             self.model_num = info["ROBOT_MODEL_NUM"]
-            log(f"FR{self.model_num} bulundu: {self.robot_ip}")
+            log(f"FR{self.model_num} found at {self.robot_ip}")
 
             # MoveIt'e baglanma bu tur icinde de birkac kez deneniyor:
             # move_group'un ROS grafinde GORUNMESI ile KULLANIMA HAZIR olmasi
@@ -165,7 +165,7 @@ class RobotSession:
             son_hata = None
             for deneme in range(1, 4):
                 try:
-                    log(f"MoveIt baglantisi kuruluyor (deneme {deneme}/3)...")
+                    log(f"Connecting to MoveIt (attempt {deneme}/3)...")
                     self.arm = CobotArm(
                         robot_ip=self.robot_ip,
                         model_num=self.model_num,
@@ -177,11 +177,11 @@ class RobotSession:
                     break
                 except Exception as e:
                     son_hata = e
-                    log(f"  hazir degil ({type(e).__name__}), 10 sn sonra tekrar...")
+                    log(f"  not ready ({type(e).__name__}), retrying in 10 s...")
                     time.sleep(10)
             if son_hata is not None:
                 raise son_hata
-            log("Kol hazir.")
+            log("Arm ready.")
 
             # Gripper KOLUN SDK baglantisini paylasiyor - ikinci bir baglanti
             # acmamak icin (bkz. modul basligi, tek-tuketicili durum soketi).
@@ -190,14 +190,14 @@ class RobotSession:
             )
             try:
                 if not self.gripper.is_active():
-                    log("Gripper aktive ediliyor...")
+                    log("Activating gripper...")
                     self.gripper.activate()
-                log("Gripper hazir.")
+                log("Gripper ready.")
             except Exception as e:  # gripper yoksa kol yine de kullanilabilir
-                log(f"UYARI: gripper hazirlanamadi ({e}). Kol calismaya devam eder.")
+                log(f"WARNING: gripper could not be initialized ({e}). The arm keeps working.")
 
             self.ready = True
-            log("Hazir.")
+            log("Ready.")
         except TypeError as e:
             # "'_ctypes.CField' object is not subscriptable" = SDK'nin durum
             # paketi HIC olusmamis, yani robotun gercek-zamanli durum akisi
@@ -209,14 +209,14 @@ class RobotSession:
             # ozgu degil. Simulatorle ROS2 yigini (move_group, controller,
             # MTC) tam calisiyor; calismayan sey SDK'nin durum okumasi.
             self.startup_error = (
-                f"{type(e).__name__}: {e} - robotun gercek-zamanli durum akisi "
-                "(port 20004) gelmiyor. SimMachine simulatoru bu akisi "
-                "SUNMUYOR; arayuz gercek robot gerektiriyor."
+                f"{type(e).__name__}: {e} - the robot's real-time state stream "
+                "(port 20004) is not arriving. The SimMachine simulator does NOT "
+                "provide this stream; the interface requires a real robot."
             )
-            log(f"HATA: {self.startup_error}")
+            log(f"ERROR: {self.startup_error}")
         except Exception as e:
             self.startup_error = f"{type(e).__name__}: {e}"
-            log(f"HATA: {self.startup_error}")
+            log(f"ERROR: {self.startup_error}")
 
     def shutdown(self) -> None:
         if self.arm is not None:
@@ -261,7 +261,7 @@ class RobotSession:
 
     def gripper_status(self) -> dict[str, Any]:
         if self.gripper is None:
-            return {"error": "gripper yok"}
+            return {"error": "no gripper"}
         try:
             return self.gripper.status()
         except Exception as e:
@@ -278,7 +278,7 @@ class RobotSession:
         firlatir - kuyruga alip beklemek yerine hemen soylemek daha iyi,
         cunku kullanici robotun ne yaptigini gormek istiyor."""
         if not self._motion_lock.acquire(blocking=False):
-            raise Busy("Baska bir hareket suruyor.")
+            raise Busy("Another motion is in progress.")
 
         # Onceki bir "Hareketi durdur" istegi yeni isi durdurmasin.
         durdur = getattr(self.arm, "stop_requested", None)
@@ -296,7 +296,7 @@ class RobotSession:
                 if isinstance(sonuc, dict) and "success" in sonuc:
                     job.ok = bool(sonuc["success"])
                     if not job.ok:
-                        job.detail = sonuc.get("details") or sonuc.get("reason") or "basarisiz"
+                        job.detail = sonuc.get("details") or sonuc.get("reason") or "failed"
                 else:
                     job.ok = True
             except Exception as e:

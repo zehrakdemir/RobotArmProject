@@ -22,7 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -34,6 +34,20 @@ STATIC = Path(__file__).resolve().parent / "static"
 
 app = FastAPI(title="movecobot web", docs_url="/api/docs")
 oturum = RobotSession()
+
+
+@app.middleware("http")
+async def onbellek_kapat(request: Request, call_next) -> Response:
+    """Arayuz dosyalari (/, /static/) her acilista sunucuya sorulsun.
+
+    NEDEN: imaj yenilenip container yeniden olusturulunca tarayici eski
+    app.js'i onbellekten kullanabiliyor. Degismeyen dosya yine 304 ile doner.
+    """
+    cevap = await call_next(request)
+    yol = request.url.path
+    if yol == "/" or yol.startswith("/static/"):
+        cevap.headers["Cache-Control"] = "no-cache"
+    return cevap
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +133,7 @@ def _hazir() -> None:
     if not oturum.ready:
         raise HTTPException(
             status_code=503,
-            detail=oturum.startup_error or "Robot oturumu henuz hazir degil.",
+            detail=oturum.startup_error or "Robot session is not ready yet.",
         )
 
 
@@ -201,7 +215,7 @@ def eklem_hedefi(istek: JointHedef) -> dict[str, Any]:
         ivme = istek.accel_pct
 
     def calistir(job):
-        job.log.append(f"Eklem hedefi: {istek.joints_deg} (hiz %{hiz:g}, ivme %{ivme:g})")
+        job.log.append(f"Joint target: {istek.joints_deg} (speed {hiz:g}%, accel {ivme:g}%)")
         # Girilen acilara aynen; once eklem siniri kontrolu.
         return oturum.arm.move_to_joints_absolute(
             istek.joints_deg,
@@ -210,7 +224,7 @@ def eklem_hedefi(istek: JointHedef) -> dict[str, Any]:
             accel_pct=ivme,
         )
 
-    return _is_baslat("arm", "Eklem hedefine git", calistir)
+    return _is_baslat("arm", "Move to joint target", calistir)
 
 
 @app.post("/api/arm/jog")
@@ -218,12 +232,12 @@ def eklem_jog(istek: JointFark) -> dict[str, Any]:
     hiz, ivme = _kol_hizi()
 
     def calistir(job):
-        job.log.append(f"Eklem farki: {istek.deltas_deg} (hiz %{hiz:g}, ivme %{ivme:g})")
+        job.log.append(f"Joint delta: {istek.deltas_deg} (speed {hiz:g}%, accel {ivme:g}%)")
         return oturum.arm.move_relative_joints(
             istek.deltas_deg, confirm=False, speed_pct=hiz, accel_pct=ivme
         )
 
-    return _is_baslat("arm", "Eklem jog", calistir)
+    return _is_baslat("arm", "Joint jog", calistir)
 
 
 @app.post("/api/arm/tcp_local")
@@ -233,14 +247,14 @@ def tcp_yerel(istek: TcpFark) -> dict[str, Any]:
     hiz, ivme = _kol_hizi()
 
     def calistir(job):
-        job.log.append(f"TCP yerel: dx={istek.dx_mm} dy={istek.dy_mm} dz={istek.dz_mm} "
-                       f"(hiz %{hiz:g}, ivme %{ivme:g})")
+        job.log.append(f"TCP tool: dx={istek.dx_mm} dy={istek.dy_mm} dz={istek.dz_mm} "
+                       f"(speed {hiz:g}%, accel {ivme:g}%)")
         return oturum.arm.move_tcp_local(
             istek.dx_mm, istek.dy_mm, istek.dz_mm, confirm=False,
             speed_pct=hiz, accel_pct=ivme,
         )
 
-    return _is_baslat("arm", "TCP yerel hareket", calistir)
+    return _is_baslat("arm", "Tool jog", calistir)
 
 
 @app.post("/api/arm/tcp_base")
@@ -251,13 +265,13 @@ def tcp_baz(istek: TcpFark) -> dict[str, Any]:
 
     def calistir(job):
         job.log.append(f"TCP base: dx={istek.dx_mm} dy={istek.dy_mm} dz={istek.dz_mm} "
-                       f"(hiz %{hiz:g}, ivme %{ivme:g})")
+                       f"(speed {hiz:g}%, accel {ivme:g}%)")
         return oturum.arm.move_tcp_base(
             istek.dx_mm, istek.dy_mm, istek.dz_mm, confirm=False,
             speed_pct=hiz, accel_pct=ivme,
         )
 
-    return _is_baslat("arm", "TCP base hareket", calistir)
+    return _is_baslat("arm", "Base jog", calistir)
 
 
 @app.post("/api/arm/pose")
@@ -265,14 +279,14 @@ def tcp_mutlak(istek: TcpMutlak) -> dict[str, Any]:
     hiz, ivme = _kol_hizi()
 
     def calistir(job):
-        job.log.append(f"TCP hedefi: {istek.x},{istek.y},{istek.z} (hiz %{hiz:g}, ivme %{ivme:g})")
+        job.log.append(f"TCP target: {istek.x},{istek.y},{istek.z} (speed {hiz:g}%, accel {ivme:g}%)")
         return oturum.arm.move_to_pose_base(
             istek.x, istek.y, istek.z, istek.rx, istek.ry, istek.rz,
             confirm=False, prefer_lin=istek.prefer_lin,
             speed_pct=hiz, accel_pct=ivme,
         )
 
-    return _is_baslat("arm", "TCP pozuna git", calistir)
+    return _is_baslat("arm", "Move to TCP pose", calistir)
 
 
 @app.post("/api/arm/preview")
@@ -294,11 +308,11 @@ def onizleme(istek: JointHedef) -> dict[str, Any]:
 @app.post("/api/gripper")
 def gripper(istek: GripperIstek) -> dict[str, Any]:
     if oturum.gripper is None:
-        raise HTTPException(status_code=503, detail="Gripper yok / hazirlanamadi.")
+        raise HTTPException(status_code=503, detail="No gripper, or the gripper could not be initialized.")
 
     def calistir(job):
         g = oturum.gripper
-        job.log.append(f"Gripper {istek.action} (hiz={istek.speed} kuvvet={istek.force})")
+        job.log.append(f"Gripper {istek.action} (speed={istek.speed} force={istek.force})")
         if istek.action == "open":
             g.open(speed=istek.speed, force=istek.force)
         elif istek.action == "close":
@@ -310,7 +324,7 @@ def gripper(istek: GripperIstek) -> dict[str, Any]:
         elif istek.action == "move":
             g.move(istek.position, speed=istek.speed, force=istek.force)
         else:
-            raise ValueError(f"bilinmeyen eylem: {istek.action}")
+            raise ValueError(f"unknown action: {istek.action}")
         return {"success": True}
 
     return _is_baslat("gripper", f"Gripper: {istek.action}", calistir)
@@ -347,11 +361,11 @@ def oynat(ad: str, istek: OynatIstek) -> dict[str, Any]:
 
     moves = load_moves()
     if ad not in moves:
-        raise HTTPException(status_code=404, detail=f"'{ad}' diye bir kayit yok.")
+        raise HTTPException(status_code=404, detail=f"No saved move named '{ad}'.")
     kayit = moves[ad]
 
     def calistir(job):
-        job.log.append(f"'{ad}' oynatiliyor")
+        job.log.append(f"Playing '{ad}'")
         # onay_iste=False: web'de terminal yok; onay arayuz penceresinden alindi.
         if isinstance(kayit, dict) and kayit.get("type") == "pick_place":
             cfg = dict(kayit)  # kopya - kayitli degerler bozulmasin
@@ -371,9 +385,9 @@ def oynat(ad: str, istek: OynatIstek) -> dict[str, Any]:
         if tamam:
             return {"success": True}
         return {"success": False, "reason": "replay_failed",
-                "details": "oynatma tamamlanamadi - ayrintilar container logunda."}
+                "details": "playback did not complete - see the container log for details."}
 
-    return _is_baslat("replay", f"Oynat: {ad}", calistir)
+    return _is_baslat("replay", f"Play: {ad}", calistir)
 
 
 # ---------------------------------------------------------------------------
@@ -410,15 +424,15 @@ def pp_poz_kaydet(istek: PPPoz) -> dict[str, Any]:
     if onceki is not None and onceki != istek.approach_mm:
         raise HTTPException(
             status_code=409,
-            detail=(f"Yaklaşma mesafesi ilk pozdakinden farklı ({onceki} mm). "
-                    "Aynı değeri kullan ya da taslağı sıfırla."),
+            detail=(f"Approach distance differs from the first pose ({onceki} mm). "
+                    "Use the same value or reset the draft."),
         )
     hiz, ivme = _kol_hizi()
 
     def calistir(job):
         kol = oturum.arm
         poz = list(kol.get_current_state()["joints_deg"])
-        job.log.append(f"{istek.etiket} pozu: {poz}")
+        job.log.append(f"{istek.etiket} pose: {poz}")
         sonuc = kol.move_tcp_local(0, 0, -istek.approach_mm, confirm=False,
                                    speed_pct=hiz, accel_pct=ivme)
         if not sonuc.get("success"):
@@ -427,12 +441,12 @@ def pp_poz_kaydet(istek: PPPoz) -> dict[str, Any]:
         # yoksa taze oku.
         son = sonuc.get("final_state") or kol.get_current_state()
         on_poz = list(son["joints_deg"])
-        job.log.append(f"{istek.etiket} on-pozu: {on_poz}")
+        job.log.append(f"{istek.etiket} approach pose: {on_poz}")
         oturum.pp_taslak = {**oturum.pp_taslak, "approach_mm": istek.approach_mm,
                             istek.etiket: poz, f"pre_{istek.etiket}": on_poz}
         return sonuc
 
-    return _is_baslat("arm", f"Pick & place: {istek.etiket} pozu", calistir)
+    return _is_baslat("arm", f"Pick & place: {istek.etiket} pose", calistir)
 
 
 @app.post("/api/pickplace/save")
@@ -446,19 +460,19 @@ def pp_kaydet(istek: PPKaydet) -> dict[str, Any]:
     if eksik:
         raise HTTPException(
             status_code=400,
-            detail="Önce alma ve bırakma pozlarını kaydet (eksik: " + ", ".join(eksik) + ").",
+            detail="Save the pick and place poses first (missing: " + ", ".join(eksik) + ").",
         )
     if t["approach_mm"] != istek.approach_mm:
         raise HTTPException(
             status_code=409,
-            detail=f"Yaklaşma mesafesi pozlar kaydedilirken {t['approach_mm']} mm idi.",
+            detail=f"Approach distance was {t['approach_mm']} mm when the poses were saved.",
         )
     ok, hata = valid_move_name(istek.name)
     if not ok:
-        raise HTTPException(status_code=400, detail=f"Geçersiz isim: {hata}")
+        raise HTTPException(status_code=400, detail=f"Invalid name: {hata}")
     moves = load_moves()
     if istek.name in moves and not istek.overwrite:
-        raise HTTPException(status_code=409, detail=f"'{istek.name}' zaten kayıtlı.")
+        raise HTTPException(status_code=409, detail=f"'{istek.name}' already exists.")
 
     hiz, ivme = _kol_hizi()
     moves[istek.name] = {
@@ -492,7 +506,7 @@ def sil(ad: str) -> dict[str, Any]:
 
     moves = load_moves()
     if ad not in moves:
-        raise HTTPException(status_code=404, detail=f"'{ad}' diye bir kayit yok.")
+        raise HTTPException(status_code=404, detail=f"No saved move named '{ad}'.")
     del moves[ad]
     save_moves(moves)
     try:

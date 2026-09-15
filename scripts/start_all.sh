@@ -21,6 +21,7 @@ temizle() {
     echo ""
     echo "Kapatiliyor..."
     [ -n "${WEB_PID:-}" ] && kill "$WEB_PID" 2> /dev/null
+    [ -n "${BEKLEME_PID:-}" ] && kill "$BEKLEME_PID" 2> /dev/null
     [ -n "${LAUNCH_PID:-}" ] && kill "$LAUNCH_PID" 2> /dev/null
     wait 2> /dev/null
 }
@@ -29,6 +30,12 @@ trap temizle INT TERM
 echo "=== 1/2  fairino_launch baslatiliyor (log: $LAUNCH_LOG) ==="
 bash /app/scripts/fairino_launch.sh > "$LAUNCH_LOG" 2>&1 &
 LAUNCH_PID=$!
+
+# BEKLEME SAYFASI: asil arayuz asagida move_group'u beklerken port bos
+# kalmasin, tarayici "baglanilamadi" yerine "Starting..." gorsun. Asil arayuz
+# baslamadan hemen once kapatilir (bkz. scripts/starting_page.py).
+python3 /app/scripts/starting_page.py --port "$PORT" --log "$LAUNCH_LOG" &
+BEKLEME_PID=$!
 
 # move_group'un ROS grafinde gorunmesini bekle. Sabit bir "sleep 30" yerine
 # gercekten hazir olmasini beklemek gerekiyor: makineye gore sure degisiyor
@@ -87,6 +94,12 @@ echo ""
 echo "=== 2/2  Web arayuzu: http://localhost:$PORT ==="
 echo "UYARI: arayuzde kimlik dogrulamasi YOK ve GERCEK ROBOTU hareket ettirir."
 echo ""
+
+# Portu asil arayuze birak. Acik bekleme sayfasi /api/state'i yokladigi icin
+# aradaki kisa boslukta hata sayfasina dusmez, arayuz gelince yenilenir.
+kill "$BEKLEME_PID" 2> /dev/null
+wait "$BEKLEME_PID" 2> /dev/null
+BEKLEME_PID=""
 
 movecobot-web --port "$PORT" &
 WEB_PID=$!
