@@ -551,6 +551,9 @@ class CobotArm:
         # edilir; grippergui'nin poll_status()'u bunu kontrol edip aktif
         # calistirma sirasinda kendi SDK sorgusunu ATLAR.
         self.executing = threading.Event()
+        # Web arayuzundeki "Hareketi durdur" istegi (bkz. stop_trajectory).
+        # Yeni bir web isi baslarken temizlenir (webapp/session.py run_job).
+        self.stop_requested = threading.Event()
         # ASAGIDAKI zaman-damgali print'ler SADECE tanisal amacli - __init__
         # icinde MoveItPy() gibi dogasi geregi yavas (planlama pipeline'lari,
         # robot modeli, kinematik eklentileri yukleyen) adimlar var ve
@@ -1082,6 +1085,11 @@ class CobotArm:
         last_state = plan_result.trajectory[len(plan_result.trajectory) - 1]
         target_joints_deg = [math.degrees(v) for v in last_state.get_joint_group_positions(self.group_name)]
 
+        # Planlama sirasinda "Hareketi durdur"a basildiysa hic yurutme.
+        if self.stop_requested.is_set():
+            return {"success": False, "reason": "stopped_by_user",
+                    "details": "hareket kullanici tarafindan durduruldu - robot hareket etmedi."}
+
         # bkz. __init__ icindeki self.executing yorumu - grippergui'nin arka
         # plan durum sorgulama thread'i bu pencere sirasinda kendi SDK
         # cagrisini atlasin diye.
@@ -1090,6 +1098,12 @@ class CobotArm:
             self._moveit.execute(self.group_name, plan_result.trajectory)
         finally:
             self.executing.clear()
+
+        # "Hareketi durdur" execute() sirasinda geldiyse varis kontrolu
+        # yapilmaz: kol bilerek yolda durduruldu, hedefe varmamasi hata degil.
+        if self.stop_requested.is_set():
+            return {"success": False, "reason": "stopped_by_user",
+                    "details": "hareket kullanici tarafindan yolda durduruldu."}
 
         # Hareket bittikten SONRAKI dogrulama okumasi.
         #
@@ -1237,6 +1251,25 @@ class CobotArm:
             "z": (wz + offset_global[2]) * 1000.0,
             "rx": rx, "ry": ry, "rz": rz,
         }
+
+    def stop_trajectory(self):
+        """Suren kol hareketini durdurur (web "Hareketi durdur").
+
+        MoveItPy.execute() ile AYNI TrajectoryExecutionManager'in
+        stop_execution()'i cagrilir: aktif controller hedefi iptal edilir
+        (cancelExecution) ve execute() PREEMPTED ile doner
+        (moveit_ros trajectory_execution_manager.cpp:1224-1256).
+        _plan_and_execute bayragi gorunce varis kontrolu yapmadan
+        "stopped_by_user" doner; IK aday dongusu ve kayitli hareket oynatma
+        bu sonucta durur.
+
+        Robota SDK StopMotion() GONDERILMEZ: servo oturumunu dusurup launch'in
+        yeniden baslatilmasini gerektirebiliyor. Donanim acil stopunun yerine
+        gecmez. Pick & place (MTC) yurutmesini durdurmaz - o move_group
+        uzerinden ayri calisiyor.
+        """
+        self.stop_requested.set()
+        self._moveit.get_trajectory_execution_manager().stop_execution()
 
     def move_to_joints(self, joint_degrees, confirm=False, speed_pct=None, accel_pct=None,
                        known_start_joints_deg=None, prefer_lin=False):
@@ -2644,9 +2677,13 @@ def record_pick_and_place(arm, gripper):
     run_pick_place(arm, gripper, cfg)
 
 
-def run_pick_place(arm, gripper, cfg, sor=False):
+def run_pick_place(arm, gripper, cfg, sor=False, onay_iste=True):
     """Kayitli (ya da yeni olusturulmus) bir pick & place yapilandirmasini
     calistirir. Asamalari MTC yapar - bkz. pickplace.py.
+
+    onay_iste=False: terminalden "Enter'a bas" onayi ISTENMEZ. Yalnizca web
+    arayuzu icin - orada terminal yok (input() EOFError verip isi iptal
+    ediyordu) ve onay arayuzdeki pencereden zaten alinmis oluyor.
 
     sor=True ise (menuden oynatma) hiz/ivme ve kavrama hiz/kuvveti
     calistirmadan once SORULUR; kayitli degerler varsayilan olarak gelir.
@@ -2676,12 +2713,13 @@ def run_pick_place(arm, gripper, cfg, sor=False):
         cfg["speed_pct"], cfg["accel_pct"] = _sp, _ac
         cfg["grip_speed"], cfg["grip_force"] = _gs, _gf
 
-    print("\nUYARI: GERCEK ROBOT hareket edecek. Acil stop elinin altinda olsun.")
-    try:
-        input("Devam etmek icin Enter'a bas (iptal icin Ctrl+C)...")
-    except (KeyboardInterrupt, EOFError):
-        print("\nIptal edildi.")
-        return False
+    if onay_iste:
+        print("\nUYARI: GERCEK ROBOT hareket edecek. Acil stop elinin altinda olsun.")
+        try:
+            input("Devam etmek icin Enter'a bas (iptal icin Ctrl+C)...")
+        except (KeyboardInterrupt, EOFError):
+            print("\nIptal edildi.")
+            return False
 
     yaklasma = cfg["approach_mm"]
     g_speed, g_force = cfg["grip_speed"], cfg["grip_force"]
@@ -2880,8 +2918,10 @@ def delete_saved_move():
     print(f"'{name}' silindi ve alias kaldirildi. Bu terminalde uygulamak icin: source ~/.bashrc")
 
 
-def replay_sequence(arm, gripper, steps, robot_ip):
-    if robot_ip != "127.0.0.1":
+def replay_sequence(arm, gripper, steps, robot_ip, onay_iste=True):
+    # onay_iste=False: yalnizca web arayuzu. Orada terminal yok (input()
+    # EOFError firlatip isi bitiriyordu) ve onay arayuz penceresinden alindi.
+    if onay_iste and robot_ip != "127.0.0.1":
         print("\nUYARI: GERCEK ROBOT hareket edecek. Acil stop elinin altinda olsun.")
         try:
             input("Devam etmek icin Enter'a bas (iptal icin Ctrl+C)...")

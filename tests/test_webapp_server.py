@@ -7,7 +7,10 @@ kaydeden bir sahte nesne konuyor.
 Burada test edilen sey robot degil, ISTEGIN DOGRU YERE GITTIGI.
 """
 
+import sys
+import threading
 import time
+import types
 
 import pytest
 
@@ -25,6 +28,16 @@ class SahteKol:
         self.hizlar = []  # her cagrinin (speed_pct, accel_pct) degeri
         self.speed_pct = 10.0  # CobotArm'in oturum varsayilani
         self.accel_pct = 10.0
+        self.stop_requested = threading.Event()
+
+    def get_current_state(self):
+        # Her hareket cagrisindan sonra farkli acilar: pozla on-poz ayirt edilsin.
+        return {"joints_deg": [float(len(self.cagrilar))] * 6}
+
+    def stop_trajectory(self):
+        # SDK'ya (StopMotion) DOKUNMAMALI - sahte kolda sdk yok, dokunursa test duser.
+        self.cagrilar.append(("stop",))
+        self.stop_requested.set()
 
     def move_tcp_base(self, dx, dy, dz, confirm=False, speed_pct=None, accel_pct=None):
         self.cagrilar.append(("base", dx, dy, dz))
@@ -72,9 +85,7 @@ def kol(monkeypatch):
     sahte = SahteKol()
     monkeypatch.setattr(server.oturum, "arm", sahte)
     monkeypatch.setattr(server.oturum, "ready", True)
-    monkeypatch.setattr(server.oturum, "ayarlar", {
-        "speed_pct": 10.0, "accel_pct": 10.0, "grip_speed": 50, "grip_force": 50,
-    })
+    monkeypatch.setattr(server.oturum, "ayarlar", {"speed_pct": 10.0, "accel_pct": 10.0})
     return sahte
 
 
@@ -111,6 +122,146 @@ def test_verilmeyen_eksenler_sifir(kol):
     _isi_bekle()
 
     assert kol.cagrilar == [("base", 25.0, 0.0, 0.0)]
+
+
+def test_hareketi_durdur_moveit_yurutmesini_iptal_ediyor(kol):
+    """"Hareketi durdur" MoveIt yurutmesini iptal etmeli; robota SDK
+    StopMotion gondermemeli (servo oturumunu dusurur)."""
+    sonuc = server.hareketi_durdur()
+
+    assert sonuc == {"durduruldu": True}
+    assert kol.cagrilar == [("stop",)]
+
+
+def test_yeni_is_onceki_durdurma_istegini_temizliyor(kol):
+    """Eski bir durdurma istegi sonraki hareketi baslamadan durdurmamali."""
+    kol.stop_requested.set()
+
+    server.tcp_baz(server.TcpFark(dz_mm=-5))
+    _isi_bekle()
+
+    assert not kol.stop_requested.is_set()
+    assert kol.cagrilar == [("base", 0.0, 0.0, -5.0)]
+
+
+def _sahte_movecobot(monkeypatch, moves=None, run_pick_place=None, replay_sequence=None):
+    """movecobot'u import etmek ROS/SDK ister; endpoint'lerin fonksiyon icinden
+    yaptigi import'a sahte modul verilir. Kayitlar bellekte tutulur."""
+    depo = {"moves": dict(moves or {})}
+    mod = types.SimpleNamespace(
+        load_moves=lambda: dict(depo["moves"]),
+        save_moves=lambda m: depo.update(moves=dict(m)),
+        sync_bashrc_aliases=lambda m: None,
+        valid_move_name=lambda ad: (True, "") if ad.isidentifier() else (False, "gecersiz"),
+        run_pick_place=run_pick_place,
+        replay_sequence=replay_sequence,
+    )
+    monkeypatch.setitem(sys.modules, "fairino_cobot.movecobot", mod)
+    return depo
+
+
+def test_pick_place_pozu_kaydediliyor_ve_kol_geri_cekiliyor(kol, monkeypatch):
+    monkeypatch.setattr(server.oturum, "pp_taslak", {})
+
+    server.pp_poz_kaydet(server.PPPoz(etiket="pick", approach_mm=80))
+    assert _isi_bekle()["ok"] is True
+
+    assert kol.cagrilar == [("local", 0, 0, -80.0)], "TCP kendi Z'sinde geri cekilmeli"
+    t = server.pp_taslak_oku()
+    assert t["approach_mm"] == 80
+    assert t["pick"] == [0.0] * 6, "poz geri cekilmeden ONCE okunmali"
+    assert t["pre_pick"] == [1.0] * 6, "on-poz geri cekildikten SONRA okunmali"
+
+
+def test_pick_place_farkli_yaklasma_mesafesi_reddediliyor(kol, monkeypatch):
+    monkeypatch.setattr(server.oturum, "pp_taslak",
+                        {"approach_mm": 80.0, "pick": [0.0] * 6, "pre_pick": [1.0] * 6})
+
+    with pytest.raises(server.HTTPException) as hata:
+        server.pp_poz_kaydet(server.PPPoz(etiket="place", approach_mm=50))
+
+    assert hata.value.status_code == 409
+    assert kol.cagrilar == [], "reddedilen istekte robot hareket etmemeli"
+
+
+def test_pick_place_kaydi_terminal_bicimiyle_yaziliyor(kol, monkeypatch):
+    depo = _sahte_movecobot(monkeypatch)
+    monkeypatch.setattr(server.oturum, "pp_taslak", {
+        "approach_mm": 80.0, "pick": [1.0] * 6, "pre_pick": [2.0] * 6,
+        "place": [3.0] * 6, "pre_place": [4.0] * 6,
+    })
+
+    server.pp_kaydet(server.PPKaydet(name="kutu", approach_mm=80, grip_speed=50,
+                                     grip_force=30, object_d_mm=40, object_h_mm=60))
+
+    k = depo["moves"]["kutu"]
+    assert k["type"] == "pick_place"
+    assert k["pick_joints"] == [1.0] * 6 and k["pre_pick_joints"] == [2.0] * 6
+    assert k["place_joints"] == [3.0] * 6 and k["pre_place_joints"] == [4.0] * 6
+    assert k["approach_mm"] == 80 and k["object_dh_mm"] == [40, 60]
+    assert server.oturum.pp_taslak == {}, "kaydedince taslak bosalmali"
+
+
+def test_pick_place_eksik_pozla_kaydedilmiyor(kol, monkeypatch):
+    depo = _sahte_movecobot(monkeypatch)
+    monkeypatch.setattr(server.oturum, "pp_taslak",
+                        {"approach_mm": 80.0, "pick": [1.0] * 6, "pre_pick": [2.0] * 6})
+
+    with pytest.raises(server.HTTPException) as hata:
+        server.pp_kaydet(server.PPKaydet(name="kutu", approach_mm=80, grip_speed=50,
+                                         grip_force=30, object_d_mm=40, object_h_mm=60))
+
+    assert hata.value.status_code == 400
+    assert depo["moves"] == {}
+
+
+def test_pick_place_ayni_isim_onaysiz_uzerine_yazilmiyor(kol, monkeypatch):
+    depo = _sahte_movecobot(monkeypatch, moves={"kutu": {"type": "pick_place"}})
+    monkeypatch.setattr(server.oturum, "pp_taslak", {
+        "approach_mm": 80.0, "pick": [1.0] * 6, "pre_pick": [2.0] * 6,
+        "place": [3.0] * 6, "pre_place": [4.0] * 6,
+    })
+
+    with pytest.raises(server.HTTPException) as hata:
+        server.pp_kaydet(server.PPKaydet(name="kutu", approach_mm=80, grip_speed=50,
+                                         grip_force=30, object_d_mm=40, object_h_mm=60))
+
+    assert hata.value.status_code == 409
+    assert depo["moves"]["kutu"] == {"type": "pick_place"}
+
+
+def test_web_pick_place_oynatma_terminal_onayi_istemiyor_basarisizligi_gosteriyor(kol, monkeypatch):
+    """Web'de terminal yok: onay istenirse input() EOFError verip isi iptal
+    ediyordu. run_pick_place False donunce is 'tamam' gorunmemeli."""
+    cagri = {}
+
+    def sahte_run(arm, gripper, cfg, sor=False, onay_iste=True):
+        cagri.update(sor=sor, onay_iste=onay_iste)
+        return False
+
+    _sahte_movecobot(monkeypatch, moves={"pp": {"type": "pick_place"}}, run_pick_place=sahte_run)
+
+    server.oynat("pp", server.OynatIstek())
+    j = _isi_bekle()
+
+    assert cagri == {"sor": False, "onay_iste": False}
+    assert j["ok"] is False
+
+
+def test_web_kayitli_hareket_oynatma_terminal_onayi_istemiyor(kol, monkeypatch):
+    cagri = {}
+
+    def sahte_replay(arm, gripper, steps, robot_ip, onay_iste=True):
+        cagri.update(onay_iste=onay_iste, adim=len(steps))
+        return True
+
+    _sahte_movecobot(monkeypatch, moves={"seq": {"steps": [{}, {}]}}, replay_sequence=sahte_replay)
+
+    server.oynat("seq", server.OynatIstek())
+    j = _isi_bekle()
+
+    assert cagri == {"onay_iste": False, "adim": 2}
+    assert j["ok"] is True
 
 
 def test_hazir_degilken_reddediliyor(monkeypatch):

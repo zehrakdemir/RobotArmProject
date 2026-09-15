@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -89,8 +90,25 @@ class Ayarlar(BaseModel):
 
     speed_pct: float = Field(..., ge=1, le=100)
     accel_pct: float = Field(..., ge=1, le=100)
+
+
+class PPPoz(BaseModel):
+    """Pick & place kaydinda alma (pick) ya da birakma (place) pozu."""
+
+    etiket: str = Field(..., pattern="^(pick|place)$")
+    approach_mm: float = Field(..., gt=0)
+
+
+class PPKaydet(BaseModel):
+    """Pick & place taslagini kayit olarak yazma istegi."""
+
+    name: str
+    approach_mm: float = Field(..., gt=0)
     grip_speed: int = Field(..., ge=1, le=100)
     grip_force: int = Field(..., ge=1, le=100)
+    object_d_mm: float = Field(..., gt=0)
+    object_h_mm: float = Field(..., gt=0)
+    overwrite: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +352,7 @@ def oynat(ad: str, istek: OynatIstek) -> dict[str, Any]:
 
     def calistir(job):
         job.log.append(f"'{ad}' oynatiliyor")
+        # onay_iste=False: web'de terminal yok; onay arayuz penceresinden alindi.
         if isinstance(kayit, dict) and kayit.get("type") == "pick_place":
             cfg = dict(kayit)  # kopya - kayitli degerler bozulmasin
             for anahtar, deger in (
@@ -342,11 +361,129 @@ def oynat(ad: str, istek: OynatIstek) -> dict[str, Any]:
             ):
                 if deger is not None:
                     cfg[anahtar] = deger
-            return run_pick_place(oturum.arm, oturum.gripper, cfg, sor=False)
-        adimlar = kayit.get("steps", []) if isinstance(kayit, dict) else kayit
-        return replay_sequence(oturum.arm, oturum.gripper, adimlar, oturum.robot_ip)
+            tamam = run_pick_place(oturum.arm, oturum.gripper, cfg, sor=False, onay_iste=False)
+        else:
+            adimlar = kayit.get("steps", []) if isinstance(kayit, dict) else kayit
+            tamam = replay_sequence(oturum.arm, oturum.gripper, adimlar, oturum.robot_ip,
+                                    onay_iste=False)
+        # Ikisi de True/False donuyor; run_job yalnizca {"success": ...}
+        # sozlugunu anliyor, digerini BASARI sayiyordu.
+        if tamam:
+            return {"success": True}
+        return {"success": False, "reason": "replay_failed",
+                "details": "oynatma tamamlanamadi - ayrintilar container logunda."}
 
     return _is_baslat("replay", f"Oynat: {ad}", calistir)
+
+
+# ---------------------------------------------------------------------------
+# Pick & place kaydi
+# ---------------------------------------------------------------------------
+# Terminaldeki record_pick_and_place ile AYNI akis ve AYNI kayit bicimi: kol
+# jog ile kavrama pozuna getirilir, poz kaydedilir; kol TCP'nin kendi Z
+# ekseninde approach_mm GERI cekilip on-poz kaydedilir. Ayni sey birakma icin.
+# Taslak oturumda tutulur (oturum.pp_taslak), kaydedilince bosalir.
+
+PP_POZ_ANAHTARLARI = ("pick", "pre_pick", "place", "pre_place")
+
+
+@app.get("/api/pickplace/draft")
+def pp_taslak_oku() -> dict[str, Any]:
+    return dict(oturum.pp_taslak)
+
+
+@app.delete("/api/pickplace/draft")
+def pp_taslak_sil() -> dict[str, Any]:
+    oturum.pp_taslak = {}
+    return {}
+
+
+@app.post("/api/pickplace/pose")
+def pp_poz_kaydet(istek: PPPoz) -> dict[str, Any]:
+    """Kolun SU ANKI eklem acilarini alma/birakma pozu olarak kaydeder, sonra
+    TCP'nin kendi Z ekseninde approach_mm GERI cekilip on-pozu kaydeder.
+
+    Geri cekilme ROBOTU HAREKET ETTIRIR (arayuz once onay ister). Geri
+    cekilemezse taslak degismez; terminaldeki gibi yaklasma mesafesi
+    kucultulup tekrar denenir."""
+    onceki = oturum.pp_taslak.get("approach_mm")
+    if onceki is not None and onceki != istek.approach_mm:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"Yaklaşma mesafesi ilk pozdakinden farklı ({onceki} mm). "
+                    "Aynı değeri kullan ya da taslağı sıfırla."),
+        )
+    hiz, ivme = _kol_hizi()
+
+    def calistir(job):
+        kol = oturum.arm
+        poz = list(kol.get_current_state()["joints_deg"])
+        job.log.append(f"{istek.etiket} pozu: {poz}")
+        sonuc = kol.move_tcp_local(0, 0, -istek.approach_mm, confirm=False,
+                                   speed_pct=hiz, accel_pct=ivme)
+        if not sonuc.get("success"):
+            return sonuc
+        # Varis dogrulamasinin yoklayarak okudugu acilar (bayat okumaya karsi);
+        # yoksa taze oku.
+        son = sonuc.get("final_state") or kol.get_current_state()
+        on_poz = list(son["joints_deg"])
+        job.log.append(f"{istek.etiket} on-pozu: {on_poz}")
+        oturum.pp_taslak = {**oturum.pp_taslak, "approach_mm": istek.approach_mm,
+                            istek.etiket: poz, f"pre_{istek.etiket}": on_poz}
+        return sonuc
+
+    return _is_baslat("arm", f"Pick & place: {istek.etiket} pozu", calistir)
+
+
+@app.post("/api/pickplace/save")
+def pp_kaydet(istek: PPKaydet) -> dict[str, Any]:
+    """Taslagi terminaldeki record_pick_and_place ile ayni bicimde kayit
+    dosyasina yazar. Robota bir sey gondermez."""
+    from fairino_cobot.movecobot import load_moves, save_moves, sync_bashrc_aliases, valid_move_name
+
+    t = oturum.pp_taslak
+    eksik = [k for k in PP_POZ_ANAHTARLARI if k not in t]
+    if eksik:
+        raise HTTPException(
+            status_code=400,
+            detail="Önce alma ve bırakma pozlarını kaydet (eksik: " + ", ".join(eksik) + ").",
+        )
+    if t["approach_mm"] != istek.approach_mm:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Yaklaşma mesafesi pozlar kaydedilirken {t['approach_mm']} mm idi.",
+        )
+    ok, hata = valid_move_name(istek.name)
+    if not ok:
+        raise HTTPException(status_code=400, detail=f"Geçersiz isim: {hata}")
+    moves = load_moves()
+    if istek.name in moves and not istek.overwrite:
+        raise HTTPException(status_code=409, detail=f"'{istek.name}' zaten kayıtlı.")
+
+    hiz, ivme = _kol_hizi()
+    moves[istek.name] = {
+        "created": datetime.now().isoformat(timespec="seconds"),
+        "type": "pick_place",
+        "pick_joints": t["pick"],
+        "place_joints": t["place"],
+        # On-pozlar: kavrama/birakma noktasinin approach_mm kadar gerisi.
+        "pre_pick_joints": t["pre_pick"],
+        "pre_place_joints": t["pre_place"],
+        "approach_mm": istek.approach_mm,
+        "grip_speed": istek.grip_speed,
+        "grip_force": istek.grip_force,
+        "object_dh_mm": [istek.object_d_mm, istek.object_h_mm],
+        # Terminal kaydi o anki oturum hizini yaziyor; web'de o, Ayarlar penceresi.
+        "speed_pct": hiz,
+        "accel_pct": ivme,
+    }
+    save_moves(moves)
+    try:
+        sync_bashrc_aliases(moves)
+    except Exception:
+        pass  # container'da .bashrc olmayabilir - kayit yazildi, yeter
+    oturum.pp_taslak = {}
+    return {"saved": istek.name}
 
 
 @app.delete("/api/moves/{ad}")
@@ -370,30 +507,16 @@ def sil(ad: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 @app.post("/api/stop")
-def acil_dur() -> dict[str, Any]:
-    """Acil durdurma. Hareket kilidini beklemez."""
+def hareketi_durdur() -> dict[str, Any]:
+    """Suren kol hareketini durdurur (MoveIt yurutmesini iptal eder).
+    Hareket kilidini beklemez. Acil stop degildir."""
     _hazir()
     return oturum.stop()
 
 
-@app.post("/api/fault/clear")
-def fault_temizle() -> dict[str, Any]:
-    """Robot hatalarini temizler.
-
-    DIKKAT: ResetAllError() GLOBAL bir resettir ve kolun servo oturumunu
-    duesurur - sonrasinda ros2_control akisi kopar ve launch'in yeniden
-    baslatilmasi gerekir. Bu, arayuzde de acikca uyariliyor.
-    """
-    _hazir()
-    try:
-        with oturum.arm.sdk_lock:
-            rc = oturum.arm.sdk.ResetAllError()
-        return {
-            "rc": rc,
-            "warning": "Servo oturumu duestu - fairino_launch yeniden baslatilmali.",
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+# Fault temizleme web'den YAPILMAZ: ResetAllError() global bir reset, kolun
+# servo oturumunu dusurur ve ros2_control calisirken hata geri gelir. Fault
+# olursa robotun kendi WebApp'inde Clear, sonra container yeniden baslatilir.
 
 
 # ---------------------------------------------------------------------------

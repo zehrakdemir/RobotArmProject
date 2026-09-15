@@ -22,7 +22,7 @@
   <span class="pill" id="t-robot">—</span>
   <span class="sep"></span>
   <button id="settings-open">Ayarlar</button>
-  <button id="estop">ACİL DUR</button>
+  <button id="stopmove">Hareketi durdur</button>
 </header>
 
 <main>
@@ -32,8 +32,9 @@
     <section>
       <h2>Durum</h2>
       <div class="body">
+        <div class="sub">Eklemler</div>
         <div class="grid6" id="joints"></div>
-        <div style="height:10px"></div>
+        <div class="sub">TCP · base</div>
         <div class="grid6" id="tcp"></div>
       </div>
     </section>
@@ -146,6 +147,40 @@
   <!-- ---------------- sağ sütun ---------------- -->
   <div>
     <section>
+      <h2>Pick &amp; place kaydı</h2>
+      <div class="body">
+        <div class="row">
+          <label class="field"><span>Kayıt adı</span><input type="text" id="pp-name" placeholder="kutu_tasi"></label>
+          <label class="field"><span>Yaklaşma (mm)</span><input type="number" id="pp-approach" value="80" min="1" step="1"></label>
+        </div>
+        <div class="row">
+          <label class="field"><span>Kavrama hız %</span><input type="number" id="pp-gspeed" value="50" min="1" max="100"></label>
+          <label class="field"><span>Kavrama kuvvet %</span><input type="number" id="pp-gforce" value="30" min="1" max="100"></label>
+        </div>
+        <div class="row">
+          <label class="field"><span>Nesne derinliği (mm)</span><input type="number" id="pp-objd" value="40" min="1"></label>
+          <label class="field"><span>Nesne yüksekliği (mm)</span><input type="number" id="pp-objh" value="60" min="1"></label>
+        </div>
+        <div class="row">
+          <button id="pp-pick">1) Alma pozunu kaydet</button>
+          <button id="pp-place">2) Bırakma pozunu kaydet</button>
+        </div>
+        <div id="pp-out" class="note" style="white-space:pre-wrap"></div>
+        <div style="height:8px"></div>
+        <div class="row">
+          <button id="pp-reset">Sıfırla</button>
+          <button id="pp-save" class="primary">Kaydet</button>
+        </div>
+        <div class="note">
+          Kolu jog ile nesneyi <b>kavrayacağı</b> konuma getirip pozu kaydet. Kol kendi
+          ekseninde yaklaşma mesafesi kadar <b>geri çekilir</b> (robot hareket eder) ve
+          ön-poz da kaydedilir. Nesne ölçüleri yalnızca çarpışma kontrolü için;
+          genişlik kavrarken ölçülür.
+        </div>
+      </div>
+    </section>
+
+    <section>
       <h2>Kayıtlı hareketler</h2>
       <div class="body">
         <div class="row">
@@ -165,11 +200,9 @@
       <h2>Günlük</h2>
       <div class="body">
         <div id="log"></div>
-        <div style="height:10px"></div>
-        <button id="clearfault" class="danger wide">Fault temizle</button>
         <div class="note warn">
-          Fault temizleme <b>global</b> bir reset — kolun servo oturumunu düşürür.
-          Sonrasında <code>fairino_launch</code> yeniden başlatılmalı.
+          Fault olursa robotun kendi WebApp'inde <b>Clear</b>'a bas, sonra container'ı
+          yeniden başlat: <code>docker restart cobot</code>
         </div>
       </div>
     </section>
@@ -194,10 +227,6 @@
     <div class="row">
       <label class="field"><span>Hız %</span><input type="number" id="s-speed" min="1" max="100" step="1"></label>
       <label class="field"><span>İvme %</span><input type="number" id="s-accel" min="1" max="100" step="1"></label>
-    </div>
-    <div class="row">
-      <label class="field"><span>Gripper hız %</span><input type="number" id="s-gspeed" min="1" max="100" step="1"></label>
-      <label class="field"><span>Gripper kuvvet %</span><input type="number" id="s-gforce" min="1" max="100" step="1"></label>
     </div>
     <div class="note">
       Eklem jog, TCP jog ve mutlak hedeflerde kullanılır.

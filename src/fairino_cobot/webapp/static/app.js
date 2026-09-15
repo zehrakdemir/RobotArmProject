@@ -272,7 +272,6 @@ async function hareketleriYukle() {
 // Gripper paneli kendi alanlarini gonderir; bu ayrim sunucuda (server.py).
 const AYAR_ALAN = [
   ["speed_pct", "#s-speed", "Hız"], ["accel_pct", "#s-accel", "İvme"],
-  ["grip_speed", "#s-gspeed", "Gripper hız"], ["grip_force", "#s-gforce", "Gripper kuvvet"],
 ];
 
 function kurAyarlar() {
@@ -295,15 +294,83 @@ function kurAyarlar() {
     for (const [ad, id, etiket] of AYAR_ALAN) {
       const v = parseFloat($(id).value);
       if (isNaN(v) || v < 1 || v > 100) { hata(`${etiket} 1 ile 100 arasında olmalı.`); return; }
-      govde[ad] = ad.startsWith("grip") ? Math.round(v) : v;
+      govde[ad] = v;
     }
     try {
       const a = await api("/api/settings", { method: "POST", body: govde });
       kapat();
-      yaz(`Ayarlar kaydedildi: hız %${a.speed_pct}, ivme %${a.accel_pct}, ` +
-          `gripper hız %${a.grip_speed}, kuvvet %${a.grip_force}`, "ok");
+      yaz(`Ayarlar kaydedildi: hız %${a.speed_pct}, ivme %${a.accel_pct}`, "ok");
     } catch (e) { hata("Kaydedilemedi: " + e.message); }
   };
+}
+
+// ---------------------------------------------------------------------------
+// Pick & place kaydi
+// ---------------------------------------------------------------------------
+// Terminaldeki record_pick_and_place ile ayni akis: kolu kavrama pozuna getir,
+// pozu kaydet (kol yaklasma mesafesi kadar GERI cekilir, on-poz da kaydedilir),
+// ayni sey birakma icin, sonra kaydet. Taslak sunucuda (/api/pickplace/draft).
+async function ppTaslakGoster() {
+  try {
+    const t = await api("/api/pickplace/draft");
+    const satir = (ad, etiket) =>
+      `${etiket}: ${t[ad] ? t[ad].map((v) => Number(v).toFixed(1)).join(", ") : "—"}`;
+    $("#pp-out").textContent = [
+      satir("pick", "Alma"), satir("pre_pick", "Alma ön-poz"),
+      satir("place", "Bırakma"), satir("pre_place", "Bırakma ön-poz"),
+    ].join("\n") + (t.approach_mm ? `\nYaklaşma: ${t.approach_mm} mm` : "");
+  } catch (e) { $("#pp-out").textContent = "Taslak okunamadı: " + e.message; }
+}
+
+function kurPickPlace() {
+  const pozKaydet = async (etiket, ad) => {
+    const mm = parseFloat($("#pp-approach").value);
+    if (isNaN(mm) || mm <= 0) { yaz("Yaklaşma mesafesi 0'dan büyük olmalı", "err"); return; }
+    const ok = await onayla(`Pick & place: ${ad} pozu`,
+      `Kolun şu anki pozu ${ad.toLowerCase()} pozu olarak kaydedilecek.\n` +
+      `Sonra kol kendi Z ekseninde ${mm} mm GERİ çekilecek (robot hareket eder) ` +
+      `ve ön-poz kaydedilecek.`);
+    if (!ok) return;
+    isGonder("/api/pickplace/pose", { etiket, approach_mm: mm }, `${ad} pozu kaydı`);
+  };
+  $("#pp-pick").onclick = () => pozKaydet("pick", "Alma");
+  $("#pp-place").onclick = () => pozKaydet("place", "Bırakma");
+
+  $("#pp-reset").onclick = async () => {
+    try {
+      await api("/api/pickplace/draft", { method: "DELETE" });
+      yaz("Pick & place taslağı sıfırlandı");
+      ppTaslakGoster();
+    } catch (e) { yaz("Sıfırlanamadı: " + e.message, "err"); }
+  };
+
+  $("#pp-save").onclick = async () => {
+    const govde = {
+      name: $("#pp-name").value.trim(),
+      approach_mm: parseFloat($("#pp-approach").value),
+      grip_speed: parseInt($("#pp-gspeed").value, 10),
+      grip_force: parseInt($("#pp-gforce").value, 10),
+      object_d_mm: parseFloat($("#pp-objd").value),
+      object_h_mm: parseFloat($("#pp-objh").value),
+      overwrite: false,
+    };
+    try {
+      await api("/api/pickplace/save", { method: "POST", body: govde });
+    } catch (e) {
+      if (!e.message.includes("zaten kayıtlı")) { yaz("Kaydedilemedi: " + e.message, "err"); return; }
+      const ok = await onayla("Kaydın üzerine yaz", `'${govde.name}' zaten kayıtlı. Üzerine yazılsın mı?`);
+      if (!ok) return;
+      govde.overwrite = true;
+      try { await api("/api/pickplace/save", { method: "POST", body: govde }); } catch (e2) {
+        yaz("Kaydedilemedi: " + e2.message, "err"); return;
+      }
+    }
+    yaz(`'${govde.name}' pick & place olarak kaydedildi`, "ok");
+    ppTaslakGoster();
+    hareketleriYukle();
+  };
+
+  ppTaslakGoster();
 }
 
 // ---------------------------------------------------------------------------
@@ -349,6 +416,7 @@ function durumCiz(s) {
     if (j.ok) yaz(`${j.label} — tamam (${j.seconds}s)`, "ok");
     else yaz(`${j.label} — BAŞARISIZ: ${j.detail}`, "err");
     hareketleriYukle();
+    if (j.label.startsWith("Pick & place")) ppTaslakGoster();
   }
 
   // Acilis ekrani
@@ -395,26 +463,18 @@ function baglan() {
 kurJog();
 kurMutlak();
 kurTcpMutlak();
+kurAyarlar();
+kurPickPlace();
 hareketleriYukle();
 baglan();
 setInterval(gripperDurum, 1200);
 
-$("#estop").onclick = async () => {
+$("#stopmove").onclick = async () => {
   try {
     const r = await api("/api/stop", { method: "POST" });
-    yaz("ACİL DUR: " + JSON.stringify(r), "warn");
-  } catch (e) { yaz("Acil dur hatası: " + e.message, "err"); }
-};
-
-$("#clearfault").onclick = async () => {
-  const ok = await onayla("Fault temizle",
-    "ResetAllError() GLOBAL bir reset — kolun servo oturumunu düşürür.\n" +
-    "Sonrasında fairino_launch yeniden başlatılmalı.\n\nDevam edilsin mi?");
-  if (!ok) return;
-  try {
-    const r = await api("/api/fault/clear", { method: "POST" });
-    yaz("Fault temizlendi (rc=" + r.rc + "). " + r.warning, "warn");
-  } catch (e) { yaz("Temizlenemedi: " + e.message, "err"); }
+    if (r.durduruldu) yaz("Hareket durduruldu.", "warn");
+    else yaz("Hareket durdurulamadı: " + (r.hata || JSON.stringify(r)), "err");
+  } catch (e) { yaz("Hareket durdurma hatası: " + e.message, "err"); }
 };
 
 yaz("Arayüz hazır.");

@@ -95,9 +95,11 @@ class RobotSession:
         self.ayarlar: dict[str, float] = {
             "speed_pct": speed_pct,
             "accel_pct": accel_pct,
-            "grip_speed": 50,
-            "grip_force": 50,
         }
+
+        # Web'deki pick & place kaydinin taslagi (server.py /api/pickplace):
+        # approach_mm, pick, pre_pick, place, pre_place. Kaydedilince bosalir.
+        self.pp_taslak: dict[str, Any] = {}
 
         self.arm = None
         self.gripper = None
@@ -278,6 +280,11 @@ class RobotSession:
         if not self._motion_lock.acquire(blocking=False):
             raise Busy("Baska bir hareket suruyor.")
 
+        # Onceki bir "Hareketi durdur" istegi yeni isi durdurmasin.
+        durdur = getattr(self.arm, "stop_requested", None)
+        if durdur is not None:
+            durdur.clear()
+
         with self._job_lock:
             self._job_seq += 1
             job = Job(id=self._job_seq, kind=kind, label=label, started_at=time.time())
@@ -303,24 +310,18 @@ class RobotSession:
         threading.Thread(target=runner, daemon=True, name=f"job-{job.id}").start()
         return job
 
-    # -- acil durdurma -----------------------------------------------------
+    # -- hareketi durdurma -------------------------------------------------
 
     def stop(self) -> dict[str, Any]:
-        """Acil durdurma. Hareket kilidini BEKLEMEZ - zaten amaci suren
-        hareketi kesmek. Once ROS tarafindaki yorunge iptal edilir, sonra
-        SDK'nin kendi durdurma komutu gonderilir."""
-        sonuc: dict[str, Any] = {}
+        """Suren kol hareketini durdurur (web "Hareketi durdur"). Hareket
+        kilidini BEKLEMEZ - amaci suren hareketi kesmek.
+
+        MoveIt yurutmesi iptal edilir (CobotArm.stop_trajectory). Robota SDK
+        StopMotion() GONDERILMEZ: servo oturumunu dusurup launch'in yeniden
+        baslatilmasini gerektirebiliyor. Donanim acil stopunun yerine gecmez;
+        pick & place (MTC) yurutmesini durdurmaz."""
         try:
-            self.arm.stop_trajectory()  # varsa
-            sonuc["ros"] = "iptal edildi"
-        except AttributeError:
-            sonuc["ros"] = "yok"
+            self.arm.stop_trajectory()
+            return {"durduruldu": True}
         except Exception as e:
-            sonuc["ros"] = f"hata: {e}"
-        try:
-            with self.arm.sdk_lock:
-                rc = self.arm.sdk.StopMotion()
-            sonuc["sdk"] = f"StopMotion rc={rc}"
-        except Exception as e:
-            sonuc["sdk"] = f"hata: {e}"
-        return sonuc
+            return {"durduruldu": False, "hata": f"{type(e).__name__}: {e}"}
