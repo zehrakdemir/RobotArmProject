@@ -68,6 +68,32 @@ async function isGonder(yol, govde, etiket) {
   }
 }
 
+// Ust cubuktaki "Preview before moving" aciksa hareket butonlari robotu
+// HAREKET ETTIRMEZ: ayni istek /api/preview'e gider, sunucu secenekleri
+// planlar. Robot ancak "Run this path" ve onayla hareket eder (kurOnizleme).
+const onizlemeAcik = () => $("#pv-mode").checked;
+
+async function onizlemeIste(kind, values, prefer_lin, etiket) {
+  onizlemeHata("");
+  try {
+    await api("/api/preview", { method: "POST", body: { kind, values, prefer_lin } });
+    yaz(etiket + ": planning paths (the robot does not move)");
+    return null;
+  } catch (e) {
+    yaz(etiket + " preview REJECTED: " + e.message, "err");
+    onizlemeHata(etiket + " preview rejected: " + e.message);
+    return e.message;
+  }
+}
+
+// Hareket butonlarinin ortak yolu: onizleme aciksa planla, degilse gonder.
+function gonderVeyaOnizle(yol, govde, etiket, onizleme) {
+  if (onizlemeAcik()) {
+    return onizlemeIste(onizleme.kind, onizleme.values, onizleme.prefer_lin !== false, etiket);
+  }
+  return isGonder(yol, govde, etiket);
+}
+
 // ---------------------------------------------------------------------------
 // Acilir pencereler
 // ---------------------------------------------------------------------------
@@ -144,7 +170,8 @@ function kurJog() {
         if (adim === null) { yaz("Joint jog not sent: step must be greater than 0", "err"); return; }
         const farklar = [0, 0, 0, 0, 0, 0];
         farklar[i] = adim * yon;
-        isGonder("/api/arm/jog", { deltas_deg: farklar }, `${ad} ${yon > 0 ? "+" : "−"}${adim}°`);
+        gonderVeyaOnizle("/api/arm/jog", { deltas_deg: farklar }, `${ad} ${yon > 0 ? "+" : "−"}${adim}°`,
+          { kind: "jog", values: farklar });
       };
       satir.appendChild(b);
     });
@@ -159,7 +186,9 @@ function kurJog() {
       const adim = deger * parseInt(b.dataset.s, 10);
       const govde = { dx_mm: 0, dy_mm: 0, dz_mm: 0 };
       govde["d" + b.dataset.t + "_mm"] = adim;
-      isGonder("/api/arm/tcp_local", govde, `Tool jog ${b.dataset.t.toUpperCase()} ${adim} mm`);
+      gonderVeyaOnizle("/api/arm/tcp_local", govde,
+        `Tool jog ${b.dataset.t.toUpperCase()} ${adim} mm`,
+        { kind: "tcp_local", values: [govde.dx_mm, govde.dy_mm, govde.dz_mm] });
     };
   });
 
@@ -171,7 +200,9 @@ function kurJog() {
       const adim = deger * parseInt(b.dataset.s, 10);
       const govde = { dx_mm: 0, dy_mm: 0, dz_mm: 0 };
       govde["d" + b.dataset.b + "_mm"] = adim;
-      isGonder("/api/arm/tcp_base", govde, `Base jog ${b.dataset.b.toUpperCase()} ${adim} mm`);
+      gonderVeyaOnizle("/api/arm/tcp_base", govde,
+        `Base jog ${b.dataset.b.toUpperCase()} ${adim} mm`,
+        { kind: "tcp_base", values: [govde.dx_mm, govde.dy_mm, govde.dz_mm] });
     };
   });
 
@@ -230,6 +261,11 @@ function kurMutlak() {
   $("#abs-go").onclick = async () => {
     const hedef = oku();
     if (!hedef) { yaz("Absolute joint target not sent: fill all six fields (use Current)", "err"); return; }
+    // Onizleme aciksa robot hareket etmez; onay "Run this path"te alinir.
+    if (onizlemeAcik()) {
+      onizlemeIste("joints", hedef, true, "Absolute joint target");
+      return;
+    }
     const ok = await onayla("Absolute joint target",
       "The arm will move to:\n" + EKLEMLER.map((a, i) => `${a} = ${hedef[i]}°`).join("\n"),
       $("#abs-go"));
@@ -294,6 +330,12 @@ function kurTcpMutlak() {
       fark = degisen.length
         ? "\n\nChange from current:\n" + degisen.join("   ")
         : "\n\n(same as the current pose)";
+    }
+    // Onizleme aciksa robot hareket etmez; onay "Run this path"te alinir.
+    if (onizlemeAcik()) {
+      onizlemeIste("pose", [h.x, h.y, h.z, h.rx, h.ry, h.rz], $("#pose-lin").checked,
+        "Absolute TCP pose");
+      return;
     }
     const ok = await onayla("Absolute TCP pose (base)",
       `The TCP will move to:\nx=${h.x} y=${h.y} z=${h.z}\n` +
@@ -496,6 +538,142 @@ function kurPickPlace() {
 }
 
 // ---------------------------------------------------------------------------
+// Yol onizleme paneli
+// ---------------------------------------------------------------------------
+// Sunucudaki onizlemeyi (/api/preview) gosterir: secenek kartlari ve 3D gorunum
+// (viewer.js, "onizleme-secimi" olayiyla). Robot yalnizca "Run this path" ve
+// onaydan sonra hareket eder; calistirilan plan ekranda gosterilenin AYNISI
+// (sunucu sakliyor, tarayici yalnizca numara gonderiyor).
+
+let onizleme = null;              // /api/preview ozeti ya da null
+let seciliSecenek = null;
+let gosterilenOnizlemeId = null;
+let onizlemeYukleniyor = false;
+
+function onizlemeHata(mesaj) {
+  $("#pv-err").textContent = mesaj || "";
+  $("#pv-err").hidden = !mesaj;
+}
+
+// viewer.js bu dosyadan SONRA yuklenir; son secim pencerede de tutulur ki
+// modul yuklenirken gecen secimi kacirmasin.
+function secimiBildir() {
+  window.sonOnizlemeSecimi = { onizleme, secenek: seciliSecenek };
+  window.dispatchEvent(new CustomEvent("onizleme-secimi", { detail: window.sonOnizlemeSecimi }));
+}
+
+function secenekSatiri(s) {
+  const satir = el("div", "opt" + (s === seciliSecenek ? " sel" : "") + (s.ok ? "" : " bad"));
+  satir.tabIndex = 0;
+  satir.setAttribute("role", "option");
+  satir.setAttribute("aria-selected", s === seciliSecenek ? "true" : "false");
+  satir.appendChild(el("span", "num", String(s.index)));
+  satir.appendChild(el("span", "name", s.label));
+  satir.appendChild(el("span", "state", s.ok ? "OK" : "Rejected"));
+  const bilgi = [s.method || "no plan"];
+  if (s.max_joint && s.max_deg !== null) bilgi.push(`max ${s.max_joint} ${s.max_deg}°`);
+  if (s.duration_s !== null) bilgi.push(`${s.duration_s} s`);
+  satir.appendChild(el("span", "meta", bilgi.join(" · ")));
+  if (!s.ok) {
+    satir.appendChild(el("span", "why",
+      (s.reason || "rejected") + (s.details ? ": " + s.details : "")));
+  }
+  const sec = () => { seciliSecenek = s; onizlemeCiz(); };
+  satir.onclick = sec;
+  satir.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); sec(); } };
+  return satir;
+}
+
+function onizlemeCiz() {
+  const kap = $("#pv-options");
+  kap.innerHTML = "";
+  const planliyor = sonDurum.job && sonDurum.job.running && sonDurum.job.kind === "preview";
+  if (!onizleme) {
+    $("#pv-info").textContent = planliyor
+      ? "Planning paths… (the robot does not move)"
+      : "No preview. Turn on “Preview before moving”, then use a jog button or Go.";
+    $("#pv-run").disabled = true;
+    $("#pv-clear").disabled = true;
+    secimiBildir();
+    return;
+  }
+  const secenekler = onizleme.options || [];
+  const bilgi = [`${secenekler.length} option(s)`];
+  if (onizleme.speed_pct != null) {
+    bilgi.push(`planned at speed ${onizleme.speed_pct}% · acceleration ${onizleme.accel_pct}%`);
+  }
+  const h = onizleme.target_tcp;
+  if (h) {
+    bilgi.push(`target TCP x=${h.x.toFixed(1)} y=${h.y.toFixed(1)} z=${h.z.toFixed(1)}  ` +
+      `rx=${h.rx.toFixed(1)} ry=${h.ry.toFixed(1)} rz=${h.rz.toFixed(1)}`);
+  }
+  if (onizleme.success === false) {
+    bilgi.push(`No usable path: ${onizleme.reason || "rejected"}` +
+      (onizleme.details ? " — " + onizleme.details : ""));
+  }
+  $("#pv-info").textContent = bilgi.join("\n");
+  secenekler.forEach((s) => kap.appendChild(secenekSatiri(s)));
+  if (!secenekler.length) kap.appendChild(el("div", "note", "No options."));
+  $("#pv-run").disabled = !(seciliSecenek && seciliSecenek.ok);
+  $("#pv-clear").disabled = false;
+  secimiBildir();
+}
+
+async function onizlemeYukle(beklenenId) {
+  if (onizlemeYukleniyor) return;
+  onizlemeYukleniyor = true;
+  gosterilenOnizlemeId = beklenenId;   // ayni durum icin tekrar tekrar sormasin
+  try {
+    const o = await api("/api/preview");
+    onizleme = o && o.id ? o : null;
+    gosterilenOnizlemeId = onizleme ? onizleme.id : null;
+    const secenekler = onizleme ? (onizleme.options || []) : [];
+    seciliSecenek = secenekler.find((s) => s.ok) || secenekler[0] || null;
+  } catch (e) {
+    onizleme = null;
+    seciliSecenek = null;
+    onizlemeHata("Could not read the preview: " + e.message);
+  } finally {
+    onizlemeYukleniyor = false;
+  }
+  onizlemeCiz();
+}
+
+function kurOnizleme() {
+  $("#pv-mode").onchange = () => {
+    yaz(onizlemeAcik()
+      ? "Preview mode on: jog and Go only plan paths; nothing moves until you run one."
+      : "Preview mode off: jog and Go move the robot again.", "warn");
+  };
+
+  $("#pv-clear").onclick = async () => {
+    try {
+      await api("/api/preview", { method: "DELETE" });
+      onizlemeHata("");
+      yaz("Preview discarded");
+      onizlemeYukle(null);
+    } catch (e) { onizlemeHata("Could not discard: " + e.message); }
+  };
+
+  $("#pv-run").onclick = async () => {
+    if (!onizleme || !seciliSecenek || !seciliSecenek.ok) return;
+    const s = seciliSecenek;
+    const ok = await onayla("Run previewed path",
+      `The robot will follow path ${s.index} (${s.label}, ${s.method}).\n` +
+      (s.max_joint && s.max_deg !== null ? `Largest joint rotation: ${s.max_joint} ${s.max_deg}°.\n` : "") +
+      "Keep the emergency stop within reach.",
+      $("#pv-run"));
+    if (!ok) return;
+    onizlemeHata("");
+    const red = await isGonder("/api/preview/run", { id: onizleme.id, option: s.index },
+      `Run previewed path ${s.index}`);
+    if (red) onizlemeHata("Run rejected: " + red);
+  };
+
+  onizlemeYukle(null);
+}
+
+// ---------------------------------------------------------------------------
 // Telemetri
 // ---------------------------------------------------------------------------
 function kutu(kap, anahtar, deger, birim) {
@@ -523,11 +701,17 @@ function durumCiz(s) {
   $("#d-fault").className = "dot " + (f ? (fvar ? "err" : "ok") : "");
   $("#t-fault").textContent = f ? (fvar ? `fault ${f.main_code}/${f.sub_code}` : "no fault") : "fault ?";
 
+  // Onizleme planlanirken de kilit mesgul; "moving" yazmasin, robot duruyor.
+  const planliyor = s.job && s.job.running && s.job.kind === "preview";
   $("#d-busy").className = "dot " + (s.busy ? "busy" : "ok");
-  $("#t-busy").textContent = s.busy ? "moving" : "idle";
+  $("#t-busy").textContent = s.busy ? (planliyor ? "planning" : "moving") : "idle";
 
   const je = $("#joints"); je.innerHTML = "";
   (s.joints_deg || []).forEach((v, i) => kutu(je, EKLEMLER[i], v.toFixed(2), "°"));
+  // 3D gorunum (viewer.js) kolun canli durusunu bu olaydan aliyor.
+  if (s.joints_deg) {
+    window.dispatchEvent(new CustomEvent("kol-durumu", { detail: s.joints_deg }));
+  }
 
   const te = $("#tcp"); te.innerHTML = "";
   const p = s.tcp_pose;
@@ -547,6 +731,12 @@ function durumCiz(s) {
       ppTaslakGoster();
       ppHata(j.ok ? "" : `${j.label} failed: ${j.detail}`);
     }
+  }
+
+  // Onizleme degistiyse (planlama bitti, bir secenek calistirildi ya da
+  // silindi) paneli yenile; sunucu numarasini telemetride bildiriyor.
+  if ((s.preview_id || null) !== gosterilenOnizlemeId) {
+    onizlemeYukle(s.preview_id || null);
   }
 
   // Acilis ekrani
@@ -595,6 +785,7 @@ kurMutlak();
 kurTcpMutlak();
 kurAyarlar();
 kurPickPlace();
+kurOnizleme();
 hareketleriYukle();
 baglan();
 setInterval(gripperDurum, 1200);

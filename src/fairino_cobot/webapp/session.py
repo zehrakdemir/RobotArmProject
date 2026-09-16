@@ -101,6 +101,17 @@ class RobotSession:
         # approach_mm, pick, pre_pick, place, pre_place. Kaydedilince bosalir.
         self.pp_taslak: dict[str, Any] = {}
 
+        # Web yol onizlemesi (server.py /api/preview): son planlanan secenekler.
+        # {"id", "ozet" (arayuze giden JSON), "planlar" (secenek sirasiyla
+        # plan_result ya da None)}. Plan nesneleri arayuze GITMEZ; calistirma
+        # istegi yalnizca onizleme id'si + secenek numarasi getirir. Yeni
+        # onizleme baslayinca ve bir secenek calistirilinca bosalir.
+        self.onizleme: dict[str, Any] | None = None
+        self._onizleme_seq = 0
+
+        # 3D gorunum icin robot modeli onbellegi (server.py /api/model).
+        self.model_onbellek: dict[str, Any] | None = None
+
         self.arm = None
         self.gripper = None
         self.robot_ip: str | None = None
@@ -225,12 +236,26 @@ class RobotSession:
             except Exception:
                 pass
 
+    # -- yol onizleme ------------------------------------------------------
+
+    def onizleme_kaydet(self, ozet: dict[str, Any], planlar: list[Any]) -> int:
+        """Yeni onizlemeyi saklar, numarasini doner. Numara her onizlemede
+        artar: eski bir sayfadan gelen calistirma istegi yeni plani
+        calistiramaz (server.py onizleme_calistir)."""
+        with self._job_lock:
+            self._onizleme_seq += 1
+            no = self._onizleme_seq
+        self.onizleme = {"id": no, "ozet": {**ozet, "id": no}, "planlar": list(planlar)}
+        return no
+
     # -- durum -------------------------------------------------------------
 
     def telemetry(self) -> dict[str, Any]:
         """Arayuzun surekli okudugu canli durum. Hicbir zaman istisna
         firlatmaz - tek bir okuma hatasi arayuzu karartmamali."""
+        onizleme = self.onizleme  # baska is parcacigi None yapabilir
         out: dict[str, Any] = {
+            "preview_id": onizleme["id"] if onizleme else None,
             "ready": self.ready,
             "startup_error": self.startup_error,
             "startup_log": self.startup_log[-12:],

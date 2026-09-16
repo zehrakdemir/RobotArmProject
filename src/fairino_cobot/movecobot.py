@@ -31,6 +31,7 @@ Kullanim:
                                    bekler, sonra geri acar. fairino_launch'i
                                    durdurmaz/yeniden baslatmaz.
 """
+import copy
 import json
 import math
 import re
@@ -40,11 +41,17 @@ import sys
 import threading
 import time
 from datetime import datetime
+from itertools import accumulate
 from pathlib import Path
 
 from fairino_cobot import paths
 from fairino_cobot.ik_secimi import ik_adaylarini_sirala
 from fairino_cobot.safety import asiri_eklem_hareketi, bilek_tekili, tekil_ihlali
+from fairino_cobot.yol_onizleme import (
+    ONIZLEME_BASLANGIC_TOLERANSI_DEG,
+    baslangic_farki,
+    secenek_ozeti,
+)
 
 # SDK'nin yeri makineye gore degisiyor - tek yerden cozuluyor (paths.py).
 paths.ensure_sdk_on_path()
@@ -459,6 +466,31 @@ def check_trajectory_for_self_collision(scene, trajectory, group_name):
 # MoveRelative + CartesianPath, pickplace.py) eklem hareketi DEGIL, tekilden
 # ETKILENIR - ama bu kontrolden GECMEZ (ayri is, GUNCEL_DURUM 9-27).
 #
+# KAPSAM (kullanici karari, 16 Eylul): kosul sayisi ve bilek payi YOL BOYUNCA
+# yalnizca KARTEZYEN planlarda (Pilz LIN) kontrol edilir. Eklem uzayi
+# planlarinda (Pilz PTP, OMPL) yalnizca BASLANGIC durusu ve HEDEF durus
+# kontrol edilir (_ik_adaylari, _ik_adaylariyla_git, yol_secenekleri); yolun
+# ortasi kontrol edilmez.
+# NEDEN: tekil, yol boyunca IK cozulen KARTEZYEN hareketi bozar - eklem
+# hareketinde IK cozulmez, robot acilari takip eder. Sanayide standart olan da
+# budur (16 Eylul arastirmasi):
+#   - Universal Robots, "What is a singularity?": tekile yakin bolgede MoveL
+#     yerine eklem acilariyla MoveJ onerilir - "does not require kinematic
+#     conversion and is not affected by Singularities".
+#   - RoboDK, "Robot Singularities": "Try a Joint Move instead of a Linear Move."
+#   - KUKA pratigi: A5 ~ 0 (bilek) civarinda LIN/CIRC sorun cikarir, PTP onerilir.
+#   - ABB: SingArea\\Wrist ile LIN tekilden GECER (yol ~2 mm sapar); hareket
+#     reddedilmez, eklem hizi dagitilir.
+#   - Fairino kilavuzu 9.21: SingularAvoidStart robotun KENDI LIN/ARC komutlari
+#     icin.
+# OLCULDU (16 Eylul, --network none): uclari temiz bir eklem hareketinde (ev
+# pozu -> ters dirsek) yolun ortasinda kosul sayisi 1531'e cikiyor ve 11 nokta
+# esigi asiyor. Eski kural (yol boyunca her plan icin) bu yuzden uzak IK
+# duruslarinin neredeyse tamamini reddediyordu.
+# RISK (kullaniciya soylendi): eklem hareketi tekil bolgeden gecerken TCP
+# tahmin edilmesi zor bir yay cizebilir. Bunu zemin ve self-collision
+# kontrolleri (gripper kutusu dahil) ile yol onizlemesindeki gorunum kapsiyor.
+#
 # OLCU: flansta 6x6 Jacobian'in kosul sayisi (en buyuk / en kucuk tekil
 # deger). MoveIt Servo'nun olcusu (moveit_servo/src/utilities.cpp,
 # velocityScalingFactorForSingularity). Bilek, dirsek ve omuz tekilinin
@@ -495,6 +527,57 @@ TEKIL_KOSUL_ESIGI = 100.0
 # (winstob 3), yani bu pay hicbirini engellemiyor. Aci oldugu icin modelden
 # bagimsiz; tum Fairino 6 eksen kollarinda bilek tekili j5=0/180.
 BILEK_TEKIL_PAYI_DEG = 10.0
+
+
+# MoveIt'in planlama hata kodlari (moveit_msgs/MoveItErrorCodes). Plan
+# basarisiz oldugunda arayuze yalnizca "planning_failed" gidiyordu ve NEDEN
+# gorunmuyordu (kullanici, 16 Eylul: "OMPL'ler hep planning failed diyor,
+# neden?"). Kod okunup adiyla birlikte raporlaniyor.
+# Degerler imajdaki tanimdan birebir alindi:
+# /opt/ros/humble/share/moveit_msgs/msg/MoveItErrorCodes.msg (16 Eylul).
+# DIKKAT: eski MoveIt1 numaralandirmasi FARKLI (-1 ile -8 arasi kaymis);
+# tahminle yazilmaz.
+MOVEIT_HATA_KODLARI = {
+    1: "SUCCESS",
+    99999: "FAILURE",
+    -1: "PLANNING_FAILED",
+    -2: "INVALID_MOTION_PLAN",
+    -3: "MOTION_PLAN_INVALIDATED_BY_ENVIRONMENT_CHANGE",
+    -4: "CONTROL_FAILED",
+    -5: "UNABLE_TO_AQUIRE_SENSOR_DATA",
+    -6: "TIMED_OUT",
+    -7: "PREEMPTED",
+    -10: "START_STATE_IN_COLLISION",
+    -11: "START_STATE_VIOLATES_PATH_CONSTRAINTS",
+    -12: "GOAL_IN_COLLISION",
+    -13: "GOAL_VIOLATES_PATH_CONSTRAINTS",
+    -14: "GOAL_CONSTRAINTS_VIOLATED",
+    -15: "INVALID_GROUP_NAME",
+    -16: "INVALID_GOAL_CONSTRAINTS",
+    -17: "INVALID_ROBOT_STATE",
+    -18: "INVALID_LINK_NAME",
+    -19: "INVALID_OBJECT_NAME",
+    -21: "FRAME_TRANSFORM_FAILURE",
+    -22: "COLLISION_CHECKING_UNAVAILABLE",
+    -23: "ROBOT_STATE_STALE",
+    -24: "SENSOR_INFO_STALE",
+    -25: "COMMUNICATION_FAILURE",
+    -26: "START_STATE_INVALID",
+    -27: "GOAL_STATE_INVALID",
+    -28: "UNRECOGNIZED_GOAL_TYPE",
+    -29: "CRASH",
+    -30: "ABORT",
+    -31: "NO_IK_SOLUTION",
+}
+
+
+def plan_hata_adi(plan_result):
+    """Basarisiz bir plan sonucunun MoveIt hata kodu, adiyla. Okunamazsa None."""
+    try:
+        kod = int(plan_result.error_code.val)
+    except Exception:
+        return None
+    return f"{MOVEIT_HATA_KODLARI.get(kod, 'UNKNOWN')} ({kod})"
 
 
 def jacobian_kosul_sayisi(state, group_name):
@@ -692,6 +775,15 @@ class CobotArm:
         _rdp = _cfg.setdefault("robot_description_planning", {})
         _rdp["default_robot_padding"] = LINK_PADDING_M
         _rdp["default_attached_padding"] = LINK_PADDING_M
+        # Web arayuzunun 3D gorunumu (server.py /api/model) modeli BURADAN alir:
+        # MoveIt'in gercekten kullandigi URDF metni. Ayri bir kopya okunsa
+        # gorunum planlayicinin modelinden ayrisabilirdi.
+        self.robot_description_urdf = _cfg.get("robot_description")
+        self.joint_names = list(JOINT_NAMES)
+        self.tip_link = TIP_LINK
+        # Gripper carpisma kutusunun olculeri; _add_gripper_collision dolduruyor
+        # (kutu sahneye eklenmezse None kalir ve gorunumde de cizilmez).
+        self.gripper_kutusu = None
         _tlog("MoveItPy baslatiliyor (planlama pipeline'lari + robot modeli yukleniyor, "
               "bu genelde en uzun suren asama)...")
         self._moveit = MoveItPy(node_name=f"{node_name}_core", config_dict=_cfg)
@@ -802,6 +894,14 @@ class CobotArm:
             with psm.read_write() as scene:
                 scene.process_attached_collision_object(attached)
                 scene.current_state.update()
+                # Kutunun olculeri 3D gorunum icin (web /api/model). Sahneye
+                # eklendikten SONRA yaziliyor; asagida kullanici korumayi
+                # kapatirsa None'a doner ve gorunumde de cizilmez.
+                self.gripper_kutusu = {
+                    "link": TIP_LINK,
+                    "xyz": [box_pose.position.x, box_pose.position.y, box_pose.position.z],
+                    "size": [GRIPPER_WIDTH_M, GRIPPER_DEPTH_M, length],
+                }
                 # DIKKAT: sadece "degiyor mu" degil, GERCEK mesafeyi de
                 # olcuyoruz - canli testte is_state_colliding() False
                 # donduren ama gercekte sadece 9.54mm mesafesi olan (ve
@@ -854,6 +954,8 @@ class CobotArm:
                         with psm.read_write() as scene:
                             scene.process_attached_collision_object(remove_msg)
                             scene.current_state.update()
+                        # Kutu sahnede yok; 3D gorunumde de gosterilmesin.
+                        self.gripper_kutusu = None
                         print("Gripper collision korumasi bu oturum icin KAPATILDI. "
                               "Cok dikkatli ol, hareketler artik gripper-govde carpmasina karsi "
                               "KONTROLSUZ.")
@@ -954,7 +1056,41 @@ class CobotArm:
 
     def _plan_and_execute(self, confirm, speed_pct=None, accel_pct=None, prefer_lin=False,
                           max_joint_excursion_deg=None, tekil_kontrolu=False):
-        """speed_pct/accel_pct verilirse (adim-bazli kayitli hiz/ivme), o TEK
+        """Planla, guvenlik kontrollerinden gecir, (istenirse onay al) ve yurut.
+
+        Iki parcadan olusur: _plan_ve_kontrol (robot hareket etmez) ve
+        _yurut_ve_dogrula. 15 Eylul'de web yol onizlemesi icin bolundu;
+        davranis ayni. Onizleme (yol_secenekleri) ilk parcayi yurutmeden
+        kullanir; kullanici bir secenegi secince ikinci parca AYNI plani
+        yurutur (onizlenen_yolu_yurut)."""
+        sonuc = self._plan_ve_kontrol(speed_pct=speed_pct, accel_pct=accel_pct,
+                                      prefer_lin=prefer_lin,
+                                      max_joint_excursion_deg=max_joint_excursion_deg,
+                                      tekil_kontrolu=tekil_kontrolu)
+        if sonuc["problem"] is not None:
+            return sonuc["problem"]
+
+        if confirm:
+            answer = input("Bu hedefe uygulansin mi? (e/h): ").strip().lower()
+            if answer != "e":
+                return {"success": False, "reason": "user_cancelled"}
+
+        return self._yurut_ve_dogrula(sonuc["plan"])
+
+    def _plan_ve_kontrol(self, speed_pct=None, accel_pct=None, prefer_lin=False,
+                         max_joint_excursion_deg=None, tekil_kontrolu=False, sadece_lin=False):
+        """Plani uretir ve guvenlik kontrollerinden gecirir. Robotu HAREKET
+        ETTIRMEZ. Donus sozlugu:
+          plan    : plan_result ya da None
+          yontem  : "LIN", "LIN (50% speed)", "PTP", "OMPL" ya da None
+          problem : None = plan kontrollerden gecti. Degilse eskiden
+                    _plan_and_execute'un dondurdugu red sozlugu; plan da
+                    doluysa o REDDEDILEN plandir (onizlemede gerekcesiyle
+                    gosterilir), YURUTULMEZ.
+        sadece_lin=True: yalnizca LIN kademeleri denenir, PTP/OMPL'e dusulmez
+        (onizlemede duz cizgi ayri bir secenek).
+
+        speed_pct/accel_pct verilirse (adim-bazli kayitli hiz/ivme), o TEK
         plan() cagrisi icin oturumun varsayilanini (moveit_cpp.yaml'a init'te
         yazilan) PlanRequestParameters ile gecici olarak ezer - CobotArm'in
         genel self.speed_pct/self.accel_pct'i DEGISMEZ, sadece bu hareket
@@ -1016,8 +1152,10 @@ class CobotArm:
                 print(f"  (planlama denemesi hata verdi: {type(e).__name__}: {e})")
                 return None
 
-        def _check(candidate):
-            """Guvenlik kontrolleri. Temizse None, degilse hata sozlugu doner."""
+        def _check(candidate, kartezyen):
+            """Guvenlik kontrolleri. Temizse None, degilse hata sozlugu doner.
+            kartezyen=True (Pilz LIN): tekil kontrolu YOL BOYUNCA yapilir;
+            eklem uzayi planlarinda yapilmaz (bkz. TEKIL_KOSUL_ESIGI, KAPSAM)."""
             v = check_trajectory_for_floor(candidate.trajectory, ALL_LINKS, FLOOR_Z_M)
             if v:
                 w = min(v, key=lambda x: x[2])
@@ -1032,7 +1170,7 @@ class CobotArm:
                         "details": f"{len(steps)} points in the plan fall below the minimum clearance "
                                    f"({MIN_CLEARANCE_M*1000:.0f}mm) - worst step "
                                    f"{ws}/{len(candidate.trajectory)}, distance={wd*1000:.1f}mm"}
-            if tekil_kontrolu:
+            if tekil_kontrolu and kartezyen:
                 return self._plan_tekil_ihlali(candidate.trajectory)
             return None
 
@@ -1063,40 +1201,70 @@ class CobotArm:
         # olarak bunu garanti eder; PTP eklem-uzayinda duzdur ama TCP
         # kavisli gidebilir.
         _sira = []
-        if prefer_lin:
+        if prefer_lin or sadece_lin:
             # Once istenen hizda; ivme ihlaliyle kalirsa kademeli yavaslatip
             # tekrar dene (bkz. LIN_YAVASLATMA_KADEMELERI).
             for _kat in LIN_YAVASLATMA_KADEMELERI:
                 _etiket = ("Duz cizgi (LIN)" if _kat == 1.0
                            else f"Duz cizgi (LIN, %{int(_kat * 100)} hizda)")
-                _sira.append(("LIN", _etiket, _kat))
-        _sira.append(("PTP", "Dogrudan yol (PTP)", 1.0))
+                _yontem = "LIN" if _kat == 1.0 else f"LIN ({int(_kat * 100)}% speed)"
+                _sira.append(("LIN", _etiket, _kat, _yontem))
+        if not sadece_lin:
+            _sira.append(("PTP", "Dogrudan yol (PTP)", 1.0, "PTP"))
 
         plan_result = None
-        for _pid, _ad, _kat in _sira:
+        yontem = None
+        son_red = None    # (plan, problem, yontem) - onizlemede reddin gerekcesi
+        son_hata = None   # son basarisiz planlamanin MoveIt hata kodu
+        for _pid, _ad, _kat, _yontem in _sira:
             _cand = _try_plan(_pilz(_pid, _kat))
             if not _cand:
-                print(f"  {_ad} planlanamadi - siradaki yonteme geciliyor.")
+                son_hata = plan_hata_adi(_cand) if _cand is not None else None
+                print(f"  {_ad} planlanamadi ({son_hata or 'sonuc yok'}) - "
+                      f"siradaki yonteme geciliyor.")
                 continue
-            _problem = _check(_cand)
+            _problem = _check(_cand, _pid == "LIN")
             if _problem is None:
                 plan_result = _cand
+                yontem = _yontem
                 print(f"  {_ad} kullanildi.")
                 break
             print(f"  {_ad} guvenli degil ({_problem['reason']}) - siradaki yonteme geciliyor.")
+            son_red = (_cand, _problem, _yontem)
+
+        if plan_result is None and sadece_lin:
+            if son_red is not None:
+                return {"plan": son_red[0], "yontem": son_red[2], "problem": son_red[1]}
+            return {"plan": None, "yontem": "LIN",
+                    "problem": {"success": False, "reason": "planning_failed",
+                                "details": ("the straight line (LIN) could not be planned"
+                                            + (f" - planner returned {son_hata}"
+                                               if son_hata else ""))}}
+
         if plan_result is None:
             print("  OMPL'e geciliyor (engelden dolasarak).")
 
         if plan_result is None:
             plan_result = self._planning_component.plan(parameters=plan_params)
+            yontem = "OMPL"
         if not plan_result:
-            return {"success": False, "reason": "planning_failed"}
+            # Hangi sebep? OMPL'in "goal tree icin gecerli durum ornekleyemedim"
+            # gibi gerekceleri MoveIt hata kodunda geliyor (olculdu 16 Eylul:
+            # hedef durusta gripper kutusu carpisiyorsa GOAL_STATE_INVALID).
+            _detay = plan_hata_adi(plan_result)
+            print(f"  Planlama basarisiz ({_detay or 'hata kodu okunamadi'}).")
+            return {"plan": None, "yontem": yontem,
+                    "problem": {"success": False, "reason": "planning_failed",
+                                "details": (f"the planner returned {_detay}" if _detay
+                                            else None)}}
 
         violations = check_trajectory_for_floor(plan_result.trajectory, ALL_LINKS, FLOOR_Z_M)
         if violations:
             worst = min(violations, key=lambda v: v[2])
-            return {"success": False, "reason": "floor_collision",
-                    "details": f"step {worst[0]}, link '{worst[1]}', Z={worst[2]*1000:.1f}mm"}
+            return {"plan": plan_result, "yontem": yontem,
+                    "problem": {"success": False, "reason": "floor_collision",
+                                "details": f"step {worst[0]}, link '{worst[1]}', "
+                                           f"Z={worst[2]*1000:.1f}mm"}}
 
         # OMPL'in kendi planlama-zamani kontrolu KABA bir ornekleme
         # cozunurlugunde calisiyor (bkz. check_trajectory_for_self_collision
@@ -1110,19 +1278,23 @@ class CobotArm:
                 scene, plan_result.trajectory, self.group_name)
         if self_collision_steps:
             worst_step, worst_dist = min(self_collision_steps, key=lambda v: v[1])
-            return {"success": False, "reason": "self_collision",
-                    "details": f"{len(self_collision_steps)} points in the plan fall below the "
-                               f"minimum clearance ({MIN_CLEARANCE_M*1000:.0f}mm) - worst step "
-                               f"{worst_step}/{len(plan_result.trajectory)}, distance="
-                               f"{worst_dist*1000:.1f}mm"}
+            return {"plan": plan_result, "yontem": yontem,
+                    "problem": {"success": False, "reason": "self_collision",
+                                "details": f"{len(self_collision_steps)} points in the plan fall "
+                                           f"below the minimum clearance "
+                                           f"({MIN_CLEARANCE_M*1000:.0f}mm) - worst step "
+                                           f"{worst_step}/{len(plan_result.trajectory)}, distance="
+                                           f"{worst_dist*1000:.1f}mm"}}
 
-        # TEKIL KONTROLU (bkz. TEKIL_KOSUL_ESIGI): yalnizca TCP'ye gore
-        # hareketlerde istenir. Pilz adaylari _check icinde de bakildi; bu
-        # satir OMPL'e dusen plani da kapsar.
-        if tekil_kontrolu:
+        # TEKIL KONTROLU - YOL BOYUNCA yalnizca KARTEZYEN (Pilz LIN) planlarda
+        # (bkz. TEKIL_KOSUL_ESIGI ustundeki KAPSAM notu). Eklem uzayi
+        # planlarinda (PTP, OMPL) baslangic ve hedef DURUSU cagiran tarafta
+        # kontrol edilir (_ik_adaylari + _durus_tekil_ihlali); yolun ortasi
+        # kontrol EDILMEZ. LIN adaylari _check icinde de bakildi.
+        if tekil_kontrolu and yontem is not None and yontem.startswith("LIN"):
             ihlal = self._plan_tekil_ihlali(plan_result.trajectory)
             if ihlal is not None:
-                return ihlal
+                return {"plan": plan_result, "yontem": yontem, "problem": ihlal}
 
         # ORANTI KONTROLU - bkz. MAX_JOG_JOINT_EXCURSION_DEG ustundeki olay
         # kaydi. Zemin/self-collision kontrolleri bos havadaki genis bir yayi
@@ -1139,13 +1311,15 @@ class CobotArm:
             ]
             ihlal = asiri_eklem_hareketi(baslangic, plan_acilari, max_joint_excursion_deg)
             if ihlal is not None:
-                return ihlal
+                return {"plan": plan_result, "yontem": yontem, "problem": ihlal}
 
-        if confirm:
-            answer = input("Bu hedefe uygulansin mi? (e/h): ").strip().lower()
-            if answer != "e":
-                return {"success": False, "reason": "user_cancelled"}
+        return {"plan": plan_result, "yontem": yontem, "problem": None}
 
+    def _yurut_ve_dogrula(self, plan_result):
+        """Kontrollerden GECMIS bir plani yurutur ve robotun hedefe vardigini
+        SDK'dan dogrular. Plan uretmez, guvenlik kontrolu yapmaz: cagiran
+        (_plan_and_execute, onizlenen_yolu_yurut) plani _plan_ve_kontrol'den
+        problem=None ile almis olmalidir."""
         # Planlanan yolun SON adimindaki eklem acilari - execute() sonrasi
         # robotun GERCEKTEN oraya ulasip ulasmadigini SDK'dan (ROS2/joint_states
         # UZERINDEN DEGIL, dogrudan robot kontrolcusune RPC ile) dogrulamak icin.
@@ -1278,14 +1452,27 @@ class CobotArm:
         "her adimda bekleme" sikayetine yol acan gereksiz turlardan biri
         buydu). Sadece bir replay dizisinin ILK adiminda (ya da known_
         joints_deg verilmedigi her durumda) taze SDK okumasi yapilir."""
-        from moveit.core.robot_state import RobotState
         if known_joints_deg is None:
             with self.sdk_lock:
                 current_joints = self.sdk.GetActualJointPosDegree()[1]
         else:
             current_joints = known_joints_deg
-        start_state = RobotState(self.robot_model)
-        start_state.set_joint_group_positions(self.group_name, [math.radians(v) for v in current_joints])
+        # BASLANGIC DURUMU SAHNENIN DURUMUNDAN KOPYALANIR, bos bir RobotState
+        # DEGIL. NEDEN (16 Eylul olcumu): planlama sahnenin bir kopyasinda
+        # setCurrentState(bizim baslangic durumumuz) cagiriyor
+        # (moveit_cpp/planning_component.cpp:144) ve bu, durumu OLDUGU GIBI
+        # atiyor (planning_scene.cpp:1097-1100). Bos bir RobotState'te gripper
+        # kutusu (attached body) YOKTUR; bu yuzden planlayici kutuyu HIC
+        # gormuyordu, plandaki noktalar da kutusuz geldigi icin plan sonrasi
+        # self-collision kontrolumuz de kutuyu kaciriyordu.
+        # OLCULDU (--network none): kutunun kola girdigi bir PTP yolunda plan
+        # noktalarinin kendi durumuyla 0, kutulu durumla 25 nokta carpisiyordu.
+        # Sahnenin durumu kopyalandiginda kutu (ve kavranan nesne) korunur.
+        psm = self._moveit.get_planning_scene_monitor()
+        with psm.read_only() as scene:
+            start_state = copy.deepcopy(scene.current_state)
+        start_state.set_joint_group_positions(self.group_name,
+                                              [math.radians(v) for v in current_joints])
         start_state.update()
         self._planning_component.set_start_state(robot_state=start_state)
 
@@ -1364,13 +1551,18 @@ class CobotArm:
         self.stop_requested.set()
         self._moveit.get_trajectory_execution_manager().stop_execution()
 
-    def move_to_joints(self, joint_degrees, confirm=False, speed_pct=None, accel_pct=None,
-                       known_start_joints_deg=None, prefer_lin=False, tekil_kontrolu=False):
+    def _eklem_hedefini_ayarla(self, joint_degrees, known_start_joints_deg=None):
+        """Planlama bileseninin baslangicini (SDK) ve eklem hedefini ayarlar.
+        move_to_joints ve yol onizlemesi (_secenek_planla) ayni yoldan gecer."""
         from moveit.core.robot_state import RobotState
         self._set_start_state_from_sdk(known_joints_deg=known_start_joints_deg)
         target_state = RobotState(self.robot_model)
         target_state.set_joint_group_positions(self.group_name, [math.radians(v) for v in joint_degrees])
         self._planning_component.set_goal_state(robot_state=target_state)
+
+    def move_to_joints(self, joint_degrees, confirm=False, speed_pct=None, accel_pct=None,
+                       known_start_joints_deg=None, prefer_lin=False, tekil_kontrolu=False):
+        self._eklem_hedefini_ayarla(joint_degrees, known_start_joints_deg=known_start_joints_deg)
         return self._plan_and_execute(confirm, speed_pct=speed_pct, accel_pct=accel_pct,
                                       prefer_lin=prefer_lin, tekil_kontrolu=tekil_kontrolu)
 
@@ -1394,13 +1586,22 @@ class CobotArm:
         (GUNCEL_DURUM 7), movecobot da kirpilmis noktaya varisi basarili
         sayiyordu.
         """
-        jmg = self.robot_model.get_joint_model_group(self.group_name)
-        if not jmg.satisfies_position_bounds([math.radians(v) for v in joint_degrees]):
-            return {"success": False, "reason": "joint_limit",
-                    "details": (f"target joint angles {[round(float(v), 2) for v in joint_degrees]} "
-                                f"are outside the joint limits. Not planned - robot did not move.")}
+        ihlal = self._eklem_siniri_ihlali(joint_degrees)
+        if ihlal is not None:
+            return ihlal
         return self.move_to_joints(joint_degrees, confirm=confirm,
                                    speed_pct=speed_pct, accel_pct=accel_pct)
+
+    def _eklem_siniri_ihlali(self, joint_degrees):
+        """Acilar MoveIt modelinin eklem sinirlari icinde mi? Disindaysa red
+        sozlugu, icindeyse None. move_to_joints_absolute ve yol onizlemesi
+        (yol_secenekleri) ayni kontrolden gecer."""
+        jmg = self.robot_model.get_joint_model_group(self.group_name)
+        if jmg.satisfies_position_bounds([math.radians(v) for v in joint_degrees]):
+            return None
+        return {"success": False, "reason": "joint_limit",
+                "details": (f"target joint angles {[round(float(v), 2) for v in joint_degrees]} "
+                            f"are outside the joint limits. Not planned - robot did not move.")}
 
     def _goal_pose_from_tcp(self, tx, ty, tz, trx, trye, trz):
         from geometry_msgs.msg import PoseStamped
@@ -1466,8 +1667,10 @@ class CobotArm:
                                       confirm=confirm, prefer_lin=True,
                                       speed_pct=speed_pct, accel_pct=accel_pct)
 
-    def move_tcp_local(self, dx, dy, dz, confirm=False, speed_pct=None, accel_pct=None):
-        """TCP'nin kendi eksenlerine gore goreceli hareket; yonelim degismez."""
+    def _tcp_local_hedefi(self, dx, dy, dz):
+        """TCP'nin KENDI eksenlerinde dx/dy/dz (mm) otelenmis hedef poz
+        (x, y, z, rx, ry, rz); yonelim degismez. move_tcp_local ve yol
+        onizlemesi (yol_secenekleri) ayni hesaptan gecer."""
         with self.sdk_lock:
             cur = self.sdk.GetActualTCPPose()[1]
         cx, cy, cz, crx, cry, crz = cur[0:6]
@@ -1478,6 +1681,11 @@ class CobotArm:
         tx = cx + dx * cur_x_axis[0] + dy * cur_y_axis[0] + dz * cur_z_axis[0]
         ty = cy + dx * cur_x_axis[1] + dy * cur_y_axis[1] + dz * cur_z_axis[1]
         tz = cz + dx * cur_x_axis[2] + dy * cur_y_axis[2] + dz * cur_z_axis[2]
+        return (tx, ty, tz, crx, cry, crz)
+
+    def move_tcp_local(self, dx, dy, dz, confirm=False, speed_pct=None, accel_pct=None):
+        """TCP'nin kendi eksenlerine gore goreceli hareket; yonelim degismez."""
+        tx, ty, tz, crx, cry, crz = self._tcp_local_hedefi(dx, dy, dz)
         # TCP kendi ekseninde goreceli hareket - tipik yaklasma/geri cekilme,
         # duz cizgi olmali (bkz. prefer_lin aciklamasi).
         return self._ik_adaylariyla_git(tx, ty, tz, crx, cry, crz, confirm=confirm,
@@ -1527,41 +1735,9 @@ class CobotArm:
         OLCULMEDI: GetInverseKin'in 0~7 ile gercekten farkli duruslar verdigi
         canli robotta henuz gorulmedi.
         """
-        with self.sdk_lock:
-            baslangic = list(self.sdk.GetActualJointPosDegree()[1])
-        hedef_tcp = [float(v) for v in (tx, ty, tz, trx, trye, trz)]
-
-        # TEKIL (bkz. TEKIL_KOSUL_ESIGI): kol su an tekile cok yakinsa TCP'ye
-        # gore hareket hic denenmez. Tekil yakininda IK cozumleri birbirinden
-        # cok farkli olabilir, en yakini bile bilegi savurabilir. Cikis yolu
-        # eklem hareketi (tekilden etkilenmez).
-        ihlal = self._durus_tekil_ihlali(baslangic, "the current arm pose")
-        if ihlal is not None:
-            return ihlal
-
-        ham_adaylar = []
-        robottan = 0
-        for config in (-1, 0, 1, 2, 3, 4, 5, 6, 7):
-            with self.sdk_lock:
-                hata, eklemler = self.sdk.GetInverseKin(0, hedef_tcp, config)
-            if hata == 0 and eklemler is not None:
-                ham_adaylar.append([float(v) for v in eklemler])
-                robottan += 1
-            else:
-                print(f"  IK config={config}: cozum yok (hata kodu {hata})")
-
-        jmg = self.robot_model.get_joint_model_group(self.group_name)
-        sinir_ici = [a for a in ham_adaylar
-                     if jmg.satisfies_position_bounds([math.radians(v) for v in a])]
-        sirali = ik_adaylarini_sirala(baslangic, sinir_ici)
-        print(f"  IK: robottan {robottan} cozum, eklem siniri icinde {len(sinir_ici)}, "
-              f"farkli {len(sirali)} durus.")
-
-        if not sirali:
-            return {"success": False, "reason": "ik_failed",
-                    "details": (f"no usable arm configuration for the target (robot returned "
-                                f"{robottan} IK solutions, {len(sinir_ici)} within joint limits). "
-                                f"Not planned - robot did not move.")}
+        baslangic, sirali, red = self._ik_adaylari(tx, ty, tz, trx, trye, trz)
+        if red is not None:
+            return red
 
         son_sonuc = None
         for sira, (aday, fark) in enumerate(sirali, 1):
@@ -1599,13 +1775,225 @@ class CobotArm:
         Base ekseninde goreceli hareket de tipik yaklasma/geri cekilme
         niteliginde oldugu icin duz cizgi tercih ediliyor (prefer_lin).
         """
+        tx, ty, tz, crx, cry, crz = self._tcp_base_hedefi(dx, dy, dz)
+        return self._ik_adaylariyla_git(tx, ty, tz, crx, cry, crz, confirm=confirm,
+                                        prefer_lin=True,
+                                        speed_pct=speed_pct, accel_pct=accel_pct)
+
+    def _tcp_base_hedefi(self, dx, dy, dz):
+        """BASE (dunya) eksenlerinde dx/dy/dz (mm) otelenmis hedef poz; yonelim
+        degismez. move_tcp_base ve yol onizlemesi ayni hesaptan gecer."""
         with self.sdk_lock:
             cur = self.sdk.GetActualTCPPose()[1]
         cx, cy, cz, crx, cry, crz = cur[0:6]
         # Donusum YOK - base ekseni zaten TCP pozunun ifade edildigi cerceve.
-        return self._ik_adaylariyla_git(cx + dx, cy + dy, cz + dz, crx, cry, crz, confirm=confirm,
-                                        prefer_lin=True,
-                                        speed_pct=speed_pct, accel_pct=accel_pct)
+        return (cx + dx, cy + dy, cz + dz, crx, cry, crz)
+
+    def _ik_adaylari(self, tx, ty, tz, trx, trye, trz):
+        """Hedef TCP pozu icin robotun IK cozumlerinden KULLANILABILIR duruslar.
+
+        Donus: (baslangic_acilari, sirali_adaylar, red). red None degilse
+        kullanilabilir durus yok ve robot hareket etmemeli. Ayrintili gerekce
+        icin bkz. _ik_adaylariyla_git.
+        """
+        with self.sdk_lock:
+            baslangic = list(self.sdk.GetActualJointPosDegree()[1])
+        hedef_tcp = [float(v) for v in (tx, ty, tz, trx, trye, trz)]
+
+        # TEKIL (bkz. TEKIL_KOSUL_ESIGI): kol su an tekile cok yakinsa TCP'ye
+        # gore hareket hic denenmez. Tekil yakininda IK cozumleri birbirinden
+        # cok farkli olabilir, en yakini bile bilegi savurabilir. Cikis yolu
+        # eklem hareketi (tekilden etkilenmez).
+        ihlal = self._durus_tekil_ihlali(baslangic, "the current arm pose")
+        if ihlal is not None:
+            return baslangic, [], ihlal
+
+        ham_adaylar = []
+        robottan = 0
+        for config in (-1, 0, 1, 2, 3, 4, 5, 6, 7):
+            with self.sdk_lock:
+                hata, eklemler = self.sdk.GetInverseKin(0, hedef_tcp, config)
+            if hata == 0 and eklemler is not None:
+                ham_adaylar.append([float(v) for v in eklemler])
+                robottan += 1
+            else:
+                print(f"  IK config={config}: cozum yok (hata kodu {hata})")
+
+        jmg = self.robot_model.get_joint_model_group(self.group_name)
+        sinir_ici = [a for a in ham_adaylar
+                     if jmg.satisfies_position_bounds([math.radians(v) for v in a])]
+        sirali = ik_adaylarini_sirala(baslangic, sinir_ici)
+        print(f"  IK: robottan {robottan} cozum, eklem siniri icinde {len(sinir_ici)}, "
+              f"farkli {len(sirali)} durus.")
+
+        if not sirali:
+            return baslangic, [], {
+                "success": False, "reason": "ik_failed",
+                "details": (f"no usable arm configuration for the target (robot returned "
+                            f"{robottan} IK solutions, {len(sinir_ici)} within joint limits). "
+                            f"Not planned - robot did not move.")}
+        return baslangic, sirali, None
+
+    # ------------------------------------------------------------------
+    # YOL ONIZLEME (web "Preview before moving", kullanici istegi 15 Eylul)
+    # ------------------------------------------------------------------
+    # Hareket YURUTULMEDEN once secenekler planlanip kullaniciya gosterilir;
+    # sectigi plan onizlenen_yolu_yurut ile AYNEN yurutulur. Yeniden planlama
+    # YOK: planlayici ayni hedef icin baska bir yol uretebilir ve ekranda
+    # gosterilmemis bir yol robota gitmemeli.
+    #
+    # Guvenlik kontrolleri otomatik yoldakilerin AYNISI: _ik_adaylari (mevcut
+    # durus tekil + eklem siniri), _plan_ve_kontrol (zemin, self-collision,
+    # tekil), _yurut_ve_dogrula (SDK varis dogrulamasi). Kayitli hareketler ve
+    # pick & place bu kapsamda DEGIL.
+
+    def _plani_acilara_cevir(self, plan_result):
+        """Planin her noktasindaki eklem acilari (derece) ve baslangictan
+        itibaren gecen sure (saniye). Sureler get_waypoint_durations()'in
+        (noktalar arasi sure) birikimli toplami."""
+        traj = plan_result.trajectory
+        noktalar = [[math.degrees(v) for v in traj[i].get_joint_group_positions(self.group_name)]
+                    for i in range(len(traj))]
+        try:
+            sureler = list(traj.get_waypoint_durations())
+        except Exception as e:
+            print(f"  (onizleme: nokta sureleri okunamadi: {type(e).__name__}: {e})")
+            sureler = []
+        if len(sureler) == len(noktalar):
+            return noktalar, list(accumulate(sureler))
+        # Beklenmedik bicim: yalnizca GORUNUM icin esit araliga dagit.
+        toplam = float(getattr(traj, "duration", 0.0) or 0.0)
+        bolum = max(1, len(noktalar) - 1)
+        return noktalar, [toplam * i / bolum for i in range(len(noktalar))]
+
+    def _secenek(self, sira, etiket, yontem, baslangic, plan_result, problem, hedef_deg):
+        """(arayuz ozeti, yurutulecek plan). Plan yalnizca kontrollerden GECMIS
+        seceneklerde doner; reddedilende None (yolu gosterilir, calistirilamaz)."""
+        if plan_result is not None:
+            noktalar, zamanlar = self._plani_acilara_cevir(plan_result)
+        else:
+            noktalar, zamanlar = [], []
+        ozet = secenek_ozeti(sira, etiket, yontem, baslangic, noktalar, zamanlar,
+                             problem, hedef_deg)
+        return ozet, (plan_result if ozet["ok"] else None)
+
+    def _secenek_planla(self, sira, etiket, hedef_deg, baslangic, speed_pct=None, accel_pct=None,
+                        prefer_lin=False, sadece_lin=False, tekil_kontrolu=False):
+        """Bir eklem hedefini planlar (robot hareket etmez) ve secenege cevirir."""
+        self._eklem_hedefini_ayarla(hedef_deg, known_start_joints_deg=baslangic)
+        sonuc = self._plan_ve_kontrol(speed_pct=speed_pct, accel_pct=accel_pct,
+                                      prefer_lin=prefer_lin, sadece_lin=sadece_lin,
+                                      tekil_kontrolu=tekil_kontrolu)
+        return self._secenek(sira, etiket, sonuc["yontem"], baslangic,
+                             sonuc["plan"], sonuc["problem"], hedef_deg)
+
+    def yol_secenekleri(self, tur, degerler, prefer_lin=True, speed_pct=None, accel_pct=None):
+        """Hareketin seceneklerini ROBOT HAREKET ETMEDEN planlar.
+
+        tur: "pose" (x,y,z,rx,ry,rz; base, mm/derece), "tcp_local" / "tcp_base"
+        (dx,dy,dz mm), "joints" (6 mutlak aci), "jog" (6 aci farki).
+
+        Donus: {"success", "kind", "start_joints", "speed_pct", "accel_pct",
+        "target_tcp"?, "reason"?, "details"?, "options", "_planlar"}.
+        "_planlar" arayuze GITMEZ: sunucu saklar (webapp/session.py) ve
+        yalnizca kullanicinin sectigi plan yurutulur.
+
+        success False: hic secenek yok (kolun su anki durusu tekile yakin, IK
+        cozumu yok ya da eklem siniri disi) - robot hareket etmedi.
+        """
+        cikti = {"kind": tur, "speed_pct": speed_pct, "accel_pct": accel_pct}
+        secenekler = []
+
+        if tur in ("pose", "tcp_local", "tcp_base"):
+            if tur == "pose":
+                hedef = tuple(float(v) for v in degerler)
+            elif tur == "tcp_local":
+                hedef = self._tcp_local_hedefi(*(float(v) for v in degerler))
+                prefer_lin = True   # goreceli hareket: otomatik yolda da LIN tercihli
+            else:
+                hedef = self._tcp_base_hedefi(*(float(v) for v in degerler))
+                prefer_lin = True
+            cikti["target_tcp"] = dict(zip(("x", "y", "z", "rx", "ry", "rz"), hedef))
+            baslangic, sirali, red = self._ik_adaylari(*hedef)
+            cikti["start_joints"] = baslangic
+            if red is not None:
+                return {**cikti, **red, "options": [], "_planlar": []}
+
+            sira = 1
+            if prefer_lin:
+                # Duz cizgi TEK secenek: LIN eklem hedefini FK ile ayni
+                # kartezyen dogruya cevirdigi icin her adayda ayni sonucu verir.
+                secenekler.append(self._secenek_planla(
+                    sira, "Straight line", sirali[0][0], baslangic,
+                    speed_pct=speed_pct, accel_pct=accel_pct,
+                    sadece_lin=True, tekil_kontrolu=True))
+                sira += 1
+            for aday_no, (aday, _fark) in enumerate(sirali, 1):
+                # "Hareketi durdur"a basildiysa kalan adaylari planlamaya devam
+                # etme (robot zaten hareket etmiyor, ama beklemesin).
+                if self.stop_requested.is_set():
+                    cikti["stopped"] = True
+                    break
+                etiket = f"Arm configuration {aday_no}"
+                ihlal = self._durus_tekil_ihlali(aday, "this arm configuration")
+                if ihlal is not None:
+                    secenekler.append(self._secenek(sira, etiket, None, baslangic,
+                                                    None, ihlal, aday))
+                else:
+                    secenekler.append(self._secenek_planla(
+                        sira, etiket, aday, baslangic,
+                        speed_pct=speed_pct, accel_pct=accel_pct, tekil_kontrolu=True))
+                sira += 1
+
+        elif tur in ("joints", "jog"):
+            with self.sdk_lock:
+                baslangic = list(self.sdk.GetActualJointPosDegree()[1])
+            cikti["start_joints"] = baslangic
+            if tur == "jog":
+                hedef_deg = [baslangic[i] + float(degerler[i]) for i in range(6)]
+            else:
+                hedef_deg = [float(v) for v in degerler]
+                red = self._eklem_siniri_ihlali(hedef_deg)
+                if red is not None:
+                    return {**cikti, **red, "options": [], "_planlar": []}
+            # Eklem hedefine giden tek bir duz yol var (URDF okumasi, 15 Eylul:
+            # hicbir eklemin araligi 360 dereceyi gecmiyor) - tek secenek.
+            # Tekil kontrolu yok: eklem hareketleri tekilden etkilenmiyor ve
+            # tekilden cikis yolu onlar (otomatik yolda da yok).
+            secenekler.append(self._secenek_planla(
+                1, "Joint move", hedef_deg, baslangic,
+                speed_pct=speed_pct, accel_pct=accel_pct))
+        else:
+            raise ValueError(f"bilinmeyen onizleme turu: {tur}")
+
+        return {**cikti, "success": True,
+                "options": [o for o, _ in secenekler],
+                "_planlar": [p for _, p in secenekler]}
+
+    def onizlenen_yolu_yurut(self, plan_result, plan_baslangic_deg):
+        """Onizlemede secilen plani AYNEN yurutur; yeniden planlamaz.
+
+        Once kolun su anki acilari SDK'dan okunur: planin baslangicindan
+        ONIZLEME_BASLANGIC_TOLERANSI_DEG'den (2 derece) fazla farkliysa plan
+        ESKIMIS sayilir ve robot hareket etmez - onizlemeden sonra kol jog ile
+        ya da elle oynatilmis olabilir, plan baska bir baslangic icin cizildi.
+
+        MoveIt'in kendi yurutme dogrulamasi da planin baslangicini
+        /joint_states ile karsilastiriyor (allowed_start_tolerance; config'te
+        verilmedigi icin varsayilan 0.01 rad ~ 0.57 derece,
+        trajectory_execution_manager.cpp:96 ve validate() 1004-1050). Buradaki
+        kontrol onun yerine GECMEZ: SDK'dan okunur (ROS'tan bagimsiz) ve
+        sebebini acikca soyler.
+        """
+        with self.sdk_lock:
+            simdiki = list(self.sdk.GetActualJointPosDegree()[1])
+        fark = baslangic_farki(plan_baslangic_deg, simdiki)
+        if fark > ONIZLEME_BASLANGIC_TOLERANSI_DEG:
+            return {"success": False, "reason": "preview_stale",
+                    "details": (f"the arm moved {fark:.1f} degrees since the paths were planned "
+                                f"(limit {ONIZLEME_BASLANGIC_TOLERANSI_DEG:g}). Plan the paths "
+                                f"again - robot did not move.")}
+        return self._yurut_ve_dogrula(plan_result)
 
     def shutdown(self):
         if self._shutdown_called:

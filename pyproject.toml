@@ -58,7 +58,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 # Arayuzun HTML/CSS/JS dosyalari pakete dahil olmali - yoksa kurulumdan
 # sonra sunucu bos sayfa doner.
-fairino_cobot = ["webapp/static/*"]
+fairino_cobot = ["webapp/static/*", "webapp/static/lib/three/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

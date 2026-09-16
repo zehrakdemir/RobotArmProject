@@ -196,3 +196,44 @@ label.field > span { display: block; color: var(--dim); font-size: 12px; margin-
   font-family: var(--mono); font-size: 12px; color: var(--dim);
   text-align: left; max-width: 560px; white-space: pre-wrap;
 }
+
+/* --- yol onizleme: ust cubuktaki anahtar + tam genislik panel ------------ */
+.toggle { cursor: pointer; user-select: none; }
+.toggle input { margin: 0; accent-color: var(--accent); cursor: pointer; }
+.toggle:has(input:checked) { border-color: var(--accent); color: var(--fg); }
+
+#pv { grid-column: 1 / -1; }
+.pv-grid { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(280px, 1fr); gap: 14px; }
+@media (max-width: 1100px) { .pv-grid { grid-template-columns: 1fr; } }
+#pv-view {
+  position: relative; height: 440px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 6px; overflow: hidden;
+}
+#pv-view canvas { display: block; width: 100%; height: 100%; }
+#pv-view-msg {
+  position: absolute; left: 10px; top: 8px; right: 10px;
+  font-size: 12px; color: var(--dim); pointer-events: none;
+}
+.pv-controls {
+  display: grid; grid-template-columns: auto 1fr auto auto; gap: 8px;
+  align-items: center; margin-top: 8px;
+}
+.pv-controls input[type="range"] { width: 100%; accent-color: var(--accent); }
+.pv-controls select { width: auto; }
+#pv-time { font-family: var(--mono); font-size: 12px; color: var(--dim); min-width: 96px; text-align: right; }
+#pv-info { font-size: 12px; color: var(--dim); white-space: pre-wrap; margin-bottom: 8px; }
+#pv-options { max-height: 360px; overflow-y: auto; }
+.opt {
+  display: grid; grid-template-columns: 22px 1fr auto; gap: 2px 8px; align-items: baseline;
+  padding: 8px 10px; margin-bottom: 7px; cursor: pointer;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 7px;
+}
+.opt:hover { border-color: var(--dim); }
+.opt.sel { border-color: var(--accent); }
+.opt:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.opt .num { font-family: var(--mono); font-size: 12px; color: var(--dim); }
+.opt .name { font-weight: 600; min-width: 0; }
+.opt .state { font-size: 12px; color: var(--ok); }
+.opt.bad .state { color: var(--err); }
+.opt .meta { grid-column: 2 / -1; font-family: var(--mono); font-size: 12px; color: var(--dim); }
+.opt .why { grid-column: 2 / -1; font-size: 12px; color: var(--dim); }

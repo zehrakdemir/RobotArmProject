@@ -235,6 +235,12 @@ __marimo__/
 vendor/
 fairino-python-sdk/
 
+# three.js (web arayuzundeki 3D yol onizlemesi) BU REPODA durur: robot PC'sinde
+# internet olmayabilir, CDN kullanilmiyor. Yukaridaki Python sablonunun "lib/"
+# kurali bu klasoru de yok sayiyordu, istisna gerekiyor.
+!src/fairino_cobot/webapp/static/lib/
+!src/fairino_cobot/webapp/static/lib/**
+
 # --- ROS2 / colcon derleme ciktilari ----------------------------------------
 build/
 install/

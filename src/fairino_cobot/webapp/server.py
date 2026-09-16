@@ -20,7 +20,7 @@ import asyncio
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
@@ -123,6 +123,24 @@ class PPKaydet(BaseModel):
     object_d_mm: float = Field(..., gt=0)
     object_h_mm: float = Field(..., gt=0)
     overwrite: bool = False
+
+
+class OnizlemeIstek(BaseModel):
+    """Yol onizlemesi: hareket isteginin AYNISI, robot hareket etmeden
+    planlanir. values: pose -> x,y,z,rx,ry,rz (base, mm/derece); tcp_local ve
+    tcp_base -> dx,dy,dz (mm); joints -> 6 mutlak aci; jog -> 6 aci farki."""
+
+    kind: Literal["pose", "tcp_local", "tcp_base", "joints", "jog"]
+    values: list[float] = Field(..., min_length=3, max_length=6)
+    prefer_lin: bool = True
+
+
+class OnizlemeCalistir(BaseModel):
+    """Onizlemedeki bir secenegi calistirma istegi. Yol DEGIL, yalnizca
+    onizleme numarasi ve secenek numarasi (1'den baslar) gelir."""
+
+    id: int
+    option: int
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +317,140 @@ def onizleme(istek: JointHedef) -> dict[str, Any]:
         return {"tcp_pose": oturum.arm.predict_tcp_pose(istek.joints_deg)}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+# ---------------------------------------------------------------------------
+# Yol onizlemesi ("Preview before moving", kullanici istegi 15 Eylul)
+# ---------------------------------------------------------------------------
+# Hareket istegi robot HAREKET ETMEDEN planlanir; secenekler (robotun IK
+# duruslari, LIN/PTP/OMPL) guvenlik kontrolleriyle birlikte arayuzde
+# gosterilir. Kullanici bir secenegi secince YALNIZCA o plan yurutulur:
+# tarayici yol gondermez, sunucu sakladigi plani calistirir. Kayitli
+# hareketler ve pick & place bu kapsamda degil.
+
+ONIZLEME_DEGER_SAYISI = {"pose": 6, "tcp_local": 3, "tcp_base": 3, "joints": 6, "jog": 6}
+
+
+@app.post("/api/preview")
+def yollari_onizle(istek: OnizlemeIstek) -> dict[str, Any]:
+    beklenen = ONIZLEME_DEGER_SAYISI[istek.kind]
+    if len(istek.values) != beklenen:
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{istek.kind}' needs {beklenen} values, got {len(istek.values)}.",
+        )
+    hiz, ivme = _kol_hizi()
+
+    def calistir(job):
+        # Eski onizleme, yenisi planlanirken calistirilamasin.
+        oturum.onizleme = None
+        job.log.append(f"Plan paths: {istek.kind} {istek.values} (speed {hiz:g}%, accel {ivme:g}%)")
+        sonuc = oturum.arm.yol_secenekleri(istek.kind, istek.values, prefer_lin=istek.prefer_lin,
+                                           speed_pct=hiz, accel_pct=ivme)
+        planlar = sonuc.pop("_planlar", [])
+        oturum.onizleme_kaydet(sonuc, planlar)
+        secenekler = sonuc.get("options", [])
+        job.log.append(f"{len(secenekler)} options, {sum(1 for s in secenekler if s['ok'])} can be run")
+        if not sonuc.get("success"):
+            return {"success": False, "reason": sonuc.get("reason"), "details": sonuc.get("details")}
+        return {"success": True}
+
+    return _is_baslat("preview", "Plan paths", calistir)
+
+
+@app.get("/api/preview")
+def onizleme_oku() -> dict[str, Any]:
+    """Son onizleme (plan nesneleri olmadan). Yoksa bos sozluk."""
+    o = oturum.onizleme
+    return o["ozet"] if o else {}
+
+
+@app.delete("/api/preview")
+def onizleme_sil() -> dict[str, Any]:
+    oturum.onizleme = None
+    return {}
+
+
+@app.post("/api/preview/run")
+def onizleme_calistir(istek: OnizlemeCalistir) -> dict[str, Any]:
+    """Onizlemedeki bir secenegi calistirir. ROBOTU HAREKET ETTIRIR (arayuz
+    once onay ister). Plan yeniden uretilmez; kol onizlemeden sonra oynadiysa
+    CobotArm.onizlenen_yolu_yurut hareket etmeden reddeder."""
+    _hazir()
+    o = oturum.onizleme
+    if o is None:
+        raise HTTPException(status_code=404, detail="No path preview. Plan the paths first.")
+    if o["id"] != istek.id:
+        raise HTTPException(status_code=409, detail="This preview is out of date. Plan the paths again.")
+    secenekler = o["ozet"].get("options", [])
+    if not 1 <= istek.option <= len(secenekler):
+        raise HTTPException(status_code=404, detail=f"No option {istek.option} in this preview.")
+    ozet = secenekler[istek.option - 1]
+    plan = o["planlar"][istek.option - 1]
+    if not ozet["ok"] or plan is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Option {istek.option} was rejected ({ozet.get('reason') or 'no plan'}); "
+                   "it cannot be run.",
+        )
+    baslangic = o["ozet"]["start_joints"]
+
+    def calistir(job):
+        job.log.append(f"Run previewed path {istek.option}: {ozet['label']} ({ozet['method']})")
+        return oturum.arm.onizlenen_yolu_yurut(plan, baslangic)
+
+    cevap = _is_baslat("arm", f"Run previewed path {istek.option}", calistir)
+    # Tek kullanimlik: ayni plan ikinci kez yurutulmez (kol artik baska yerde).
+    oturum.onizleme = None
+    return cevap
+
+
+# ---------------------------------------------------------------------------
+# 3D gorunum icin robot modeli
+# ---------------------------------------------------------------------------
+
+def _paket_klasoru(paket: str) -> str | None:
+    """ROS paketinin kurulum (share) klasoru; bulunamazsa None."""
+    try:
+        from ament_index_python.packages import get_package_share_directory
+
+        return get_package_share_directory(paket)
+    except Exception:
+        return None
+
+
+def _robot_modeli() -> dict[str, Any]:
+    """MoveIt'in KULLANDIGI URDF'ten model ozeti; oturum boyunca bir kez."""
+    if oturum.model_onbellek is None:
+        from fairino_cobot.robot_modeli import model_paketi
+
+        kol = oturum.arm
+        urdf = getattr(kol, "robot_description_urdf", None)
+        if not urdf:
+            raise HTTPException(status_code=503, detail="Robot model (URDF) is not available.")
+        ozet, dosyalar = model_paketi(urdf, _paket_klasoru)
+        ozet["joint_names"] = list(kol.joint_names)
+        ozet["tip_link"] = kol.tip_link
+        ozet["tcp_offset_m"] = [float(v) for v in kol.tcp_offset_m]
+        ozet["gripper_box"] = kol.gripper_kutusu
+        oturum.model_onbellek = {"ozet": ozet, "dosyalar": dosyalar}
+    return oturum.model_onbellek
+
+
+@app.get("/api/model")
+def model_oku() -> dict[str, Any]:
+    _hazir()
+    return _robot_modeli()["ozet"]
+
+
+@app.get("/api/model/mesh/{sira}")
+def mesh_oku(sira: int) -> FileResponse:
+    """Yalnizca model ozetinde listelenen dosyalar, sira numarasiyla (yol yok)."""
+    _hazir()
+    dosyalar = _robot_modeli()["dosyalar"]
+    if not 0 <= sira < len(dosyalar):
+        raise HTTPException(status_code=404, detail="No such mesh.")
+    return FileResponse(dosyalar[sira], media_type="model/stl")
 
 
 # ---------------------------------------------------------------------------

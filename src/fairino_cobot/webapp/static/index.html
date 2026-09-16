@@ -23,6 +23,9 @@
   <span class="pill"><span class="dot" id="d-busy"></span><span id="t-busy">idle</span></span>
   <span class="pill" id="t-robot">—</span>
   <span class="sep"></span>
+  <label class="pill toggle" title="Jog buttons and Go plan the paths first; nothing moves until you run one">
+    <input type="checkbox" id="pv-mode"><span>Preview before moving</span>
+  </label>
   <div class="dd" id="settings-wrap">
     <button id="settings-open" aria-expanded="false" aria-controls="settings">Speed / Accel</button>
     <div id="settings" class="pop" hidden>
@@ -45,6 +48,50 @@
 </header>
 
 <main>
+
+  <!-- ---------------- ust: yol onizleme (tam genislik) ---------------- -->
+  <section id="pv">
+    <h2>Path preview</h2>
+    <div class="body">
+      <div class="pv-grid">
+        <div>
+          <div id="pv-view"><div id="pv-view-msg">Waiting for the robot…</div></div>
+          <div class="pv-controls">
+            <button id="pv-play" disabled>Play</button>
+            <input type="range" id="pv-scrub" min="0" max="1000" value="0" disabled aria-label="Position along the path">
+            <span id="pv-time">—</span>
+            <select id="pv-rate" aria-label="Playback speed">
+              <option value="1">1×</option>
+              <option value="2">2×</option>
+              <option value="5">5×</option>
+            </select>
+          </div>
+          <div class="note">
+            Grey: the arm now. Blue: selected path. Red: rejected path. Green dot: target TCP.
+            Axis triads (X red, Y green, Z blue): the long one at the base is the base frame
+            (Base jog), the short one at the tool is the TCP frame (Tool jog) and turns with
+            the tool. Floor grid at Z = 0. Drag to rotate, scroll to zoom.
+          </div>
+        </div>
+        <div>
+          <div id="pv-info">No preview. Turn on “Preview before moving”, then use a jog button or Go.</div>
+          <div id="pv-options" role="listbox" aria-label="Path options"></div>
+          <div id="pv-err" class="note warn" role="alert" hidden></div>
+          <div style="height:8px"></div>
+          <div class="row">
+            <button id="pv-clear" disabled>Discard</button>
+            <button id="pv-run" class="primary" disabled>Run this path</button>
+          </div>
+          <div class="note">
+            With <b>Preview before moving</b> on, the jog buttons and Go only plan the paths;
+            the robot does not move. Select an option and press <b>Run this path</b>: the robot
+            follows exactly the path shown. If the arm moves after planning, plan again.
+            Saved moves and pick &amp; place are not previewed.
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
 
   <!-- ---------------- sol sutun ---------------- -->
   <div>
@@ -240,5 +287,10 @@
 </div>
 
 <script src="/static/app.js"></script>
+<!-- 3D gorunum: three.js repoda (static/lib/three), internetten yuklenmez. -->
+<script type="importmap">
+{ "imports": { "three": "/static/lib/three/three.module.js" } }
+</script>
+<script type="module" src="/static/viewer.js"></script>
 </body>
 </html>

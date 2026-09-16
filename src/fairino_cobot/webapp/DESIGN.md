@@ -68,8 +68,8 @@ Rules:
 ## 4. Component styles
 
 - **Header** (`header`): sticky, `--panel` background, bottom border, padding 10px 18px,
-  gap 16px, wraps on narrow screens. Order: title, status pills, spacer, Speed / Accel
-  dropdown, Stop motion.
+  gap 16px, wraps on narrow screens. Order: title, status pills, spacer, "Preview before
+  moving" toggle, Speed / Accel dropdown, Stop motion.
 - **Pill** (`.pill`): radius 999px, `--panel-2` background, `--line` border, 12px `--dim` text,
   contains a `.dot` (8px circle).
 - **Section card** (`section`): `--panel`, 1px `--line` border, radius 10px. Title bar in
@@ -110,9 +110,33 @@ Rules:
   `.pop.confirm` placed under the pressed button). No centered modal, no backdrop.
 - **Loading overlay** (`#overlay`): full-screen `--bg`, 30px spinner with `--accent` top
   border, title, and last startup log lines. Same look as the starting page.
+- **Preview toggle** (`label.pill.toggle`, `#pv-mode`): a pill with a checkbox, `--accent`
+  border when on. Off after every page load. When on, jog buttons and Go only plan paths
+  (`/api/preview`); the robot moves only through "Run this path" and its confirm popup.
+- **Path preview panel** (`#pv`): full-width section, first in `main`.
+  - Left: 3D view `#pv-view` (440px high, `--bg`, 1px `--line`, radius 6px), then a playback
+    row `.pv-controls` (Play/Pause, range scrubber, time in monospace, speed select 1×/2×/5×)
+    and a `.note` legend.
+  - Right: `#pv-info` (12px `--dim`), option rows, `#pv-err` panel error, Discard +
+    "Run this path" (primary).
+- **Option row** (`.opt`): same surface as a saved move row. Number (monospace), label (600),
+  state (`--ok` "OK" / `--err` "Rejected"), monospace meta line (method, largest joint
+  rotation, duration) and, for rejected options, the reason. Selected row: `--accent` border.
+  Rejected options can be viewed but not run.
+- **3D colors**: current arm `#c9ced6` (35% opacity while a path is shown), selected
+  runnable path and its gripper box `--accent`, rejected path `--err`, target TCP dot `--ok`,
+  grid `--dim` / `--line`, background `--bg`. Two axis triads keep the three.js defaults
+  (X red, Y green, Z blue): the base frame (0.15 m, fixed at the origin) and the TCP frame
+  (0.06 m, at the tool, turning with it). Both arms carry the TCP triad, so the ghost shows
+  the tool orientation along the path. With `prefers-reduced-motion: reduce` the path does
+  not autoplay.
+- three.js 0.186.0 (MIT) is stored in `static/lib/three/` and loaded through an import map.
+  Never load it from a CDN.
 
 ## 5. Layout principles
 
+- Top row: Path preview spans all three columns (`grid-column: 1 / -1`); its inner grid
+  is `minmax(0,1.7fr)` / `minmax(280px,1fr)` and stacks below 1100px.
 - `main` is a 3-column grid: `minmax(320px,1fr)` / `minmax(340px,1.2fr)` / `minmax(300px,1fr)`,
   gap and padding 14px, columns aligned to top.
   - Left: Status, Gripper.
