@@ -136,9 +136,14 @@ jobs:
 
               ctl = yaml.safe_load(open(f"{pkg}/config/ros2_controllers.yaml"))
               adlar = [k for k in ctl if k.endswith("_controller")]
-              kis = ctl[adlar[0]]["ros__parameters"]["constraints"]
+              # Eklem adlari modele gore degisiyor (FR3MT: joint1..joint6,
+              # digerleri j1..j6). Yama araci adlari paketin kendi joints
+              # listesinden okuyor; kontrol de oradan okuyup HER eklemi dogrular.
+              params = ctl[adlar[0]]["ros__parameters"]
+              kis = params["constraints"]
               assert kis["goal_time"] == 2.0
-              assert kis["j1"]["goal"] == 0.05
+              for eklem in params["joints"]:
+                  assert kis[eklem]["goal"] == 0.05, f"{pkg}: {eklem} icin goal toleransi yok"
 
               print(f"OK {pkg.split('/')[-1]:32s} {gruplar[0]:22s} {adlar[0]}")
 
