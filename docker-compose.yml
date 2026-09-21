@@ -4,6 +4,7 @@ services:
     container_name: valiz-olcum-robot
     ports:
       - "8501:8501"
+      - "8090:8090"  # tools/pnp_web - al-yerlestir arayuzu
     # .env icindeki TUM degiskenler (SGBM_*, WLS_*, TILT_THRESHOLD_DEG, ...)
     # konteynira aktarilir. Yeniden build gerekmez: `docker compose up -d` yeter.
     env_file:

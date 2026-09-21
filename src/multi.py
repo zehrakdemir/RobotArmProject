@@ -746,7 +746,8 @@ def _detect_3d(Pa, PXa, n, d, K, up_idx, have_he, base, lr_last,
         except Exception:  # noqa: BLE001
             pass
         if Wm is None:
-            Wm, Dm = obb_z.width_mm, obb_z.thickness_mm
+            sc = float(getattr(config, "MEASURE_SCALE", 1.0))
+            Wm, Dm = obb_z.width_mm * sc, obb_z.thickness_mm * sc
         else:
             note = "maske-izdusum + duzlem-mesafe"
         W, Dp = Wm, Dm

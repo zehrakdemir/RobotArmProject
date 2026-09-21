@@ -16,6 +16,11 @@ streamlit>=1.36
 plotly>=5.22
 pillow>=10.0
 
+# --- Al-yerlestir web arayuzu (tools/pnp_web) ---
+fastapi>=0.110
+uvicorn>=0.29
+requests>=2.31
+
 # --- Opsiyonel: Fairino FR3 SDK ---
 # Resmi paket adi degisebilir; robot kolu kullanacaksaniz ekleyin:
 # fairino-python-sdk
