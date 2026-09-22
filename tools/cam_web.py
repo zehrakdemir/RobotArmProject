@@ -55,22 +55,26 @@ def _capture(key: str, index: int, w: int, h: int):
 
 
 PAGE = """<!doctype html><meta charset=utf-8><title>Kamera onizleme</title>
-<style>body{{background:#111;color:#eee;font:14px system-ui;margin:0;padding:12px}}
-.row{{display:flex;gap:12px;flex-wrap:wrap}}
-.cam{{flex:1;min-width:360px}} img{{width:100%;border:1px solid #333;background:#000}}
+<style>body{{background:#111;color:#eee;font:14px system-ui;margin:0;padding:10px;
+  height:100vh;box-sizing:border-box;display:flex;flex-direction:column}}
+.row{{display:flex;gap:12px;flex-wrap:nowrap;flex:1;min-height:0;justify-content:center}}
+.cam{{display:flex;flex-direction:column;align-items:center;min-width:0}}
+.cam h3{{margin:2px 0}}
+img{{max-width:100%;max-height:calc(100vh - 170px);width:auto;height:auto;
+  object-fit:contain;border:1px solid #333;background:#000}}
 h3{{margin:6px 0}} button{{font:16px system-ui;padding:10px 18px;margin-top:10px;cursor:pointer}}
-.rot{{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}}
+.rot{{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;justify-content:center}}
 .rot button{{font:13px system-ui;padding:6px 10px;margin:0}}
 .rot button.on{{background:#4c8dff;color:#fff}}
 #msg{{margin-top:8px;color:#8f8}}</style>
-<h2>Canli kamera onizleme</h2>
+<h2 style="margin:0 0 8px">Canli kamera onizleme</h2>
 <div class=row>
  <div class=cam><h3>SOL (index {L})</h3><img src="/stream/L">
   <div class=rot id=rotL></div></div>
  <div class=cam><h3>SAG (index {R})</h3><img src="/stream/R">
   <div class=rot id=rotR></div></div>
 </div>
-<button onclick="snap()">CIFT KAYDET</button> <span id=msg></span>
+<div><button onclick="snap()">CIFT KAYDET</button> <span id=msg></span></div>
 <script>
 const MODES = [["none","Yok"],["cw","90° sag"],["ccw","90° sol"],["180","180°"]];
 function buildRot(cam, current){{
