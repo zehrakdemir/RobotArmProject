@@ -19,8 +19,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cv2
 
-STATE = {"L": None, "R": None, "run": True, "idx": {"L": 0, "R": 1}, "snapdir": "snaps"}
+STATE = {"L": None, "R": None, "run": True, "idx": {"L": 0, "R": 1}, "snapdir": "snaps",
+         "rotate": {"L": None, "R": None}}
 LOCK = {"L": threading.Lock(), "R": threading.Lock()}
+
+_ROTATE_CODES = {
+    "cw": cv2.ROTATE_90_CLOCKWISE,
+    "ccw": cv2.ROTATE_90_COUNTERCLOCKWISE,
+    "180": cv2.ROTATE_180,
+}
 
 
 def _capture(key: str, index: int, w: int, h: int):
@@ -36,6 +43,11 @@ def _capture(key: str, index: int, w: int, h: int):
     while STATE["run"]:
         ok, f = cap.read()
         if ok and f is not None:
+            # her karede OKUNUYOR (sabit degil) - sayfadaki butonla sunucuyu
+            # yeniden baslatmadan CANLI degistirilebilsin diye.
+            rot = _ROTATE_CODES.get(STATE["rotate"][key])
+            if rot is not None:
+                f = cv2.rotate(f, rot)
             with LOCK[key]:
                 STATE[key] = f
         time.sleep(0.02)
@@ -47,14 +59,37 @@ PAGE = """<!doctype html><meta charset=utf-8><title>Kamera onizleme</title>
 .row{{display:flex;gap:12px;flex-wrap:wrap}}
 .cam{{flex:1;min-width:360px}} img{{width:100%;border:1px solid #333;background:#000}}
 h3{{margin:6px 0}} button{{font:16px system-ui;padding:10px 18px;margin-top:10px;cursor:pointer}}
+.rot{{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}}
+.rot button{{font:13px system-ui;padding:6px 10px;margin:0}}
+.rot button.on{{background:#4c8dff;color:#fff}}
 #msg{{margin-top:8px;color:#8f8}}</style>
 <h2>Canli kamera onizleme</h2>
 <div class=row>
- <div class=cam><h3>SOL (index {L})</h3><img src="/stream/L"></div>
- <div class=cam><h3>SAG (index {R})</h3><img src="/stream/R"></div>
+ <div class=cam><h3>SOL (index {L})</h3><img src="/stream/L">
+  <div class=rot id=rotL></div></div>
+ <div class=cam><h3>SAG (index {R})</h3><img src="/stream/R">
+  <div class=rot id=rotR></div></div>
 </div>
 <button onclick="snap()">CIFT KAYDET</button> <span id=msg></span>
 <script>
+const MODES = [["none","Yok"],["cw","90° sag"],["ccw","90° sol"],["180","180°"]];
+function buildRot(cam, current){{
+ const el = document.getElementById('rot'+cam);
+ el.innerHTML = '';
+ for (const [mode,label] of MODES) {{
+   const b = document.createElement('button');
+   b.textContent = label;
+   if (mode === current) b.classList.add('on');
+   b.onclick = () => setRotate(cam, mode, b);
+   el.appendChild(b);
+ }}
+}}
+async function setRotate(cam, mode, btn){{
+ await fetch('/rotate?cam='+cam+'&mode='+mode, {{method:'POST'}});
+ for (const c of btn.parentElement.children) c.classList.remove('on');
+ btn.classList.add('on');
+}}
+buildRot('L', '{rotL}'); buildRot('R', '{rotR}');
 async function snap(){{
  document.getElementById('msg').textContent='...';
  const r=await fetch('/snap',{{method:'POST'}}); const j=await r.json();
@@ -70,7 +105,9 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/" or self.path.startswith("/index"):
-            body = PAGE.format(L=STATE["idx"]["L"], R=STATE["idx"]["R"]).encode()
+            body = PAGE.format(L=STATE["idx"]["L"], R=STATE["idx"]["R"],
+                               rotL=STATE["rotate"]["L"] or "none",
+                               rotR=STATE["rotate"]["R"] or "none").encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -103,6 +140,22 @@ class H(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self):
+        if self.path.startswith("/rotate"):
+            import json
+            from urllib.parse import urlsplit, parse_qs
+            q = parse_qs(urlsplit(self.path).query)
+            cam = (q.get("cam", [""])[0]).upper()
+            mode = q.get("mode", ["none"])[0]
+            if cam not in ("L", "R") or mode not in ("none", "cw", "ccw", "180"):
+                self.send_error(400); return
+            STATE["rotate"][cam] = None if mode == "none" else mode
+            out = json.dumps({"ok": True, "cam": cam, "mode": mode}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+            return
         if self.path != "/snap":
             self.send_error(404); return
         import json
@@ -150,10 +203,14 @@ def main() -> int:
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--height", type=int, default=720)
     ap.add_argument("--snapdir", default="snaps")
+    ap.add_argument("--rotate", choices=["none", "cw", "ccw", "180"], default="cw",
+                     help="her iki kamerayi da bu yonde dondur (varsayilan: saat yonunde 90)")
     args = ap.parse_args()
 
     STATE["idx"] = {"L": args.left, "R": args.right}
     STATE["snapdir"] = args.snapdir
+    initial_rot = None if args.rotate == "none" else args.rotate
+    STATE["rotate"] = {"L": initial_rot, "R": initial_rot}
     threading.Thread(target=_capture, args=("L", args.left, args.width, args.height),
                      daemon=True).start()
     threading.Thread(target=_capture, args=("R", args.right, args.width, args.height),
