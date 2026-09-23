@@ -145,6 +145,10 @@ class PPPozdaCalistir(BaseModel):
     # On planlamada nesnenin genisligi (kavrama yonunde, mm). Gercekte gripper
     # kapaninca olculuyor; verilmezse tam strok (GRIPPER_STROKE_M) alinir.
     object_w_mm: float | None = Field(None, gt=0)
+    # Kac kol durusu icin tam zincir planlanip aralarindan EN KISA yol
+    # secilsin (23 Eylul). 1 = eski davranis (ilk uygun cift). Her artis
+    # fazladan bir tam zincir planlamasi (3 MTC gorevi) demek.
+    max_options: int = Field(3, ge=1, le=6)
     # True: yalnizca zinciri planla ve secilen ciftleri logla; robot hareket
     # etmez, gripper'a dokunulmaz.
     sadece_planla: bool = False
@@ -712,9 +716,14 @@ def pp_kaydet(istek: PPKaydet) -> dict[str, Any]:
 def pp_pozda_calistir(istek: PPPozdaCalistir) -> dict[str, Any]:
     """Disaridan (kamera/vision) gelen yaklasim pozlarindan MTC pick&place
     calistirir - kayitli hareket gerekmez. bkz. PPPozdaCalistir docstring'i
-    icin guvenlik notu."""
-    from fairino_cobot.ik_secimi import uygun_cifti_bul
+    icin guvenlik notu.
+
+    Bu yolda ONIZLEME YOK (cagrildigi anda hareket eder), ama cift secimi
+    /api/pickplace/preview ile AYNI: birkac kol durusu icin tum zincir
+    planlanip TOPLAM EKLEM YOLU en kisa olan secilir (23 Eylul)."""
+    from fairino_cobot.ik_secimi import uygun_ciftleri_bul
     from fairino_cobot.movecobot import GRIPPER_STROKE_M, run_pick_place
+    from fairino_cobot.mtc_yolu import asamalari_birlestir, toplam_eklem_yolu_deg
 
     def calistir(job):
         arm = oturum.arm
@@ -751,18 +760,44 @@ def pp_pozda_calistir(istek: PPPozdaCalistir) -> dict[str, Any]:
         pp.hizlari_guncelle(arm.speed_pct, arm.accel_pct)
 
         # Tum zincir (yaklas, kaldir, tasi, in, geri cekil) robot HAREKET
-        # ETMEDEN ve gripper kapanmadan ONCE planlanir; calistirilan cift
-        # bastan sona planlanabilen ilk cifttir. Aday sayisi sinirlanmiyor.
-        pre_pick, pre_place, deneme = uygun_cifti_bul(
+        # ETMEDEN ve gripper kapanmadan ONCE planlanir. Eskiden bastan sona
+        # planlanabilen ILK cift calistiriliyordu; "ilk uygun" = "en kisa"
+        # DEGIL (21 Eylul: pick j1=163 ile place j1=-54 secilmisti). Simdi
+        # max_options kadar cift planlanip en kisasi secilir.
+        zincirler: list[list[Any]] = []
+
+        def zincir_planla(p, q):
+            if not pp.zinciri_onceden_planla(p, q, yaklasma, boyut, arm.tcp_offset_m):
+                return False
+            zincirler.append(list(pp.son_zincir))
+            return True
+
+        ciftler, deneme = uygun_ciftleri_bul(
             pick_adaylari, place_adaylari,
             lambda p: pp.alma_planla(p, yaklasma),
-            lambda p, q: pp.zinciri_onceden_planla(p, q, yaklasma, boyut, arm.tcp_offset_m),
+            zincir_planla,
+            en_fazla=istek.max_options,
+            en_fazla_zincir_denemesi=4 * istek.max_options,
         )
-        job.log.append(f"pre-planning: {deneme['alma']} approach + {deneme['zincir']} chain plans")
-        if pre_pick is None:
+        job.log.append(f"pre-planning: {deneme['alma']} approach + {deneme['zincir']} chain plans "
+                       f"-> {len(ciftler)} feasible pair(s)")
+        if not ciftler:
             return {"success": False, "reason": "no_feasible_pick_place_pair",
                     "details": ("no pick/place arm configuration pair could be planned end to "
                                 "end. Robot did not move.")}
+
+        # EN KISA YOL: yolun toplam eklem donusu (bkz. toplam_eklem_yolu_deg).
+        maliyetler = []
+        for sira, zincir in enumerate(zincirler):
+            noktalar, _zamanlar, _bilgi = asamalari_birlestir(
+                [pp.cozum_asamalari(cozum) for _, cozum in zincir], bosluk_s=0.8)
+            maliyet = toplam_eklem_yolu_deg(noktalar)
+            maliyetler.append(maliyet)
+            job.log.append(f"pair {sira + 1}: total joint travel {maliyet:.0f} deg "
+                           f"(pre_pick j1={ciftler[sira][0][0]:.1f})")
+        en_iyi = min(range(len(ciftler)), key=lambda i: maliyetler[i])
+        pre_pick, pre_place = ciftler[en_iyi]
+        job.log.append(f"chosen: pair {en_iyi + 1} ({maliyetler[en_iyi]:.0f} deg total)")
         job.log.append(f"pre_pick_joints: {[round(v, 2) for v in pre_pick]}")
         job.log.append(f"pre_place_joints: {[round(v, 2) for v in pre_place]}")
         if istek.sadece_planla:
@@ -777,6 +812,12 @@ def pp_pozda_calistir(istek: PPPozdaCalistir) -> dict[str, Any]:
             "grip_force": istek.grip_force,
             "object_dh_mm": [istek.object_d_mm, istek.object_h_mm],
         }
+        # DIKKAT: run_pick_place asamalari YENIDEN PLANLAR (secilen ciftin
+        # eklem hedeflerinden). MTC plan sonucu deterministik olmadigi icin
+        # (bkz. GUNCEL_DURUM 7, 21 Eylul) yurutulen yol, maliyeti yukarida
+        # olculen yolun AYNISI olmayabilir - hedef duruslar ayni, ara yol
+        # farkli olabilir. Onizlenen yolun AYNEN yurutulmesi isteniyorsa
+        # /api/pickplace/preview + /preview/run kullanilir.
         ok = run_pick_place(arm, gripper, cfg, sor=False, onay_iste=False, pp=pp)
         return {"success": bool(ok)}
 
