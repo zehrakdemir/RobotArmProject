@@ -7,6 +7,8 @@ burada (bkz. safety.py ile ayni gerekce).
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 
 def ik_adaylarini_sirala(
     baslangic_deg: list[float],
@@ -33,3 +35,38 @@ def ik_adaylarini_sirala(
 
     tekil.sort(key=lambda x: (x[1], x[2]))
     return [(aday, en_buyuk) for aday, en_buyuk, _ in tekil]
+
+
+def uygun_cifti_bul(
+    pick_adaylari_deg: list[list[float]],
+    place_adaylari_deg: list[list[float]],
+    alma_planlanir_mi: Callable[[list[float]], bool],
+    zincir_planlanir_mi: Callable[[list[float], list[float]], bool],
+) -> tuple[list[float] | None, list[float] | None, dict[str, int]]:
+    """Pick ve place on-pozu icin, TUM zincirin robot HAREKET ETMEDEN
+    planlanabildigi ilk (pick, place) ciftini bulur.
+
+    NEDEN: MTC tutorial'i gorevi tek parca kurup tamamini once planliyor
+    (task.plan), sonra calistiriyor. Bizde pick ve place ayri gorevler ve
+    arada gripper gercekten kapaniyor; place planlanamazsa nesne elde
+    kaliyordu. Burada cift, calistirmadan ONCE secilir.
+
+    pick_adaylari_deg: baslangica yakin sirada (bkz. ik_adaylarini_sirala).
+    place_adaylari_deg: her pick icin O PICK'E yakinliga gore yeniden
+    siralanir (tasima eklem uzayinda duz gidiyor, yakin duruslar az savrulur).
+    alma_planlanir_mi(pick): yalniz yaklasma planlanir mi (ucuz eleme).
+    zincir_planlanir_mi(pick, place): tum zincir planlanir mi.
+
+    Donus: (pick, place, deneme). Uygun cift yoksa (None, None, deneme);
+    deneme = {"alma": n, "zincir": m} yapilan plan sayilari.
+    """
+    deneme = {"alma": 0, "zincir": 0}
+    for pick in pick_adaylari_deg:
+        deneme["alma"] += 1
+        if not alma_planlanir_mi(pick):
+            continue
+        for place, _ in ik_adaylarini_sirala(pick, place_adaylari_deg):
+            deneme["zincir"] += 1
+            if zincir_planlanir_mi(pick, place):
+                return pick, place, deneme
+    return None, None, deneme

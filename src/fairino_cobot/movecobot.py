@@ -1995,6 +1995,54 @@ class CobotArm:
                                 f"again - robot did not move.")}
         return self._yurut_ve_dogrula(plan_result)
 
+    def mtc_yolunu_denetle(self, noktalar_deg):
+        """MTC zincirinin (onizleme icin birlestirilmis) TUM noktalarini,
+        tek-tek hareketlerin gectigi AYNI iki kontrolden (zemin +
+        kendine-carpma) gecirir. Robot HAREKET ETMEZ - salt kontrol.
+
+        Bugune kadar pick & place bu kontrolden GECMIYORDU (bkz. GUNCEL_DURUM
+        9-27, 9-50): MTC'nin kendi Cartesian planlamasi (yaklasma/kaldirma/
+        geri cekilme, tekile hassas) hicbir zemin/self-collision post-
+        kontrolunden gecmiyordu. Simdi TUM yol noktalari elimizde oldugu icin
+        bu bedava - _plan_ve_kontrol'un ayni deseni (bkz. o fonksiyon,
+        movecobot.py:1159-1172).
+
+        Tekil (singularity) kontrolu KASITLI OLARAK YOK - kullanici karari
+        (22 Eylul): MTC'nin Cartesian asamalari (yaklas/kaldir/in/geri cekil)
+        tekile hassas ama bu kontrol bu yolda hic calismadi (17 Eylul'de
+        calisan sigara paketi akisi dahil); hemen zorunlu red koymak bugun
+        calisan akislari beklenmedik reddedebilir. secenek_ozeti'nin zaten
+        urettigi max_joint/max_deg (buyuk eklem donuslerini gosterir, bkz.
+        9-49) bu riski kismen gorunur kilar.
+
+        Ihlal varsa red sozlugu ({"success": False, "reason", "details"}),
+        temizse None."""
+        psm = self._moveit.get_planning_scene_monitor()
+        with psm.read_only() as scene:
+            taban = copy.deepcopy(scene.current_state)
+            durumlar = []
+            for nokta in noktalar_deg:
+                s = copy.deepcopy(taban)
+                s.set_joint_group_positions(self.group_name, [math.radians(v) for v in nokta])
+                s.update()
+                durumlar.append(s)
+
+            violations = check_trajectory_for_floor(durumlar, ALL_LINKS, FLOOR_Z_M)
+            if violations:
+                worst = min(violations, key=lambda v: v[2])
+                return {"success": False, "reason": "floor_collision",
+                        "details": f"step {worst[0]}, link '{worst[1]}', "
+                                   f"Z={worst[2] * 1000:.1f}mm"}
+
+            steps = check_trajectory_for_self_collision(scene, durumlar, self.group_name)
+            if steps:
+                ws, wd = min(steps, key=lambda x: x[1])
+                return {"success": False, "reason": "self_collision",
+                        "details": f"{len(steps)} points in the plan fall below the minimum "
+                                   f"clearance ({MIN_CLEARANCE_M * 1000:.0f}mm) - worst step "
+                                   f"{ws}/{len(durumlar)}, distance={wd * 1000:.1f}mm"}
+        return None
+
     def shutdown(self):
         if self._shutdown_called:
             return
@@ -3171,7 +3219,20 @@ def record_pick_and_place(arm, gripper):
     run_pick_place(arm, gripper, cfg)
 
 
-def run_pick_place(arm, gripper, cfg, sor=False, onay_iste=True):
+def pickplace_olustur(arm, speed_pct=None, accel_pct=None):
+    """MTC pick & place sarmalayicisini kurar. Her kurulum MTC'nin rclcpp
+    dugumunu yeniden kuruyor (loglarda class_loader uyarisi); bir is icinde
+    BIR KEZ kurup run_pick_place'e pp= ile ver."""
+    from fairino_cobot.pickplace import PickPlace
+
+    return PickPlace(arm.robot_desc_name, arm.package_name, arm.group_name,
+                     TIP_LINK, f"/tmp/fairino{arm.model_num}_movecobot.yaml",
+                     JOINT_NAMES,
+                     speed_pct=arm.speed_pct if speed_pct is None else speed_pct,
+                     accel_pct=arm.accel_pct if accel_pct is None else accel_pct)
+
+
+def run_pick_place(arm, gripper, cfg, sor=False, onay_iste=True, pp=None):
     """Kayitli (ya da yeni olusturulmus) bir pick & place yapilandirmasini
     calistirir. Asamalari MTC yapar - bkz. pickplace.py.
 
@@ -3182,9 +3243,9 @@ def run_pick_place(arm, gripper, cfg, sor=False, onay_iste=True):
     sor=True ise (menuden oynatma) hiz/ivme ve kavrama hiz/kuvveti
     calistirmadan once SORULUR; kayitli degerler varsayilan olarak gelir.
     Girilen degerler KAYDI DEGISTIRMEZ, sadece bu calistirma icin gecerlidir.
-    Alias ile dogrudan calistirmada (sor=False) kayitli degerler kullanilir."""
-    from fairino_cobot.pickplace import PickPlace
+    Alias ile dogrudan calistirmada (sor=False) kayitli degerler kullanilir.
 
+    pp: hazir bir PickPlace (pickplace_olustur). Verilmezse burada kurulur."""
     if "pre_pick_joints" not in cfg or "pre_place_joints" not in cfg:
         print("HATA: bu kayit ESKI bicimde (on-pozlar yok). Menuden [5] ile ayni "
               "ismi verip yeniden olusturun.")
@@ -3219,15 +3280,13 @@ def run_pick_place(arm, gripper, cfg, sor=False, onay_iste=True):
     g_speed, g_force = cfg["grip_speed"], cfg["grip_force"]
     obj_d, obj_h = cfg["object_dh_mm"]
 
-    try:
-        pp = PickPlace(arm.robot_desc_name, arm.package_name, arm.group_name,
-                       TIP_LINK, f"/tmp/fairino{arm.model_num}_movecobot.yaml",
-                       JOINT_NAMES,
-                       speed_pct=cfg.get("speed_pct", arm.speed_pct),
-                       accel_pct=cfg.get("accel_pct", arm.accel_pct))
-    except Exception as e:
-        print(f"HATA: MTC baslatilamadi ({type(e).__name__}: {e})")
-        return False
+    if pp is None:
+        try:
+            pp = pickplace_olustur(arm, cfg.get("speed_pct", arm.speed_pct),
+                                   cfg.get("accel_pct", arm.accel_pct))
+        except Exception as e:
+            print(f"HATA: MTC baslatilamadi ({type(e).__name__}: {e})")
+            return False
 
     # --- 1) cene ac, alma pozuna duz cizgi yaklas ---
     try:

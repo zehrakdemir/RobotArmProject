@@ -61,6 +61,15 @@ services:
     ports:
       - "${MOVECOBOT_WEB_PORT:-8088}:8088"
 
+    # Vision API'sine (valiz-olcum-robot/tools/detect_api.py, ayri container)
+    # ulasmak icin. O container da ayni Docker Desktop motorunda
+    # host.docker.internal ile host'a ulasiyor - burada da AYNI DNS adi,
+    # ama koprunun ac gidecegi yon TERS (biz baska bir container'a gidiyoruz,
+    # host uzerinden). extra_hosts belirtmek WSL2 Docker Desktop'ta genelde
+    # otomatik calisan bu cozumlemeyi garanti eder.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
     # SYS_NICE + rtprio: ros2_control kontrol döngüsünü FIFO gerçek-zamanlı
     # önceliğe alır. Bu izin olmadan döngü gecikip patlama halinde yetişmeye
     # çalışıyor, ServoJ akışı düzensizleşiyor ve robot hız limiti faultu
@@ -82,6 +91,11 @@ services:
       - XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/mnt/wslg/runtime-dir}
       # rviz'in yazılım render'ına düşmesi (WSLg'de glamor/GBM tutarsız).
       - LIBGL_ALWAYS_SOFTWARE=1
+      # Vision API'si (valiz-olcum-robot/tools/detect_api.py, port 8502) ve
+      # tarayicinin dogrudan baglanacagi kamera stream'i (cam_web.py, 8600).
+      # Ikincisi backend'den DEGIL, tarayicidan kullanilir (bkz. vizyon.py).
+      - VISION_API_URL=${VISION_API_URL:-http://host.docker.internal:8502}
+      - VISION_CAM_URL=${VISION_CAM_URL:-}
 
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw

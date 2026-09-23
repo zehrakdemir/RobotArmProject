@@ -109,11 +109,23 @@ class RobotSession:
         self.onizleme: dict[str, Any] | None = None
         self._onizleme_seq = 0
 
+        # Pick & place MTC onizlemesi (server.py /api/pickplace/preview):
+        # onizleme ile AYNI desen, ama "planlar" degil "zincir" - 3 (task,
+        # cozum) cifti (bkz. pickplace.zinciri_onceden_planla) + o zinciri
+        # planlayan PickPlace nesnesinin kendisi (task/cozum nesneleri
+        # yalnizca kendi PickPlace'i yasadigi surece calistirilabilir).
+        # Ikisi (onizleme / pp_onizleme) KARSILIKLI DISLAR: biri
+        # kaydedilince oteki temizlenir - viewer'da ayni anda tek bir
+        # "hayalet" yol gosterilir, JS'de arbitraj gerekmez.
+        self.pp_onizleme: dict[str, Any] | None = None
+        self._pp_onizleme_seq = 0
+
         # 3D gorunum icin robot modeli onbellegi (server.py /api/model).
         self.model_onbellek: dict[str, Any] | None = None
 
         self.arm = None
         self.gripper = None
+        self.pp = None            # PickPlace (MTC) - oturum basi tek seferlik, bkz. _baglanmayi_dene
         self.robot_ip: str | None = None
         self.model_num: str | None = None
 
@@ -207,6 +219,20 @@ class RobotSession:
             except Exception as e:  # gripper yoksa kol yine de kullanilabilir
                 log(f"WARNING: gripper could not be initialized ({e}). The arm keeps working.")
 
+            # MTC (pick & place) OTURUM BASI TEK SEFERLIK kurulur - ayri bir
+            # rclcpp dugumu actigi icin (bkz. pickplace_olustur docstring'i)
+            # her istekte yeniden kurmak kaynak sizdiriyor ve hizli art arda
+            # cagrilinca SEGFAULT'a yol acabiliyor (22 Eylul canli olayi).
+            # Hiz/ivme degisirse PickPlace.hizlari_guncelle ile guncellenir -
+            # node yeniden kurulmaz.
+            try:
+                from fairino_cobot.movecobot import pickplace_olustur
+                self.pp = pickplace_olustur(self.arm)
+                log("MTC (pick & place) ready.")
+            except Exception as e:  # MTC yoksa kol/gripper yine de kullanilabilir
+                self.pp = None
+                log(f"WARNING: MTC could not be initialized ({e}). Pick & place is unavailable.")
+
             self.ready = True
             log("Ready.")
         except TypeError as e:
@@ -246,6 +272,17 @@ class RobotSession:
             self._onizleme_seq += 1
             no = self._onizleme_seq
         self.onizleme = {"id": no, "ozet": {**ozet, "id": no}, "planlar": list(planlar)}
+        self.pp_onizleme = None
+        return no
+
+    def pp_onizleme_kaydet(self, ozet: dict[str, Any], zincir: list[Any], pp: Any) -> int:
+        """Yeni pick & place onizlemesini saklar, numarasini doner.
+        onizleme_kaydet ile AYNI gerekce (bkz. onun docstring'i)."""
+        with self._job_lock:
+            self._pp_onizleme_seq += 1
+            no = self._pp_onizleme_seq
+        self.pp_onizleme = {"id": no, "ozet": {**ozet, "id": no}, "zincir": list(zincir), "pp": pp}
+        self.onizleme = None
         return no
 
     # -- durum -------------------------------------------------------------
@@ -254,8 +291,10 @@ class RobotSession:
         """Arayuzun surekli okudugu canli durum. Hicbir zaman istisna
         firlatmaz - tek bir okuma hatasi arayuzu karartmamali."""
         onizleme = self.onizleme  # baska is parcacigi None yapabilir
+        pp_onizleme = self.pp_onizleme
         out: dict[str, Any] = {
             "preview_id": onizleme["id"] if onizleme else None,
+            "pp_preview_id": pp_onizleme["id"] if pp_onizleme else None,
             "ready": self.ready,
             "startup_error": self.startup_error,
             "startup_log": self.startup_log[-12:],

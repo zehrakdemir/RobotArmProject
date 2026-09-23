@@ -107,6 +107,51 @@ function kur() {
   hedefNokta.visible = false;
   sahne.add(yolCizgisi, hedefNokta);
 
+  // Kameranin tespit ettigi nesneler: tel-kafes kutular. app.js "Detect"
+  // sonucunu "algilanan-nesneler" olayiyla gonderir - robota/plana bagli
+  // degil, salt gorsel. Renk: secili --accent, kavranamaz --err, digerleri --dim.
+  const nesneGrubu = new THREE.Group();
+  sahne.add(nesneGrubu);
+
+  function nesneleriCiz(liste) {
+    while (nesneGrubu.children.length) {
+      const c = nesneGrubu.children.pop();
+      c.geometry.dispose(); c.material.dispose();
+    }
+    (liste || []).forEach((n) => {
+      const [sx, sy, sz] = n.size_mm.map((v) => Math.max(v, 1) / 1000);
+      const renkAdi = n.secili ? "--accent" : (n.graspable ? "--dim" : "--err");
+      const kutu = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz),
+        new THREE.MeshBasicMaterial({ color: renk(renkAdi), wireframe: true }));
+      kutu.position.set(n.center_mm[0] / 1000, n.center_mm[1] / 1000, n.center_mm[2] / 1000);
+      kutu.rotation.z = (n.yaw_deg || 0) * Math.PI / 180;
+      nesneGrubu.add(kutu);
+    });
+  }
+  window.addEventListener("algilanan-nesneler", (e) => nesneleriCiz(e.detail));
+  if (window.sonAlgilananNesneler) nesneleriCiz(window.sonAlgilananNesneler);
+
+  // Kutuya tiklayinca app.js'e "nesne-tiklandi" (detail: sira) gonderilir -
+  // liste ile senkron secim. Surukleyerek dondurme (OrbitControls) TIKLAMA
+  // sayilmasin diye basi/sonu 5px'ten fazla kaymissa yoksayilir.
+  const isaretci = new THREE.Raycaster();
+  const ndc = new THREE.Vector2();
+  let basiX = 0, basiY = 0;
+  cizici.domElement.addEventListener("pointerdown", (e) => { basiX = e.clientX; basiY = e.clientY; });
+  cizici.domElement.addEventListener("pointerup", (e) => {
+    if (Math.hypot(e.clientX - basiX, e.clientY - basiY) > 5) return;
+    if (!nesneGrubu.children.length) return;
+    const r = cizici.domElement.getBoundingClientRect();
+    ndc.x = ((e.clientX - r.left) / r.width) * 2 - 1;
+    ndc.y = -((e.clientY - r.top) / r.height) * 2 + 1;
+    isaretci.setFromCamera(ndc, kamera);
+    const vurus = isaretci.intersectObjects(nesneGrubu.children)[0];
+    if (vurus) {
+      window.dispatchEvent(new CustomEvent("nesne-tiklandi",
+        { detail: nesneGrubu.children.indexOf(vurus.object) }));
+    }
+  });
+
   // --- model --------------------------------------------------------------
   let model = null;
   let canli = null;

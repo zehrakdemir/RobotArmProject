@@ -1,6 +1,6 @@
 """IK aday siralamasi. Robot, ROS2 ve SDK GEREKTIRMEZ."""
 
-from fairino_cobot.ik_secimi import ik_adaylarini_sirala
+from fairino_cobot.ik_secimi import ik_adaylarini_sirala, uygun_cifti_bul
 
 
 def test_en_yakin_aday_once_geliyor():
@@ -37,3 +37,75 @@ def test_esitlikte_toplam_donus_kucuk_olan_once():
 
 def test_aday_yoksa_bos_liste():
     assert ik_adaylarini_sirala([0.0] * 6, []) == []
+
+
+def _j(x):
+    return [float(x), 0.0, 0.0, 0.0, 0.0, 0.0]
+
+
+def test_cift_ilk_uygun_pick_ve_place_seciliyor():
+    pick, place, deneme = uygun_cifti_bul(
+        [_j(0), _j(50)], [_j(10)], lambda p: True, lambda p, q: True)
+
+    assert (pick, place) == (_j(0), _j(10))
+    assert deneme == {"alma": 1, "zincir": 1}
+
+
+def test_yaklasma_planlanamayan_pick_atlaniyor_ve_zincir_denenmiyor():
+    zincir_cagrilari = []
+
+    def zincir(p, q):
+        zincir_cagrilari.append(p)
+        return True
+
+    pick, place, deneme = uygun_cifti_bul(
+        [_j(0), _j(50)], [_j(10)], lambda p: p == _j(50), zincir)
+
+    assert pick == _j(50)
+    assert zincir_cagrilari == [_j(50)], "yaklasamayan pick icin zincir planlanmamali"
+    assert deneme == {"alma": 2, "zincir": 1}
+
+
+def test_place_adaylari_pick_a_yakinliga_gore_deneniyor():
+    cagrilar = []
+
+    def zincir(p, q):
+        cagrilar.append(q)
+        return False
+
+    uygun_cifti_bul([_j(0)], [_j(100), _j(5)], lambda p: True, zincir)
+
+    assert cagrilar == [_j(5), _j(100)]
+
+
+def test_zincir_planlanamazsa_sonraki_place_deneniyor():
+    pick, place, deneme = uygun_cifti_bul(
+        [_j(0)], [_j(5), _j(100)], lambda p: True, lambda p, q: q == _j(100))
+
+    assert (pick, place) == (_j(0), _j(100))
+    assert deneme == {"alma": 1, "zincir": 2}
+
+
+def test_zincir_hicbir_place_ile_planlanamazsa_sonraki_pick_deneniyor():
+    pick, place, _ = uygun_cifti_bul(
+        [_j(0), _j(50)], [_j(10)], lambda p: True, lambda p, q: p == _j(50))
+
+    assert (pick, place) == (_j(50), _j(10))
+
+
+def test_hic_uygun_cift_yoksa_none_donuyor():
+    pick, place, deneme = uygun_cifti_bul(
+        [_j(0), _j(50)], [_j(10)], lambda p: True, lambda p, q: False)
+
+    assert (pick, place) == (None, None)
+    assert deneme == {"alma": 2, "zincir": 2}
+
+
+def test_aday_yoksa_hicbir_sey_planlanmiyor():
+    cagrilar = []
+    pick, place, deneme = uygun_cifti_bul(
+        [], [_j(10)], lambda p: cagrilar.append(p) or True, lambda p, q: True)
+
+    assert (pick, place) == (None, None)
+    assert cagrilar == []
+    assert deneme == {"alma": 0, "zincir": 0}

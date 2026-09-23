@@ -125,6 +125,52 @@ class PPKaydet(BaseModel):
     overwrite: bool = False
 
 
+class PPPozdaCalistir(BaseModel):
+    """Kayitli bir hareket olmadan, DISARIDAN (kamera/vision) gelen yaklasim
+    pozlarindan MTC pick&place calistirma istegi (17 Eylul).
+
+    GUVENLIK: bu yol tek-tek hareketlerin (_ik_adaylariyla_git) gectigi
+    zemin/self-collision post-kontrolu, tekil korumasi ve SDK varis
+    dogrulamasindan GECMEZ - MTC kendi Cartesian planlamasini yapar, ekstra
+    kontrol yoktur (bkz. GUNCEL_DURUM.md 9-27). Kullanici bilerek onayladi."""
+
+    pick_approach: list[float] = Field(..., min_length=6, max_length=6)
+    place_approach: list[float] = Field(..., min_length=6, max_length=6)
+    approach_mm: float = Field(..., gt=0)
+    grip_speed: int = Field(..., ge=1, le=100)
+    grip_force: int = Field(..., ge=1, le=100)
+    object_d_mm: float = Field(..., gt=0)
+    object_h_mm: float = Field(..., gt=0)
+    # On planlamada nesnenin genisligi (kavrama yonunde, mm). Gercekte gripper
+    # kapaninca olculuyor; verilmezse tam strok (GRIPPER_STROKE_M) alinir.
+    object_w_mm: float | None = Field(None, gt=0)
+    # True: yalnizca zinciri planla ve secilen ciftleri logla; robot hareket
+    # etmez, gripper'a dokunulmaz.
+    sadece_planla: bool = False
+
+
+class PPOnizleme(BaseModel):
+    """Vision koprusunden gelen bir nesne icin pick & place ONIZLEMESI
+    istegi (bkz. webapp Pick & place bolumu). PPPozdaCalistir'den farki:
+    hareket etmez, tum zinciri (points/times) doner ve mtc_yolunu_denetle
+    ile zemin/self-collision kontrolunden GECIRIR - artik tum yol
+    noktalari elde oldugu icin bu bedava (bkz. o fonksiyonun docstring'i)."""
+
+    grasp_point: list[float] = Field(..., min_length=3, max_length=3)
+    grasp_rpy: list[float] = Field(..., min_length=3, max_length=3)
+    place_pose: list[float] = Field(..., min_length=6, max_length=6)
+    approach_mm: float = Field(..., gt=0, le=200)
+    grip_speed: int = Field(..., ge=1, le=100)
+    grip_force: int = Field(..., ge=1, le=100)
+    object_w_mm: float | None = Field(None, gt=0)
+    object_d_mm: float = Field(..., gt=0)
+    object_h_mm: float = Field(..., gt=0, le=160)
+
+
+class PPOnizlemeCalistir(BaseModel):
+    id: int
+
+
 class OnizlemeIstek(BaseModel):
     """Yol onizlemesi: hareket isteginin AYNISI, robot hareket etmeden
     planlanir. values: pose -> x,y,z,rx,ry,rz (base, mm/derece); tcp_local ve
@@ -650,6 +696,284 @@ def pp_kaydet(istek: PPKaydet) -> dict[str, Any]:
         pass  # container'da .bashrc olmayabilir - kayit yazildi, yeter
     oturum.pp_taslak = {}
     return {"saved": istek.name}
+
+
+@app.post("/api/pickplace/run_at_pose")
+def pp_pozda_calistir(istek: PPPozdaCalistir) -> dict[str, Any]:
+    """Disaridan (kamera/vision) gelen yaklasim pozlarindan MTC pick&place
+    calistirir - kayitli hareket gerekmez. bkz. PPPozdaCalistir docstring'i
+    icin guvenlik notu."""
+    from fairino_cobot.ik_secimi import uygun_cifti_bul
+    from fairino_cobot.movecobot import GRIPPER_STROKE_M, run_pick_place
+
+    def calistir(job):
+        arm = oturum.arm
+        gripper = oturum.gripper
+
+        _, sirali_pick, red_pick = arm._ik_adaylari(*istek.pick_approach)
+        if red_pick is not None or not sirali_pick:
+            return {"success": False, "reason": "pick_ik_failed",
+                    "details": red_pick.get("details") if red_pick else "no candidates"}
+
+        _, sirali_place, red_place = arm._ik_adaylari(*istek.place_approach)
+        if red_place is not None or not sirali_place:
+            return {"success": False, "reason": "place_ik_failed",
+                    "details": red_place.get("details") if red_place else "no candidates"}
+
+        pick_adaylari = [a for a, _ in sirali_pick]
+        place_adaylari = [a for a, _ in sirali_place]
+        job.log.append(f"IK candidates: {len(pick_adaylari)} pick, {len(place_adaylari)} place")
+
+        # Kavrama genisligi gercekte gripper kapaninca olculuyor. Verilmediyse
+        # on planlamada run_pick_place'in gripper konumu okunamayinca (0)
+        # kullandigi deger alinir: tam strok.
+        obj_w = istek.object_w_mm if istek.object_w_mm else GRIPPER_STROKE_M * 1000
+        boyut = [obj_w, istek.object_d_mm, istek.object_h_mm]
+        yaklasma = istek.approach_mm
+
+        # PickPlace OTURUM BASI TEK SEFERLIK kuruldu (bkz. session.py
+        # _baglanmayi_dene) - burada YENIDEN KURULMAZ (kaynak sizdirip
+        # SEGFAULT riski tasir, bkz. pickplace_olustur docstring'i).
+        pp = oturum.pp
+        if pp is None:
+            return {"success": False, "reason": "mtc_init_failed",
+                    "details": "MTC was not initialized at startup (see server log)."}
+        pp.hizlari_guncelle(arm.speed_pct, arm.accel_pct)
+
+        # Tum zincir (yaklas, kaldir, tasi, in, geri cekil) robot HAREKET
+        # ETMEDEN ve gripper kapanmadan ONCE planlanir; calistirilan cift
+        # bastan sona planlanabilen ilk cifttir. Aday sayisi sinirlanmiyor.
+        pre_pick, pre_place, deneme = uygun_cifti_bul(
+            pick_adaylari, place_adaylari,
+            lambda p: pp.alma_planla(p, yaklasma),
+            lambda p, q: pp.zinciri_onceden_planla(p, q, yaklasma, boyut, arm.tcp_offset_m),
+        )
+        job.log.append(f"pre-planning: {deneme['alma']} approach + {deneme['zincir']} chain plans")
+        if pre_pick is None:
+            return {"success": False, "reason": "no_feasible_pick_place_pair",
+                    "details": ("no pick/place arm configuration pair could be planned end to "
+                                "end. Robot did not move.")}
+        job.log.append(f"pre_pick_joints: {[round(v, 2) for v in pre_pick]}")
+        job.log.append(f"pre_place_joints: {[round(v, 2) for v in pre_place]}")
+        if istek.sadece_planla:
+            job.log.append("plan only: the robot was not moved.")
+            return {"success": True}
+
+        cfg = {
+            "pre_pick_joints": pre_pick,
+            "pre_place_joints": pre_place,
+            "approach_mm": yaklasma,
+            "grip_speed": istek.grip_speed,
+            "grip_force": istek.grip_force,
+            "object_dh_mm": [istek.object_d_mm, istek.object_h_mm],
+        }
+        ok = run_pick_place(arm, gripper, cfg, sor=False, onay_iste=False, pp=pp)
+        return {"success": bool(ok)}
+
+    return _is_baslat("pickplace", "MTC pick & place at given pose", calistir)
+
+
+@app.get("/api/vision/info")
+def vizyon_bilgi() -> dict[str, Any]:
+    """Vision API'sinin durumu (el-goz kalibreli mi, tespit modu) + hazir
+    birakma slotlari (bkz. fairino_cobot.vizyon). Robota dokunmaz."""
+    from fairino_cobot import vizyon
+    try:
+        return vizyon.bilgi()
+    except vizyon.VizyonHatasi as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+
+
+@app.post("/api/vision/detect")
+def vizyon_algila() -> dict[str, Any]:
+    """Kameradan (stereo + geometrik tespit) nesneleri ister. ROBOTA
+    DOKUNMAZ - motion_lock ALINMAZ (bkz. vizyon.py modul notu), bu yuzden
+    jog/onizleme/pick&place ile CAKISMAZ. Senkron: FastAPI'nin kendi thread
+    pool'unda calisir (plain def), WebSocket telemetriyi bloklamaz. Stereo+
+    tespit bir kac saniye surebilir - arayuz "Detect" butonunu bu sure
+    disable eder."""
+    from fairino_cobot import vizyon
+    try:
+        return vizyon.algila()
+    except vizyon.VizyonHatasi as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+
+
+@app.post("/api/pickplace/preview")
+def pp_onizle(istek: PPOnizleme) -> dict[str, Any]:
+    """Tespit edilen bir nesne icin TAM pick & place zincirini (yaklas ->
+    kavra -> kaldir -> tasi -> in -> birak -> geri cekil) robot HAREKET
+    ETMEDEN planlar ve 3D onizleme icin (points/times) doner.
+
+    run_at_pose'un aksine burada TUM yol noktalari elde oldugu icin
+    mtc_yolunu_denetle ile zemin/self-collision kontrolunden de gecirilir -
+    ihlal varsa secenek 'ok': False doner (yol yine gosterilir, calistirilamaz).
+    """
+    from fairino_cobot.ik_secimi import uygun_cifti_bul
+    from fairino_cobot.movecobot import GRIPPER_STROKE_M
+    from fairino_cobot.mtc_yolu import asamalari_birlestir
+    from fairino_cobot.yol_onizleme import secenek_ozeti
+
+    def calistir(job):
+        arm = oturum.arm
+
+        def basarisiz(reason, details):
+            # Path preview'daki "success: false de KAYDEDILIR" deseniyle ayni
+            # (server.py:370-380, yollari_onizle) - kullanicı sonucu #pnp-info'da
+            # gorsun, yalnizca genel log'da degil.
+            oturum.pp_onizleme_kaydet(
+                {"success": False, "reason": reason, "details": details, "options": []},
+                [], None)
+            return {"success": False, "reason": reason, "details": details}
+
+        pick_approach = [*istek.grasp_point[:2], istek.grasp_point[2] + istek.approach_mm,
+                         *istek.grasp_rpy]
+        place_approach = [*istek.place_pose[:2], istek.place_pose[2] + istek.approach_mm,
+                          *istek.place_pose[3:]]
+
+        baslangic, sirali_pick, red_pick = arm._ik_adaylari(*pick_approach)
+        if red_pick is not None or not sirali_pick:
+            return basarisiz("pick_ik_failed",
+                             red_pick.get("details") if red_pick else "no candidates")
+        _, sirali_place, red_place = arm._ik_adaylari(*place_approach)
+        if red_place is not None or not sirali_place:
+            return basarisiz("place_ik_failed",
+                             red_place.get("details") if red_place else "no candidates")
+
+        pick_adaylari = [a for a, _ in sirali_pick]
+        place_adaylari = [a for a, _ in sirali_place]
+        job.log.append(f"IK candidates: {len(pick_adaylari)} pick, {len(place_adaylari)} place")
+
+        obj_w = istek.object_w_mm if istek.object_w_mm else GRIPPER_STROKE_M * 1000
+        boyut = [obj_w, istek.object_d_mm, istek.object_h_mm]
+
+        # PickPlace OTURUM BASI TEK SEFERLIK kuruldu (bkz. session.py
+        # _baglanmayi_dene) - burada YENIDEN KURULMAZ. "Plan pick & place"
+        # butonuna hizli art arda basmak eskiden her tikta yeni bir rclcpp
+        # dugumu aciyordu; eskileri temizlenmeden birikince class_loader
+        # SEGFAULT'a yol acti (22 Eylul canli olayi) - bkz. pickplace_olustur
+        # docstring'i.
+        pp = oturum.pp
+        if pp is None:
+            return basarisiz("mtc_init_failed", "MTC was not initialized at startup (see server log).")
+        pp.hizlari_guncelle(arm.speed_pct, arm.accel_pct)
+
+        pre_pick, pre_place, deneme = uygun_cifti_bul(
+            pick_adaylari, place_adaylari,
+            lambda p: pp.alma_planla(p, istek.approach_mm),
+            lambda p, q: pp.zinciri_onceden_planla(p, q, istek.approach_mm, boyut, arm.tcp_offset_m),
+        )
+        job.log.append(f"pre-planning: {deneme['alma']} approach + {deneme['zincir']} chain plans")
+        if pre_pick is None:
+            return basarisiz("no_feasible_pick_place_pair",
+                             "no pick/place arm configuration pair could be planned end to "
+                             "end. Robot did not move.")
+
+        asamalar = [pp.cozum_asamalari(cozum) for _, cozum in pp.son_zincir]
+        noktalar, zamanlar, bilgi = asamalari_birlestir(asamalar, bosluk_s=0.8)
+        problem = arm.mtc_yolunu_denetle(noktalar) if noktalar else None
+
+        ozet = secenek_ozeti(1, "Pick & place chain", "MTC", pre_pick, noktalar, zamanlar,
+                             problem, noktalar[-1] if noktalar else None)
+        ozet["stages"] = bilgi
+        job.log.append(f"preview: {'runnable' if ozet['ok'] else 'REJECTED - ' + str(ozet['reason'])}")
+
+        no = oturum.pp_onizleme_kaydet(
+            {"success": True, "kind": "pickplace", "start_joints": pre_pick,
+             "target_tcp": dict(zip(("x", "y", "z", "rx", "ry", "rz"),
+                                    [*istek.grasp_point, *istek.grasp_rpy])),
+             "options": [ozet], "grip_speed": istek.grip_speed, "grip_force": istek.grip_force},
+            pp.son_zincir, pp)
+        job.log.append(f"stored as preview #{no}")
+        return {"success": True}
+
+    return _is_baslat("preview", "Plan pick & place chain", calistir)
+
+
+@app.get("/api/pickplace/preview")
+def pp_onizleme_oku() -> dict[str, Any]:
+    """Son pick & place onizlemesi (Task/Solution nesneleri olmadan). Yoksa
+    bos sozluk."""
+    o = oturum.pp_onizleme
+    return o["ozet"] if o else {}
+
+
+@app.delete("/api/pickplace/preview")
+def pp_onizleme_sil() -> dict[str, Any]:
+    oturum.pp_onizleme = None
+    return {}
+
+
+@app.post("/api/pickplace/preview/run")
+def pp_onizlemeyi_calistir(istek: PPOnizlemeCalistir) -> dict[str, Any]:
+    """Onizlenen pick & place zincirini AYNEN calistirir (yeniden planlamaz,
+    bkz. pickplace.zinciri_calistir). ROBOTU HAREKET ETTIRIR (arayuz once
+    onay ister). Gripper: ac -> [zincir 1: yaklas] -> kavra ->
+    [zincir 2: kaldir+tasi+in] -> ac -> [zincir 3: ayir+geri cekil]."""
+    from fairino_cobot.gripper_controller import GripperError
+    from fairino_cobot.yol_onizleme import ONIZLEME_BASLANGIC_TOLERANSI_DEG, baslangic_farki
+
+    _hazir()
+    o = oturum.pp_onizleme
+    if o is None:
+        raise HTTPException(status_code=404, detail="No pick & place preview. Plan it first.")
+    if o["id"] != istek.id:
+        raise HTTPException(status_code=409, detail="This preview is out of date. Plan it again.")
+    secenekler = o["ozet"].get("options") or []
+    if not secenekler:
+        raise HTTPException(status_code=409, detail=o["ozet"].get("details")
+                            or o["ozet"].get("reason") or "No plan to run.")
+    ozet = secenekler[0]
+    if not ozet["ok"]:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This plan was rejected ({ozet.get('reason') or 'no plan'}); it cannot be run.")
+    baslangic = o["ozet"]["start_joints"]
+    pp = o["pp"]
+    g_speed, g_force = o["ozet"]["grip_speed"], o["ozet"]["grip_force"]
+
+    def calistir(job):
+        arm = oturum.arm
+        gripper = oturum.gripper
+        with arm.sdk_lock:
+            simdiki = list(arm.sdk.GetActualJointPosDegree()[1])
+        fark = baslangic_farki(baslangic, simdiki)
+        if fark > ONIZLEME_BASLANGIC_TOLERANSI_DEG:
+            return {"success": False, "reason": "preview_stale",
+                    "details": (f"the arm moved {fark:.1f} degrees since the plan was made "
+                                f"(limit {ONIZLEME_BASLANGIC_TOLERANSI_DEG:g}). Plan again - "
+                                f"robot did not move.")}
+
+        job.log.append("Run previewed pick & place chain")
+        try:
+            gripper.move(position=0, speed=g_speed, force=g_force)
+        except GripperError as e:
+            job.log.append(f"WARNING: gripper open failed: {e}")
+        if not pp.zinciri_calistir(0):
+            return {"success": False, "reason": "chain_failed", "details": "stage 1/3 (approach)"}
+
+        try:
+            sonuc = gripper.grip(speed=g_speed, force=g_force)
+            job.log.append(f"gripped={sonuc['gripped']} position={sonuc['position_pct']}")
+        except GripperError as e:
+            return {"success": False, "reason": "grip_failed", "details": str(e)}
+
+        if not pp.zinciri_calistir(1):
+            return {"success": False, "reason": "chain_failed", "details": "stage 2/3 (transfer)"}
+
+        try:
+            gripper.move(position=0, speed=g_speed, force=g_force)
+        except GripperError as e:
+            job.log.append(f"WARNING: gripper open failed: {e}")
+
+        if not pp.zinciri_calistir(2):
+            return {"success": False, "reason": "chain_failed", "details": "stage 3/3 (retreat)"}
+        return {"success": True}
+
+    cevap = _is_baslat("pickplace", "Run previewed pick & place chain", calistir)
+    # Tek kullanimlik: ayni zincir ikinci kez yurutulmez (kol artik baska yerde).
+    oturum.pp_onizleme = None
+    return cevap
 
 
 @app.delete("/api/moves/{ad}")

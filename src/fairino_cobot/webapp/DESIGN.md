@@ -132,11 +132,24 @@ Rules:
   not autoplay.
 - three.js 0.186.0 (MIT) is stored in `static/lib/three/` and loaded through an import map.
   Never load it from a CDN.
+- **Pick & place panel** (`#pnp`): full-width section, right after Path preview.
+  - Left: two camera images (`.cam img`, MJPEG from `cam_web.py`, direct browser-to-host —
+    never proxied through the backend), a "Show cameras" checkbox, Detect / Discard plan
+    buttons, vision panel error, detected-object option rows (same `.opt` surface as path
+    options).
+  - Right: place-slot select, approach/object-height/grip fields (`.row`), Plan / Run
+    (primary) buttons, `#pnp-info` plan summary, `#pnp-err` panel error, a `.note` stating
+    the collision check does not see real objects on the table.
+  - Shares the 3D view and the `onizleme-secimi` event with Path preview: only one of the
+    two previews is shown at a time (server enforces this, see `session.py`).
+  - Detected-object boxes are a separate `algilanan-nesneler` event/wireframe group, always
+    visible regardless of which preview is active.
 
 ## 5. Layout principles
 
-- Top row: Path preview spans all three columns (`grid-column: 1 / -1`); its inner grid
-  is `minmax(0,1.7fr)` / `minmax(280px,1fr)` and stacks below 1100px.
+- Top rows: Path preview, then Pick & place, each spans all three columns
+  (`grid-column: 1 / -1`). Path preview's inner grid is `minmax(0,1.7fr)` / `minmax(280px,1fr)`;
+  Pick & place's is `minmax(0,1.3fr)` / `minmax(300px,1fr)`. Both stack below 1100px.
 - `main` is a 3-column grid: `minmax(320px,1fr)` / `minmax(340px,1.2fr)` / `minmax(300px,1fr)`,
   gap and padding 14px, columns aligned to top.
   - Left: Status, Gripper.

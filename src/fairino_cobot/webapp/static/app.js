@@ -557,9 +557,16 @@ function onizlemeHata(mesaj) {
 
 // viewer.js bu dosyadan SONRA yuklenir; son secim pencerede de tutulur ki
 // modul yuklenirken gecen secimi kacirmasin.
+//
+// Pick & place onizlemesi (ppOnizleme, asagida) VARSA o gosterilir, yoksa
+// normal yol onizlemesi - sunucu ikisini karsilikli disliyor (bkz.
+// session.py pp_onizleme_kaydet/onizleme_kaydet), burada JS'de ayrica
+// arbitraj gerekmiyor.
 function secimiBildir() {
-  window.sonOnizlemeSecimi = { onizleme, secenek: seciliSecenek };
-  window.dispatchEvent(new CustomEvent("onizleme-secimi", { detail: window.sonOnizlemeSecimi }));
+  const d = ppOnizleme ? { onizleme: ppOnizleme, secenek: ppSecenek }
+                       : { onizleme, secenek: seciliSecenek };
+  window.sonOnizlemeSecimi = d;
+  window.dispatchEvent(new CustomEvent("onizleme-secimi", { detail: d }));
 }
 
 function secenekSatiri(s) {
@@ -674,6 +681,275 @@ function kurOnizleme() {
 }
 
 // ---------------------------------------------------------------------------
+// Pick & place (kamera + nesne tespiti + MTC)
+// ---------------------------------------------------------------------------
+// "Detect" kameradan (vision API koprusu) nesneleri ister - robota
+// dokunmaz. "Plan pick & place" secili nesne + slot icin TAM zinciri
+// (yaklas->kavra->kaldir->tasi->in->birak->geri cekil) robot hareket
+// etmeden planlar; 3D gorunumde (viewer.js, ayni "onizleme-secimi" olayi -
+// bkz. secimiBildir) gosterilir. Yalnizca "Run this plan" ve onaydan sonra
+// robot hareket eder; calistirilan zincir ekranda gosterilenin AYNISI.
+
+let pnpNesneler = [];
+let pnpSeciliNesne = null;
+let ppOnizleme = null;          // /api/pickplace/preview ozeti ya da null
+let ppSecenek = null;           // ppOnizleme.options[0] (tek secenek - tum zincir)
+let gosterilenPpId = null;
+let ppYukleniyor = false;
+let pnpVizyonBilgi = null;      // /api/vision/info sonucu (sonDurum'a KARISTIRILMAZ -
+                                // telemetri her turda sonDurum'u bastan yaziyor)
+
+function pnpHata(mesaj) {
+  $("#pnp-err").textContent = mesaj || "";
+  $("#pnp-err").hidden = !mesaj;
+}
+function pnpVizyonHata(mesaj) {
+  $("#pnp-vision-err").textContent = mesaj || "";
+  $("#pnp-vision-err").hidden = !mesaj;
+}
+
+function pnpKameralar() {
+  const acik = $("#pnp-cams").checked;
+  const taban = (pnpVizyonBilgi && pnpVizyonBilgi.cam_url)
+    ? pnpVizyonBilgi.cam_url.replace(/\/$/, "")
+    : `${location.protocol}//${location.hostname}:8600`;
+  $("#pnp-camL").src = acik ? `${taban}/stream/L` : "";
+  $("#pnp-camR").src = acik ? `${taban}/stream/R` : "";
+}
+
+async function pnpBilgiYukle() {
+  try {
+    pnpVizyonBilgi = await api("/api/vision/info");
+    pnpVizyonHata(pnpVizyonBilgi.handeye ? ""
+      : "Hand-eye calibration missing or invalid - object positions may be wrong.");
+    const sec = $("#pnp-slot");
+    sec.innerHTML = "";
+    (pnpVizyonBilgi.slots || []).forEach((s, i) => {
+      const o = document.createElement("option");
+      o.value = String(i);
+      o.textContent = `Slot ${i + 1} — x=${s[0].toFixed(0)} y=${s[1].toFixed(0)} z=${s[2].toFixed(0)}`;
+      sec.appendChild(o);
+    });
+    pnpKameralar();
+  } catch (e) {
+    pnpVizyonHata("Vision API not reachable: " + e.message);
+  }
+}
+
+function pnpNesneSatiri(o, i) {
+  const secili = o === pnpSeciliNesne;
+  const satir = el("div", "opt" + (secili ? " sel" : "") + (o.graspable ? "" : " bad"));
+  satir.tabIndex = 0;
+  satir.setAttribute("role", "option");
+  satir.setAttribute("aria-selected", secili ? "true" : "false");
+  satir.appendChild(el("span", "num", String(i + 1)));
+  satir.appendChild(el("span", "name", `${o.dims_cm[0]}×${o.dims_cm[1]}×${o.dims_cm[2]} cm`));
+  const saga = el("span", "state-wrap");
+  saga.style.display = "flex"; saga.style.gap = "6px"; saga.style.alignItems = "center";
+  saga.appendChild(el("span", "state", o.graspable ? "graspable" : "not graspable"));
+  const sil = el("button", "opt-remove", "✕");
+  sil.type = "button";
+  sil.title = "Remove from list (false detection, e.g. the arm itself)";
+  sil.setAttribute("aria-label", "Remove this object from the list");
+  sil.onclick = (e) => { e.stopPropagation(); pnpNesneSil(i); };
+  saga.appendChild(sil);
+  satir.appendChild(saga);
+  satir.appendChild(el("span", "meta", `${o.posture} · vol ${o.volume_l} L`));
+  if (!o.graspable || o.reason) satir.appendChild(el("span", "why", o.reason || ""));
+  const sec = () => { pnpSeciliNesne = o; pnpNesneleriCiz(); };
+  satir.onclick = sec;
+  satir.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); sec(); } };
+  return satir;
+}
+
+// Yanlis tespit (ör. robotun kendi kolu, arka plan) listeden ve 3D
+// gorunumden kaldirilir - COLLISION KONTROLUNU ETKILEMEZ (gercek nesneler
+// zaten MoveIt sahnesinde degil, bkz. panel notu), yalnizca gorunumu ve
+// secimi temizler. Kaldirilan nesne icin bir plan varsa (tutarsiz olabilir)
+// atilir - kullanici "Plan pick & place"i tekrar basar.
+function pnpNesneSil(i) {
+  const silinen = pnpNesneler[i];
+  pnpNesneler = pnpNesneler.filter((_, idx) => idx !== i);
+  if (pnpSeciliNesne === silinen) {
+    pnpSeciliNesne = pnpNesneler.find((o) => o.graspable) || pnpNesneler[0] || null;
+  }
+  pnpNesneleriCiz();
+  if (ppOnizleme) {
+    api("/api/pickplace/preview", { method: "DELETE" }).catch(() => {});
+    ppOnizlemeYukle(null);
+  }
+}
+
+function pnpNesneleriCiz() {
+  const kap = $("#pnp-objects");
+  kap.innerHTML = "";
+  pnpNesneler.forEach((o, i) => kap.appendChild(pnpNesneSatiri(o, i)));
+  if (!pnpNesneler.length) kap.appendChild(el("div", "note", "No objects detected yet."));
+  window.sonAlgilananNesneler = pnpNesneler.map((o) => ({
+    center_mm: o.box ? o.box.center_mm : [0, 0, 0],
+    size_mm: o.box ? o.box.size_mm : [10, 10, 10],
+    yaw_deg: o.box ? o.box.yaw_deg : 0,
+    graspable: o.graspable,
+    secili: o === pnpSeciliNesne,
+  }));
+  window.dispatchEvent(new CustomEvent("algilanan-nesneler", { detail: window.sonAlgilananNesneler }));
+}
+
+// 3D gorunumde bir kutuya tiklamak, listeden bir satira tiklamakla AYNI -
+// viewer.js sirayi (nesneGrubu.children == pnpNesneler ile ayni sira) bildirir.
+window.addEventListener("nesne-tiklandi", (e) => {
+  const n = pnpNesneler[e.detail];
+  if (!n) return;
+  pnpSeciliNesne = n;
+  pnpNesneleriCiz();
+});
+
+async function pnpAlgila() {
+  const btn = $("#pnp-detect");
+  btn.disabled = true;
+  pnpVizyonHata("");
+  yaz("Detecting objects… (the robot does not move)");
+  try {
+    const r = await api("/api/vision/detect", { method: "POST" });
+    pnpNesneler = r.objects || [];
+    pnpSeciliNesne = pnpNesneler.find((o) => o.graspable) || pnpNesneler[0] || null;
+    pnpNesneleriCiz();
+    yaz(`Detected ${pnpNesneler.length} object(s)`, "ok");
+  } catch (e) {
+    pnpVizyonHata("Detect failed: " + e.message);
+    yaz("Detect FAILED: " + e.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function ppOnizlemeCiz() {
+  const planliyor = sonDurum.job && sonDurum.job.running && sonDurum.job.kind === "preview"
+    && sonDurum.job.label === "Plan pick & place chain";
+  if (!ppOnizleme) {
+    $("#pnp-info").textContent = planliyor
+      ? "Planning pick & place chain… (the robot does not move)"
+      : "No plan. Select a detected object and a place slot, then press “Plan pick & place”.";
+    $("#pnp-run").disabled = true;
+    secimiBildir();
+    return;
+  }
+  const s = (ppOnizleme.options || [])[0];
+  if (!s) {
+    // IK/MTC baslama noktasinda basarisiz oldu - hic secenek yok (bkz.
+    // server.py pp_onizle "basarisiz" yardimcisi, yollari_onizle ile ayni desen).
+    ppSecenek = null;
+    $("#pnp-info").textContent =
+      `No usable plan: ${ppOnizleme.reason || "rejected"}` +
+      (ppOnizleme.details ? " — " + ppOnizleme.details : "");
+    $("#pnp-run").disabled = true;
+    secimiBildir();
+    return;
+  }
+  ppSecenek = s;
+  const satirlar = [`${s.ok ? "Runnable" : "REJECTED (" + s.reason + ")"} · ${s.duration_s ?? "?"} s`];
+  if (s.max_joint && s.max_deg !== null) satirlar.push(`Largest joint rotation: ${s.max_joint} ${s.max_deg}°`);
+  if (s.stages && s.stages.length) {
+    satirlar.push(...s.stages.filter((a) => a.tip !== "sahne")
+      .map((a) => `  ${a.t0}–${a.t1}s  ${a.tip === "gripper" ? "[gripper]" : a.ad}`));
+  }
+  $("#pnp-info").textContent = satirlar.join("\n");
+  $("#pnp-run").disabled = !s.ok;
+  secimiBildir();
+}
+
+async function ppOnizlemeYukle(beklenenId) {
+  if (ppYukleniyor) return;
+  ppYukleniyor = true;
+  gosterilenPpId = beklenenId;
+  try {
+    const o = await api("/api/pickplace/preview");
+    ppOnizleme = o && o.id ? o : null;
+    gosterilenPpId = ppOnizleme ? ppOnizleme.id : null;
+  } catch (e) {
+    ppOnizleme = null;
+    pnpHata("Could not read the plan: " + e.message);
+  } finally {
+    ppYukleniyor = false;
+  }
+  ppOnizlemeCiz();
+}
+
+function kurNesneAlBirak() {
+  $("#pnp-cams").onchange = pnpKameralar;
+  $("#pnp-detect").onclick = pnpAlgila;
+
+  $("#pnp-discard").onclick = async () => {
+    try {
+      await api("/api/pickplace/preview", { method: "DELETE" });
+      pnpHata("");
+      yaz("Pick & place plan discarded");
+      ppOnizlemeYukle(null);
+    } catch (e) { pnpHata("Could not discard: " + e.message); }
+  };
+
+  $("#pnp-plan").onclick = async () => {
+    pnpHata("");
+    if (!pnpSeciliNesne || !pnpSeciliNesne.grasp) {
+      pnpHata("Select a graspable object first (Detect, then click one in the list).");
+      return;
+    }
+    const slotIdx = parseInt($("#pnp-slot").value, 10);
+    const slot = (pnpVizyonBilgi && pnpVizyonBilgi.slots || [])[slotIdx];
+    if (!slot) { pnpHata("No place slot available (check the vision API)."); return; }
+    const approach = sayiAlan($("#pnp-approach"), true);
+    const objh = sayiAlan($("#pnp-objh"), true);
+    if (approach === null || objh === null) return;
+    // box.size_mm = [genislik (uzun yatay), kalinlik (kapanma yonu), yukseklik]
+    // (bkz. detect_api.py _nesne_sozlugu / OBB.extents sirasi) - dims_cm
+    // BUYUKTEN KUCUGE siralanmis oldugu icin eksenlere geri eslenemez.
+    const boyut = pnpSeciliNesne.box ? pnpSeciliNesne.box.size_mm : [null, null, null];
+    const govde = {
+      grasp_point: pnpSeciliNesne.grasp.point_mm,
+      grasp_rpy: pnpSeciliNesne.grasp.rpy_deg,
+      place_pose: slot,
+      approach_mm: approach,
+      grip_speed: parseInt($("#pnp-gspeed").value, 10) || 50,
+      grip_force: parseInt($("#pnp-gforce").value, 10) || 5,
+      object_w_mm: boyut[1] || null,   // kapanma yonundeki kalinlik - TAHMIN (bkz. panel notu)
+      object_d_mm: boyut[0] || 50,
+      object_h_mm: objh,
+    };
+    yaz("Planning pick & place chain… (the robot does not move)");
+    try {
+      await api("/api/pickplace/preview", { method: "POST", body: govde });
+    } catch (e) {
+      pnpHata("Plan rejected: " + e.message);
+      yaz("Pick & place plan REJECTED: " + e.message, "err");
+    }
+  };
+
+  $("#pnp-run").onclick = async () => {
+    if (!ppOnizleme || !ppSecenek || !ppSecenek.ok) return;
+    const s = ppSecenek;
+    const ok = await onayla("Run pick & place",
+      "The robot will follow the plan shown: approach → grip → lift → transfer → " +
+      "lower → release → retreat.\n" +
+      (s.max_joint && s.max_deg !== null ? `Largest joint rotation: ${s.max_joint} ${s.max_deg}°.\n` : "") +
+      "Keep the emergency stop within reach.",
+      $("#pnp-run"));
+    if (!ok) return;
+    pnpHata("");
+    try {
+      await api("/api/pickplace/preview/run", { method: "POST", body: { id: ppOnizleme.id } });
+      yaz("Run pick & place: sent");
+    } catch (e) {
+      pnpHata("Run rejected: " + e.message);
+      yaz("Run pick & place REJECTED: " + e.message, "err");
+    }
+  };
+
+  pnpKameralar();
+  pnpBilgiYukle();
+  ppOnizlemeYukle(null);
+}
+
+// ---------------------------------------------------------------------------
 // Telemetri
 // ---------------------------------------------------------------------------
 function kutu(kap, anahtar, deger, birim) {
@@ -738,6 +1014,9 @@ function durumCiz(s) {
   if ((s.preview_id || null) !== gosterilenOnizlemeId) {
     onizlemeYukle(s.preview_id || null);
   }
+  if ((s.pp_preview_id || null) !== gosterilenPpId) {
+    ppOnizlemeYukle(s.pp_preview_id || null);
+  }
 
   // Acilis ekrani
   const ov = $("#overlay");
@@ -786,6 +1065,7 @@ kurTcpMutlak();
 kurAyarlar();
 kurPickPlace();
 kurOnizleme();
+kurNesneAlBirak();
 hareketleriYukle();
 baglan();
 setInterval(gripperDurum, 1200);
