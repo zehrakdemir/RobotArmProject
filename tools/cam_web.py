@@ -22,6 +22,13 @@ import cv2
 STATE = {"L": None, "R": None, "run": True, "idx": {"L": 0, "R": 1}, "snapdir": "snaps",
          "rotate": {"L": None, "R": None}}
 LOCK = {"L": threading.Lock(), "R": threading.Lock()}
+# /snap ThreadingHTTPServer altinda HER ISTEK AYRI THREAD'de calisiyor - iki
+# istemci (orn. pickcobot + detect_api.py) AYNI SANIYE icinde cekim isterse,
+# eskiden ikisi de ayni saniye-hassasiyetli dosya adina yazip birbirinin
+# karesini eziyordu (2026-09-23 canli olay: pickcobot aniden alakasiz kucuk
+# olcumler vermeye basladi - detect-api-bridge devreye girdikten hemen sonra).
+# Bu kilit cekim+kaydetmeyi SERILEŞTIRIYOR, dosya adi da artik milisaniyeli.
+SNAP_LOCK = threading.Lock()
 
 _ROTATE_CODES = {
     "cw": cv2.ROTATE_90_CLOCKWISE,
@@ -165,31 +172,32 @@ class H(BaseHTTPRequestHandler):
         import json
         import os
         try:
-            os.makedirs(STATE["snapdir"], exist_ok=True)
-            # birkac deneme - anlik bozuk kare / USB dropout'a karsi
-            fL = fR = None
-            for _ in range(20):
-                with LOCK["L"]:
-                    a = STATE["L"]
-                with LOCK["R"]:
-                    b = STATE["R"]
-                ok = lambda x: x is not None and getattr(x, "size", 0) > 1000
-                if ok(a) and ok(b):
-                    fL, fR = a.copy(), b.copy()
-                    break
-                time.sleep(0.1)
-            if fL is None or fR is None:
-                raise RuntimeError("gecerli kare alinamadi (kamera dropout?)")
+            with SNAP_LOCK:
+                os.makedirs(STATE["snapdir"], exist_ok=True)
+                # birkac deneme - anlik bozuk kare / USB dropout'a karsi
+                fL = fR = None
+                for _ in range(20):
+                    with LOCK["L"]:
+                        a = STATE["L"]
+                    with LOCK["R"]:
+                        b = STATE["R"]
+                    ok = lambda x: x is not None and getattr(x, "size", 0) > 1000
+                    if ok(a) and ok(b):
+                        fL, fR = a.copy(), b.copy()
+                        break
+                    time.sleep(0.1)
+                if fL is None or fR is None:
+                    raise RuntimeError("gecerli kare alinamadi (kamera dropout?)")
 
-            ts = time.strftime("%Y%m%d_%H%M%S")
-            pL = os.path.join(STATE["snapdir"], f"left_{ts}.png")
-            pR = os.path.join(STATE["snapdir"], f"right_{ts}.png")
-            wL = cv2.imwrite(pL, fL)
-            wR = cv2.imwrite(pR, fR)
-            if not (wL and wR and os.path.exists(pL) and os.path.exists(pR)):
-                raise RuntimeError(f"yazma basarisiz (L={wL} R={wR})")
-            out = json.dumps({"ok": True, "left": pL, "right": pR,
-                              "L_shape": list(fL.shape), "R_shape": list(fR.shape)}).encode()
+                ts = time.strftime("%Y%m%d_%H%M%S") + f"_{int(time.time()*1000)%1000:03d}"
+                pL = os.path.join(STATE["snapdir"], f"left_{ts}.png")
+                pR = os.path.join(STATE["snapdir"], f"right_{ts}.png")
+                wL = cv2.imwrite(pL, fL)
+                wR = cv2.imwrite(pR, fR)
+                if not (wL and wR and os.path.exists(pL) and os.path.exists(pR)):
+                    raise RuntimeError(f"yazma basarisiz (L={wL} R={wR})")
+                out = json.dumps({"ok": True, "left": pL, "right": pR,
+                                  "L_shape": list(fL.shape), "R_shape": list(fR.shape)}).encode()
         except Exception as exc:  # noqa: BLE001
             out = json.dumps({"ok": False, "err": str(exc)}).encode()
         self.send_response(200)
@@ -215,8 +223,13 @@ def main() -> int:
     STATE["snapdir"] = args.snapdir
     initial_rot = None if args.rotate == "none" else args.rotate
     STATE["rotate"] = {"L": initial_rot, "R": initial_rot}
+    # Iki DSHOW cihazi TAM AYNI ANDA (iki thread'de) acmaya calisinca Windows'ta
+    # bazen biri "acildi" gorunup surekli SIYAH kare doner (2026-09-23 canli
+    # testte SAG kamera boyle davrandi, tek basina test edilince sorunsuzdu).
+    # Aralarina kisa bir bekleme koyup SIRAYLA acmak bu yarisi onluyor.
     threading.Thread(target=_capture, args=("L", args.left, args.width, args.height),
                      daemon=True).start()
+    time.sleep(1.5)
     threading.Thread(target=_capture, args=("R", args.right, args.width, args.height),
                      daemon=True).start()
     time.sleep(1.0)

@@ -23,10 +23,16 @@ import json
 import os
 
 import numpy as np
+import requests
 
 from src import config
 
 PTS = os.path.join(config.SNAP_DIR, "handeye", "touch_points.json")
+# Robot artik ROS2/MoveIt (movecobot-web) uzerinden kontrol ediliyor - ayni anda
+# HAM Fairino SDK ile de baglanmaya calismak (eski yontem) cakisma/fault riski
+# tasiyor. TCP pozunu, zaten calisan ROS2 API'sinden okuyoruz (bkz.
+# tools/pick_and_place.py - ayni desen).
+ROS2_API = "http://host.docker.internal:8088"
 
 
 def _umeyama(src, dst):
@@ -91,16 +97,14 @@ def main() -> int:
     if args.corner:
         r, c = (int(x) for x in args.corner.split(","))
         cam, nm = _board_corner_cam(args.cols, args.rows, args.square_mm, (r, c))
-        from src.robot import FairinoFR3
-        fr3 = FairinoFR3(enabled=True)
-        if not fr3.connect():
-            print("FR3 BAGLANAMADI"); return 1
-        j = fr3._joints_now()
-        fk = fr3._call("GetForwardKin", j, timeout=8)
-        if not (isinstance(fk, (list, tuple)) and int(fk[0]) == 0):
-            print("TCP okunamadi"); return 1
+        st = requests.get(f"{ROS2_API}/api/state", timeout=10).json()
+        if not st.get("ready"):
+            print("ROS2 arayuzu hazir degil:", st.get("startup_error")); return 1
+        tp = st.get("tcp_pose") or {}
+        if not tp:
+            print("TCP pozu okunamadi (tcp_pose bos)"); return 1
         off = np.array([float(x) for x in args.tool_offset.split(",")])
-        tcp = (np.array([float(v) for v in fk[1:7]])[:3] + off).tolist()
+        tcp = (np.array([tp["x"], tp["y"], tp["z"]]) + off).tolist()
         data = [d for d in data if tuple(d["rc"]) != (r, c)]     # ayni koseyi guncelle
         data.append({"rc": [r, c], "cam_mm": cam, "base_mm": tcp, "cift": nm})
         json.dump(data, open(PTS, "w"), indent=1)

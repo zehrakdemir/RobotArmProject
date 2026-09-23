@@ -14,6 +14,7 @@ Arayuz: http://localhost:8090
 from __future__ import annotations
 
 import io
+import json
 import time
 import traceback
 from pathlib import Path
@@ -26,8 +27,9 @@ from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 
 from src import config
+from src.calib import calibration_status
 from src.cell import run_cell
-from src.multi import detect_objects
+from src.multi import detect_objects, draw_overlay
 
 from tools import pick_and_place as pnp
 
@@ -35,13 +37,26 @@ app = FastAPI(title="pickcobot")
 
 # ---------------------------------------------------------------------------
 # Global oturum durumu (tek kullanicili yerel arac - basit tutuluyor)
+#
+# Olcum/plan bilgisi (S.plan, S.used_az, S.place_xyz/rpy) ayrica bind-mount'lu
+# snaps/ klasorune JSON olarak yazilir - bu surec (docker cp + restart ile
+# kod guncellemesi, ya da container'in kendisi) yeniden baslatilinca "once Olc"
+# adimini tekrarlamaya gerek kalmaz (2026-09'da defalarca yasandi).
 # ---------------------------------------------------------------------------
+_SESSION_PATH = Path(getattr(config, "SNAP_DIR", "snaps")) / "pnp_session.json"
+_PERSIST_FIELDS = ("plan", "left_path", "right_path", "used_az", "place_xyz", "place_rpy")
+
+
 class Session:
     def __init__(self) -> None:
         self.plan: Optional[dict] = None
         self.left_path: Optional[str] = None
         self.right_path: Optional[str] = None
         self.used_az: Optional[float] = None
+        self.overlay_png: Optional[bytes] = None
+        self.objects: list = []   # son detect_objects() ciktisi - kalici DEGIL,
+                                   # sadece "birden fazla nesne varsa hangisini
+                                   # sec" akisi icin bellekte tutuluyor.
         self.log: list[str] = []
         self.place_xyz: tuple[float, float, float] = (-300.0, 100.0, 150.0)
         self.place_rpy: tuple[float, float, float] = (180.0, 0.0, 0.0)
@@ -51,8 +66,32 @@ class Session:
         self.log.append(f"[{ts}] {msg}")
         self.log = self.log[-200:]
 
+    def save(self) -> None:
+        try:
+            _SESSION_PATH.parent.mkdir(parents=True, exist_ok=True)
+            data = {k: getattr(self, k) for k in _PERSIST_FIELDS}
+            _SESSION_PATH.write_text(json.dumps(data), encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            pass  # kalicilik bir kolayliktir - basarisiz olursa oturum yine calisir
 
-S = Session()
+    @classmethod
+    def load(cls) -> "Session":
+        s = cls()
+        try:
+            data = json.loads(_SESSION_PATH.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            return s
+        if data.get("place_xyz"):
+            data["place_xyz"] = tuple(data["place_xyz"])
+        if data.get("place_rpy"):
+            data["place_rpy"] = tuple(data["place_rpy"])
+        for k in _PERSIST_FIELDS:
+            if k in data:
+                setattr(s, k, data[k])
+        return s
+
+
+S = Session.load()
 
 
 def _result(ok: bool, msg: str, **extra: Any) -> dict:
@@ -60,6 +99,76 @@ def _result(ok: bool, msg: str, **extra: Any) -> dict:
     out = {"ok": ok, "message": msg, "log": S.log[-30:]}
     out.update(extra)
     return out
+
+
+def _plan_from_grasp(g, obb) -> dict:
+    corrected_rz = g.yaw_deg + pnp.YAW_CORRECTION_DEG
+    # Arayüzde her zaman uzunluk sırasıyla göster: boy >= en >= derinlik.
+    dims_mm = sorted((float(obb.width_mm), float(obb.height_mm),
+                      float(obb.thickness_mm)), reverse=True)
+    return {
+        "approach": g.approach_point.tolist(),
+        "grasp": g.grasp_point.tolist(),
+        "lift": g.lift_point.tolist(),
+        "rz": corrected_rz,
+        "raw_yaw": g.yaw_deg,
+        "opening_mm": g.opening_mm,
+        "height_mm": float(obb.height_mm),
+        "grasp_z": float(g.grasp_point[2]),
+        "dimensions_mm": dims_mm,
+    }
+
+
+def _redraw_overlay(pick_index: int) -> None:
+    """S.left_path'ten yeniden okuyup S.objects'i, secili nesne (pick_index,
+    DetectedObject.rank ile ayni 0-tabanli) yesil vurgulanacak sekilde ciz."""
+    if not S.left_path or not S.objects:
+        return
+    try:
+        imgL = cv2.imread(S.left_path)
+        overlay = draw_overlay(imgL, S.objects, pick_index=pick_index)
+        ok_enc, buf = cv2.imencode(".png", overlay)
+        S.overlay_png = buf.tobytes() if ok_enc else None
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _objects_summary() -> list[dict]:
+    return [{"num": o.rank + 1, "dims_cm": o.dims_cm, "hacim_L": round(o.volume_l, 2),
+             "kavranabilir": bool(o.grasp and o.grasp.feasible)} for o in S.objects]
+
+
+# plan_grasp()'in varsayilani (GRASP_HEIGHT_FRACTION=0.5) cismin ORTASINDAN
+# kavrar. pick_and_place.py CLI aracinda, 2026-09-18'de bir carpismadan sonra
+# tepeye yakin kavramanin (yukseklik-10mm) daha guvenli oldugu kanitlanmisti;
+# 2026-09-23'te ince bir cisimle bu tekrar dogrulandi (45mm elle zorlanip
+# calisti, guvenlik tabani 40mm'nin hemen ustunde). pickcobot'un otomatik
+# yolu da varsayilan olarak bunu kullanir - GRASP_HEIGHT_FRACTION Streamlit
+# tarafinda hala 0.5 kalir, sadece burada (ROS2/ pickcobot) degistiriliyor.
+GRASP_TOP_OFFSET_MM = 10.0
+
+
+def _default_grasp_z(obb) -> float:
+    return max(10.0, float(obb.height_mm) - GRASP_TOP_OFFSET_MM)
+
+
+def _apply_grasp_z_override(g, obb, grasp_z_mm: float):
+    """Kullanicinin elle girdigi kavrama yuksekligini (tabandan mm) mevcut plana
+    uygular - approach/lift noktalarini plan_grasp() ile AYNI formulle (bkz.
+    src/grasp.py:plan_grasp) yeniden hesaplar, boylece nokta bulutunu tekrar
+    islemeye gerek kalmaz."""
+    ax_idx = {"x": 0, "y": 1, "z": 2}[config.UP_AXIS.lower()]
+    up = obb.up_axis
+    new_gp = g.grasp_point.copy()
+    new_gp[ax_idx] = obb.ground_z + float(grasp_z_mm)
+    g.grasp_point = new_gp
+    g.approach_point = new_gp - g.approach_axis * config.GRASP_APPROACH_MM
+    g.lift_point = new_gp + up * config.GRASP_LIFT_MM
+    depth_from_top = obb.height_mm - float(grasp_z_mm)
+    if depth_from_top > config.GRIPPER_FINGER_LEN_MM:
+        g.reason += (f" UYARI: parmak boyu {config.GRIPPER_FINGER_LEN_MM:.0f}mm, "
+                     f"tepeden kavrama derinligi {depth_from_top:.0f}mm - kisa kalabilir.")
+    return g
 
 
 def _safe(fn, *a, **kw) -> dict:
@@ -104,6 +213,7 @@ def capture() -> dict:
 def measure(body: MeasureBody = MeasureBody()) -> dict:
     def _do():
         imgL, imgR = _capture_into_session()
+        S.overlay_png = None
 
         roi = body.roi_xywh
         if roi is not None:
@@ -133,43 +243,101 @@ def measure(body: MeasureBody = MeasureBody()) -> dict:
             objs = detect_objects(imgL, imgR, mode="nesne")
             if not objs:
                 return _result(False, "Olcum basarisiz: masada nesne bulunamadi.")
+            S.objects = objs
             obj = objs[0]
             g, obb = obj.grasp, obj.obb
+            # Hangi bolgeyi/nesneyi olctugunu GORMEDEN guvenmeyin - yanlis nesne
+            # (orn. karton/masa) olcumu bu overlay olmadan fark edilmesi gunler
+            # surmustu (2026-09 oturumu). Kontur cizimi basarisiz olsa bile
+            # olcumu engellemesin diye ayri try/except.
+            _redraw_overlay(pick_index=0)
             if g is None or not g.feasible:
                 return _result(False, f"Kavrama plani yok: {obj.as_dict().get('kavrama_sebep')}")
+            z_target = body.grasp_z_override if body.grasp_z_override is not None else _default_grasp_z(obb)
+            g = _apply_grasp_z_override(g, obb, z_target)
             message = (f"boy {obj.dims_cm[0]:.1f} · en {obj.dims_cm[1]:.1f} · "
                        f"derinlik {obj.dims_cm[2]:.1f} cm (yaw {obj.yaw_deg:.0f}°, "
                        f"{obj.n_points} nokta)")
 
-        corrected_rz = g.yaw_deg + pnp.YAW_CORRECTION_DEG
-        # Arayüzde her zaman uzunluk sırasıyla göster: boy >= en >= derinlik.
-        dims_mm = sorted((float(obb.width_mm), float(obb.height_mm),
-                          float(obb.thickness_mm)), reverse=True)
-        S.plan = {
-            "approach": g.approach_point.tolist(),
-            "grasp": g.grasp_point.tolist(),
-            "lift": g.lift_point.tolist(),
-            "rz": corrected_rz,
-            "raw_yaw": g.yaw_deg,
-            "opening_mm": g.opening_mm,
-            "height_mm": float(obb.height_mm),
-            "grasp_z": float(g.grasp_point[2]),
-            "dimensions_mm": dims_mm,
-        }
+        S.plan = _plan_from_grasp(g, obb)
         S.used_az = None
+        S.save()
         selected = "secili alan" if roi is not None else "otomatik (nesne modu)"
-        return _result(True, f"Olcum tamam ({selected}): {message}", plan=S.plan)
+        return _result(True, f"Olcum tamam ({selected}): {message}", plan=S.plan,
+                       has_overlay=S.overlay_png is not None, objects=_objects_summary())
 
     return _safe(_do)
 
 
+class SelectObjectBody(BaseModel):
+    num: int   # gorseldeki "#N" etiketiyle ayni (1-tabanli)
+    grasp_z_override: Optional[float] = None
+
+
+@app.post("/api/select_object")
+def select_object(body: SelectObjectBody) -> dict:
+    """Otomatik tespit birden fazla nesne bulduysa (orn. masadaki baska bir
+    esya/kalibrasyon tahtasi yanlislikla 'en buyuk nesne' sayilirsa), kullanici
+    overlay'deki numaraya bakip DOGRU nesneyi burada elle secer - olcumu
+    TEKRARLAMADAN (ayni fotograf/tespit uzerinde) plani gunceller."""
+    def _do():
+        if not S.objects:
+            return _result(False, "Once olcum yapin.")
+        matches = [o for o in S.objects if o.rank == body.num - 1]
+        if not matches:
+            return _result(False, f"Nesne #{body.num} bulunamadi (toplam {len(S.objects)} nesne).")
+        obj = matches[0]
+        g, obb = obj.grasp, obj.obb
+        if g is None or not g.feasible:
+            return _result(False, f"Nesne #{body.num} icin kavrama plani yok: "
+                                   f"{obj.as_dict().get('kavrama_sebep')}")
+        z_target = body.grasp_z_override if body.grasp_z_override is not None else _default_grasp_z(obb)
+        g = _apply_grasp_z_override(g, obb, z_target)
+        _redraw_overlay(pick_index=obj.rank)
+        S.plan = _plan_from_grasp(g, obb)
+        S.used_az = None
+        S.save()
+        message = (f"boy {obj.dims_cm[0]:.1f} · en {obj.dims_cm[1]:.1f} · "
+                   f"derinlik {obj.dims_cm[2]:.1f} cm (yaw {obj.yaw_deg:.0f}°)")
+        return _result(True, f"Nesne #{body.num} secildi: {message}", plan=S.plan,
+                       has_overlay=S.overlay_png is not None, objects=_objects_summary())
+
+    return _safe(_do)
+
+
+@app.get("/api/session")
+def session_state() -> dict:
+    """Sayfa yeniden acildiginda (ya da sunucu yeniden baslatilip S.plan diskten
+    geri yuklendiginde) onceki olcumu goster - "once Olc" tekrarini gerektirmesin."""
+    return {"ok": True, "plan": S.plan, "has_overlay": S.overlay_png is not None,
+            "has_photo": bool(S.left_path), "objects": _objects_summary()}
+
+
 @app.get("/api/photo/{side}")
 def photo(side: str) -> Response:
+    if side == "overlay":
+        if S.overlay_png is None:
+            return Response(status_code=404)
+        return Response(content=S.overlay_png, media_type="image/png")
     path = S.left_path if side == "left" else S.right_path
     if not path or not Path(path).exists():
         return Response(status_code=404)
     data = Path(path).read_bytes()
     return Response(content=data, media_type="image/png")
+
+
+# ---------------------------------------------------------------------------
+# Kalibrasyon durumu - "olcum neden garip cikti" sorusuna ilk bakilacak yer.
+# ---------------------------------------------------------------------------
+@app.get("/api/calib_status")
+def calib_status() -> dict:
+    try:
+        st = calibration_status()
+        st["measure_scale"] = float(getattr(config, "MEASURE_SCALE", 1.0))
+        st["yaw_correction_deg"] = pnp.YAW_CORRECTION_DEG
+        return {"ok": True, "result": st}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "result": None, "error": str(e)}
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +385,7 @@ def step_approach() -> dict:
         if used_az is None:
             return _result(False, "Yaklasma noktasina hicbir yukseklikte ulasilamadi.")
         S.used_az = used_az
+        S.save()
         return _result(True, f"Yaklasma tamam (z={used_az:.1f}).")
 
     return _safe(_do)
@@ -266,6 +435,7 @@ def step_goto_place(body: PlaceBody) -> dict:
     def _do():
         S.place_xyz = (body.x, body.y, body.z)
         S.place_rpy = (body.rx, body.ry, body.rz)
+        S.save()
         ok = pnp.move_pose(body.x, body.y, body.z, body.rx, body.ry, body.rz,
                             False, prefer_lin=False, label="birakma noktasi")
         if not ok:
@@ -279,11 +449,31 @@ class LowerBody(BaseModel):
     drop_mm: float = 60.0
 
 
+class AutoLowerBody(BaseModel):
+    # drop_mm verilirse eskisi gibi SABIT bir mesafe iner. Verilmezse (varsayilan),
+    # kavrama yuksekligine (S.plan["grasp_z"]) + margin_mm kadar YUKARIDA duracak
+    # sekilde otomatik hesaplanir - "birakmaya in cok yukarida duruyordu, kavradigi
+    # yuksekligin biraz ustunde dursun" (2026-09-23 canli geri bildirimi).
+    drop_mm: Optional[float] = None
+    margin_mm: float = 1.0
+
+
 @app.post("/api/step/lower")
-def step_lower(body: LowerBody) -> dict:
+def step_lower(body: AutoLowerBody = AutoLowerBody()) -> dict:
     def _do():
-        pnp.jog_dz(-body.drop_mm, False, label="birakmaya inis", max_step=500.0)
-        return _result(True, "Birakma yuksekligine inildi.")
+        if body.drop_mm is not None:
+            drop = body.drop_mm
+            target_msg = f"sabit {drop:.1f}mm"
+        else:
+            if S.plan is None:
+                return _result(False, "Once olcum yapin (kavrama yuksekligi bilinmiyor).")
+            st = pnp._get("/api/state")
+            cur_z = st["tcp_pose"]["z"]
+            target_z = S.plan["grasp_z"] + body.margin_mm
+            drop = max(0.0, cur_z - target_z)
+            target_msg = f"z={target_z:.1f} (kavrama+{body.margin_mm:.1f})"
+        pnp.jog_dz(-drop, False, label="birakmaya inis", max_step=500.0)
+        return _result(True, f"Birakma yuksekligine inildi ({target_msg}).")
 
     return _safe(_do)
 
@@ -327,7 +517,7 @@ def run_all(body: PlaceBody) -> dict:
         ("grip", lambda: step_grip()),
         ("lift", lambda: step_lift()),
         ("goto_place", lambda: step_goto_place(body)),
-        ("lower", lambda: step_lower(LowerBody())),
+        ("lower", lambda: step_lower(AutoLowerBody())),
         ("release", lambda: step_release()),
         ("retreat", lambda: step_retreat(LowerBody())),
         ("neutral", lambda: step_neutral()),
@@ -427,10 +617,18 @@ _PAGE = """<!doctype html>
   <section id="col-measure">
     <h2>Olcum</h2>
     <div class="card">
+      <div class="field">
+        <label>Kavrama yuksekligi (mm, tabandan - bos birakilirsa otomatik)</label>
+        <input type="number" id="grasp-z-override" placeholder="otomatik">
+      </div>
       <button class="primary" onclick="doMeasure()">Olc</button>
       <div class="status-line" id="measure-status"></div>
       <div class="snap-wrap" id="snap-wrap">
         <img class="snap" id="snap-left" alt="Sol kamera karesi">
+      </div>
+      <div id="object-select" style="display:none;margin-bottom:8px">
+        <label>Birden fazla nesne bulundu - dogru olani secin:</label>
+        <div id="object-buttons" style="display:flex;gap:6px;flex-wrap:wrap"></div>
       </div>
       <table id="measure-table"></table>
     </div>
@@ -474,6 +672,10 @@ _PAGE = """<!doctype html>
   </section>
 
   <section id="col-log">
+    <h2>Kalibrasyon</h2>
+    <div class="card">
+      <table id="calib-table"></table>
+    </div>
     <h2>Durum / Gunluk</h2>
     <div class="card" id="plan-card" style="display:none">
       <table id="plan-table"></table>
@@ -531,15 +733,50 @@ function renderPlan(p) {
     rows.map(([k, v]) => `<tr><td>${k}</td><td class="val">${v ?? "-"}</td></tr>`).join("");
 }
 
-async function doMeasure() {
-  setStatus("measure-status", true, "olculuyor...");
-  const r = await post("/api/measure", {});
+function renderObjects(objects) {
+  const wrap = document.getElementById("object-select");
+  const el = document.getElementById("object-buttons");
+  if (!objects || objects.length < 2) {
+    wrap.style.display = "none";
+    el.innerHTML = "";
+    return;
+  }
+  wrap.style.display = "block";
+  el.innerHTML = "";
+  for (const o of objects) {
+    const b = document.createElement("button");
+    const tag = o.kavranabilir ? "" : " [kavranamaz]";
+    b.textContent = "#" + o.num + " (" + o.dims_cm.join("x") + "cm)" + tag;
+    b.onclick = () => selectObject(o.num);
+    el.appendChild(b);
+  }
+}
+
+async function selectObject(num) {
+  setStatus("measure-status", true, "nesne #" + num + " seciliyor...");
+  const r = await post("/api/select_object", {num: num});
   setStatus("measure-status", r.ok, r.message);
   renderLog(r.log || []);
   if (r.plan) renderPlan(r.plan);
+  renderObjects(r.objects);
+  const img = document.getElementById("snap-left");
+  const side = r.has_overlay ? "overlay" : "left";
+  img.src = "/api/photo/" + side + "?t=" + Date.now();
+}
+
+async function doMeasure() {
+  setStatus("measure-status", true, "olculuyor...");
+  const zRaw = document.getElementById("grasp-z-override").value;
+  const body = zRaw === "" ? {} : {grasp_z_override: parseFloat(zRaw)};
+  const r = await post("/api/measure", body);
+  setStatus("measure-status", r.ok, r.message);
+  renderLog(r.log || []);
+  if (r.plan) renderPlan(r.plan);
+  renderObjects(r.objects);
   const img = document.getElementById("snap-left");
   document.getElementById("snap-wrap").style.display = "block";
-  img.src = "/api/photo/left?t=" + Date.now();
+  const side = r.has_overlay ? "overlay" : "left";
+  img.src = "/api/photo/" + side + "?t=" + Date.now();
 }
 
 async function step(name) {
@@ -568,11 +805,57 @@ function placeBody() {
 }
 
 async function runAll() {
+  const b = placeBody();
+  const confirmed = confirm(
+    `Robot GERCEKTEN hareket edecek: al -> tasi -> birak.` + String.fromCharCode(10, 10) +
+    `Birakma noktasi: x=${b.x} y=${b.y} z=${b.z}  rx=${b.rx} ry=${b.ry} rz=${b.rz}` + String.fromCharCode(10, 10) +
+    `Devam edilsin mi?`
+  );
+  if (!confirmed) return;
   setStatus("step-status", true, "tum akis calisiyor...");
-  const r = await post("/api/run_all", placeBody());
+  const r = await post("/api/run_all", b);
   setStatus("step-status", r.ok, r.message);
   renderLog(r.log || []);
 }
+
+async function loadCalibStatus() {
+  const el = document.getElementById("calib-table");
+  try {
+    const r = await get("/api/calib_status");
+    if (!r.ok || !r.result) { el.innerHTML = "<tr><td>kalibrasyon durumu okunamadi</td></tr>"; return; }
+    const s = r.result;
+    const rows = [
+      ["stereo kalibrasyon", s.stereo.var
+        ? `var - RMS ${s.stereo.rms_px?.toFixed?.(2)}px (${s.stereo.boyut?.join("x")})`
+        : "yok"],
+      ["el-goz (hand-eye)", s.base_T_cam.var
+        ? `var - artik hata ${s.base_T_cam.residual_mm?.toFixed?.(1)}mm`
+        : "yok"],
+      ["MEASURE_SCALE", s.measure_scale?.toFixed?.(4)],
+      ["YAW_CORRECTION_DEG", s.yaw_correction_deg?.toFixed?.(2) + "° (deneysel)"],
+    ];
+    el.innerHTML = rows.map(([k, v]) => `<tr><td>${k}</td><td class="val">${v}</td></tr>`).join("");
+  } catch (e) {
+    el.innerHTML = "<tr><td>kalibrasyon durumu okunamadi</td></tr>";
+  }
+}
+loadCalibStatus();
+
+async function loadSession() {
+  try {
+    const r = await get("/api/session");
+    if (!r.ok || !r.plan) return;
+    renderPlan(r.plan);
+    renderObjects(r.objects);
+    setStatus("measure-status", true, "onceki olcum geri yuklendi (sunucu yeniden baslatildi).");
+    if (r.has_photo) {
+      const img = document.getElementById("snap-left");
+      document.getElementById("snap-wrap").style.display = "block";
+      img.src = "/api/photo/" + (r.has_overlay ? "overlay" : "left") + "?t=" + Date.now();
+    }
+  } catch (e) { /* sessiz - sadece kolaylik */ }
+}
+loadSession();
 
 async function pollRobot() {
   try {

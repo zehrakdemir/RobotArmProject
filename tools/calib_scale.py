@@ -25,6 +25,10 @@ def main() -> int:
     ap.add_argument("--left"); ap.add_argument("--right")
     ap.add_argument("--use-thickness", action="store_true",
                     help="carpani 3 eksenin medyaniyla hesapla (varsayilan: sadece ayak izi)")
+    ap.add_argument("--pick", type=int, default=None,
+                    help="masada birden fazla nesne varsa, hacme gore en buyuk yerine "
+                         "bu numarali nesneyi kullan (1-tabanli - pickcobot overlay'indeki "
+                         "'#N' etiketiyle ayni numaralandirma)")
     ap.add_argument("--env", default=".env")
     args = ap.parse_args()
 
@@ -52,7 +56,19 @@ def main() -> int:
     objs = detect_objects(L, R)
     if not objs:
         print("HATA: nesne bulunamadi. Masada sadece kutu var mi? Isik/doku?"); return 1
-    o = max(objs, key=lambda z: z.volume_l)
+    if len(objs) > 1:
+        print(f"UYARI: {len(objs)} nesne bulundu:")
+        for x in objs:
+            print(f"  #{x.rank+1}  {[round(v*10) for v in x.dims_cm]} mm  hacim={x.volume_l:.2f}L")
+    if args.pick is not None:
+        matches = [x for x in objs if x.rank == args.pick - 1]
+        if not matches:
+            print(f"HATA: #{args.pick} nesnesi yok ({len(objs)} nesne var)."); return 1
+        o = matches[0]
+    else:
+        o = max(objs, key=lambda z: z.volume_l)
+        if len(objs) > 1:
+            print(f"--pick verilmedi, varsayilan olarak en buyuk (#{o.rank+1}) kullaniliyor.")
     meas_mm = sorted([d * 10.0 for d in o.dims_cm], reverse=True)
     meas_raw = [m / cur for m in meas_mm]                 # mevcut carpani cikar
     print(f"olculen (ham): {[round(v) for v in meas_raw]} mm")

@@ -812,7 +812,8 @@ def draw_overlay(image_left: np.ndarray, objects: list, rig: Optional[StereoRig]
         cv2.addWeighted(fill, 0.35, img, 0.65, 0, img)
         cv2.drawContours(img, [c], -1, col, 2)
         x, y, w, h = cv2.boundingRect(c)
-        tag = (f"#{o.rank+1} {o.dims_cm[0]}x{o.dims_cm[1]}x{o.dims_cm[2]}cm {o.volume_l:.1f}L"
+        dims_mm = [round(v * 10) for v in o.dims_cm]
+        tag = (f"#{o.rank+1} {dims_mm[0]}x{dims_mm[1]}x{dims_mm[2]}mm {o.volume_l:.1f}L"
                + ("  SIRADAKI" if nxt else ""))
         yy = max(y - 6, 14)
         cv2.rectangle(img, (x, yy - 14), (x + 8 * len(tag), yy + 4), col, -1)

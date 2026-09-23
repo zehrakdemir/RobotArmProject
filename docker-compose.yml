@@ -5,6 +5,7 @@ services:
     ports:
       - "8501:8501"
       - "8090:8090"  # tools/pnp_web - al-yerlestir arayuzu
+      - "8502:8502"  # tools/detect_api - Huseyin'in movecobot-web'i icin vizyon koprusu
     # .env icindeki TUM degiskenler (SGBM_*, WLS_*, TILT_THRESHOLD_DEG, ...)
     # konteynira aktarilir. Yeniden build gerekmez: `docker compose up -d` yeter.
     env_file:
