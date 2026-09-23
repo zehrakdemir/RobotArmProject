@@ -60,6 +60,12 @@ class Session:
         self.log: list[str] = []
         self.place_xyz: tuple[float, float, float] = (-300.0, 100.0, 150.0)
         self.place_rpy: tuple[float, float, float] = (180.0, 0.0, 0.0)
+        # True ise poz-tabanli adimlar (yaklas/birakma noktasi - onizlemesi
+        # OLAN adimlar) sadece planlayip durur, movecobot'un KENDI arayuzunden
+        # (ayni sunucu-tarafi onizleme orada da gorunur) elle onaylanmasi
+        # beklenir. Jog-tabanli adimlarda (in/kaldir/vs.) onizleme
+        # movecobot'ta hic yok, bu bayraktan etkilenmezler.
+        self.manual_confirm: bool = False
 
     def add(self, msg: str) -> None:
         ts = time.strftime("%H:%M:%S")
@@ -146,10 +152,16 @@ def _objects_summary() -> list[dict]:
 # yolu da varsayilan olarak bunu kullanir - GRASP_HEIGHT_FRACTION Streamlit
 # tarafinda hala 0.5 kalir, sadece burada (ROS2/ pickcobot) degistiriliyor.
 GRASP_TOP_OFFSET_MM = 10.0
+# ROS2/MoveIt tarafinda TCP'nin masaya ~40mm'den fazla yaklasmasini engelleyen
+# sabit bir guvenlik marji var (movecobot.py, gripper+carpisma kutusu). Kisa
+# nesnelerde "yukseklik-10mm" bu tabanin altina dusup GOAL_STATE_INVALID
+# hatasi veriyordu (2026-09-23, tekrarlayan canli olay) - taban burada
+# zorlanarak onleniyor.
+GRASP_Z_FLOOR_MM = 42.0
 
 
 def _default_grasp_z(obb) -> float:
-    return max(10.0, float(obb.height_mm) - GRASP_TOP_OFFSET_MM)
+    return max(GRASP_Z_FLOOR_MM, float(obb.height_mm) - GRASP_TOP_OFFSET_MM)
 
 
 def _apply_grasp_z_override(g, obb, grasp_z_mm: float):
@@ -352,6 +364,16 @@ def robot_state() -> dict:
         return {"ok": False, "result": None, "error": str(e)}
 
 
+class ManualConfirmBody(BaseModel):
+    enabled: bool
+
+
+@app.post("/api/manual_confirm")
+def set_manual_confirm(body: ManualConfirmBody) -> dict:
+    S.manual_confirm = body.enabled
+    return {"ok": True, "manual_confirm": S.manual_confirm}
+
+
 # ---------------------------------------------------------------------------
 # Adimlar - her biri kullanicinin tek tikiyla tetiklenir, hicbiri otomatik
 # zincirlenmez. Her adim kendi ici guvenli (kucuk jog / hata kontrolu / az
@@ -378,7 +400,8 @@ def step_approach() -> dict:
         for candidate_az in np.arange(az, gz + 29.0, -20.0):
             candidate_az = float(candidate_az)
             ok = pnp.move_pose(ax, ay, candidate_az, 180.0, 0.0, rz, False,
-                                prefer_lin=False, label=f"yaklasma (z={candidate_az:.0f})")
+                                prefer_lin=False, label=f"yaklasma (z={candidate_az:.0f})",
+                                auto_run=not S.manual_confirm)
             if ok:
                 used_az = candidate_az
                 break
@@ -386,6 +409,9 @@ def step_approach() -> dict:
             return _result(False, "Yaklasma noktasina hicbir yukseklikte ulasilamadi.")
         S.used_az = used_az
         S.save()
+        if S.manual_confirm:
+            return _result(True, f"Yaklasma planlandi (z={used_az:.1f}) - movecobot'tan "
+                                  f"onaylayip calistirin.")
         return _result(True, f"Yaklasma tamam (z={used_az:.1f}).")
 
     return _safe(_do)
@@ -437,9 +463,12 @@ def step_goto_place(body: PlaceBody) -> dict:
         S.place_rpy = (body.rx, body.ry, body.rz)
         S.save()
         ok = pnp.move_pose(body.x, body.y, body.z, body.rx, body.ry, body.rz,
-                            False, prefer_lin=False, label="birakma noktasi")
+                            False, prefer_lin=False, label="birakma noktasi",
+                            auto_run=not S.manual_confirm)
         if not ok:
             return _result(False, "Birakma noktasina ulasilamadi (tekillik/IK).")
+        if S.manual_confirm:
+            return _result(True, "Birakma noktasi planlandi - movecobot'tan onaylayip calistirin.")
         return _result(True, "Birakma noktasina ulasildi.")
 
     return _safe(_do)
@@ -638,6 +667,12 @@ _PAGE = """<!doctype html>
     <h2>Adimlar</h2>
     <div class="card">
       <div class="field">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="manual-confirm" onchange="setManualConfirm()">
+          Yaklas / Birakma noktasi: sadece planla, movecobot'tan onayla (otomatik calistirma)
+        </label>
+      </div>
+      <div class="field">
         <label>Birakma X / Y / Z (mm)</label>
         <div class="row">
           <input type="number" id="place-x" value="-300">
@@ -696,6 +731,11 @@ async function post(url, body) {
 async function get(url) {
   const r = await fetch(url);
   return r.json();
+}
+
+async function setManualConfirm() {
+  const enabled = document.getElementById("manual-confirm").checked;
+  await post("/api/manual_confirm", {enabled: enabled});
 }
 
 function setStatus(id, ok, msg) {

@@ -79,6 +79,14 @@ SETTLE_SEC = 0.5             # her hareket sonrasi robotun FIILEN oturmasi icin
                               # descend GOAL_STATE_INVALID hatasi verdi - kok
                               # neden buydu.
 
+# Poz-tabanli adimlarda (yaklas/birakma noktasi) "movecobot'tan onayla"
+# modunda (auto_run=False) robotun gercekten hedefe ulasmasini beklerken
+# kullanilir - kullanici movecobot'un kendi arayuzunde "Run this path"e
+# basana kadar (2026-09-23, kullanici istegi: run_all TEK akis kalsin).
+MANUAL_CONFIRM_TIMEOUT_S = 300.0
+MANUAL_CONFIRM_POLL_S = 1.0
+MANUAL_CONFIRM_TOL_DEG = 3.0
+
 _STEP_MODE = False
 
 
@@ -182,12 +190,13 @@ def _max_joint_travel(cur_joints: list[float], goal_joints: list[float]) -> floa
 
 
 def _try_preview(x, y, z, rx, ry, rz, prefer_lin: bool, cur_joints: list[float]
-                  ) -> tuple[int, int, float] | None:
+                  ) -> tuple[int, int, float, list[float]] | None:
     """Basarili (en az eklem hareketi gerektiren) secenegi bulur - suresi
     kisa olan degil, cunku kisa sure bazen "duz" ama BUYUK bir taban donusu
     (J1) anlamina gelebiliyor (2026-09-18: PTP boyle bir donuste kolun
     nesnenin uzerinden genis bir yay cizmesine sebep oldu). Basarili ise
-    (preview_id, option_index, max_joint_travel_deg) doner, yoksa None."""
+    (preview_id, option_index, max_joint_travel_deg, goal_joints) doner,
+    yoksa None."""
     _post("/api/preview", {"kind": "pose", "values": [x, y, z, rx, ry, rz],
                            "prefer_lin": prefer_lin})
     st = _wait_job(timeout=25)
@@ -197,11 +206,12 @@ def _try_preview(x, y, z, rx, ry, rz, prefer_lin: bool, cur_joints: list[float]
         return None
     scored = [(o, _max_joint_travel(cur_joints, o["goal_joints"])) for o in ok_opts]
     best_o, best_travel = min(scored, key=lambda t: t[1])
-    return prev["id"], best_o["index"], best_travel
+    return prev["id"], best_o["index"], best_travel, best_o["goal_joints"]
 
 
 def move_pose(x: float, y: float, z: float, rx: float, ry: float, rz: float,
-              dry_run: bool, prefer_lin: bool = False, label: str = "") -> bool:
+              dry_run: bool, prefer_lin: bool = False, label: str = "",
+              auto_run: bool = True) -> bool:
     """Hem verilen yonelimi hem de (gripper simetrik oldugu icin islevsel
     olarak ayni olan) 180 derece donmus esdegerini dener, HANGISI DAHA AZ
     EKLEM HAREKETI GEREKTIRIYORSA onu kullanir - byle boylece kol nesnenin
@@ -217,7 +227,7 @@ def move_pose(x: float, y: float, z: float, rx: float, ry: float, rz: float,
     if not candidates:
         _log("  HICBIR yonelim planlanamadi (tekillik/IK) - bu adim atlaniyor")
         return False
-    used_rz, (preview_id, option, travel) = min(candidates, key=lambda t: t[1][2])
+    used_rz, (preview_id, option, travel, _goal_joints) = min(candidates, key=lambda t: t[1][2])
     _log(f"  secilen yonelim rz={used_rz:.1f} (en buyuk eklem hareketi {travel:.1f} derece)")
     if travel > 90.0:
         _log(f"  UYARI: {travel:.1f} derecelik eklem hareketi hala buyuk - "
@@ -235,7 +245,33 @@ def move_pose(x: float, y: float, z: float, rx: float, ry: float, rz: float,
     if fresh is None:
         _log("  yeniden planlama basarisiz - bu adim atlaniyor")
         return False
-    preview_id, option, _ = fresh
+    preview_id, option, _, goal_joints = fresh
+    if not auto_run:
+        # Kullanici istegi (2026-09-23): sadece onizleme yapilsin, robot
+        # movecobot'un KENDI arayuzunden (ayni sunucu-tarafi onizleme, ayni
+        # anda orada da goruntuleniyor) "Run this path" ile elle onaylanip
+        # calistirilsin - pickcobot otomatik calistirmasin. "Tum akisi
+        # calistir" TEK bir akis olarak kalsin diye, burada robotun gercekten
+        # hedefe ulasmasini BEKLIYORUZ (poll) - kullanici movecobot'ta
+        # onaylayip calistirinca akis KENDILIGINDEN devam ediyor, ayrica
+        # "devam et" butonuna basmaya gerek yok.
+        _log("  onizleme hazir - movecobot'un kendi arayuzunde "
+             "(http://localhost:8088) inceleyip 'Run this path' ile onaylayin. "
+             f"Onaylanana kadar bekleniyor (en fazla {MANUAL_CONFIRM_TIMEOUT_S:.0f}s)...")
+        deadline = time.time() + MANUAL_CONFIRM_TIMEOUT_S
+        while time.time() < deadline:
+            time.sleep(MANUAL_CONFIRM_POLL_S)
+            st = _get("/api/state")
+            if (st.get("job") or {}).get("running"):
+                continue
+            now_joints = st.get("joints_deg")
+            if now_joints and _max_joint_travel(now_joints, goal_joints) <= MANUAL_CONFIRM_TOL_DEG:
+                _check_fault(st)
+                _log("  movecobot'ta onaylandi - devam ediliyor.")
+                time.sleep(SETTLE_SEC)
+                return True
+        _log(f"  {MANUAL_CONFIRM_TIMEOUT_S:.0f}s icinde movecobot'tan onay gelmedi - zaman asimi.")
+        return False
     _post("/api/preview/run", {"id": preview_id, "option": option})
     st = _wait_job(timeout=40)
     _check_fault(st)
