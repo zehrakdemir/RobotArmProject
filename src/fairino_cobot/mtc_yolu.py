@@ -30,6 +30,32 @@ ZAMAN_EPSILON_S = 1e-3
 DIKIS_TOLERANS_DEG = 1e-3
 
 
+def toplam_eklem_yolu_deg(noktalar_deg: list[list[float]]) -> float:
+    """Yolun TOPLAM eklem donusu: ardisik noktalar arasindaki her eklemin
+    donusunun (derece) toplami.
+
+    "EN KISA YOL" olcusu budur (kullanici istegi, 23 Eylul). Neden bitis
+    noktasina ya da en cok donen ekleme degil de toplama bakiliyor: bir
+    zincirde kol yolda savrulup geri donebilir (bkz. yol_onizleme.
+    en_cok_donen_eklem ayni gerekce) ve bes eklemin 30'ar derecesi tek
+    eklemin 90 derecesinden daha uzun bir harekettir. Sure kullanilmiyor -
+    sure hiz/ivme olceginden de etkilenir, geometriyi yansitmaz.
+
+    Gercek sayi olmayan (NaN, sonsuz) ya da uzunlugu tutmayan nokta varsa
+    math.inf doner: boyle bir yol "kisa" SAYILMAZ (siralamada sona duser).
+    """
+    toplam = 0.0
+    for onceki, simdiki in zip(noktalar_deg, noktalar_deg[1:]):
+        if len(onceki) != len(simdiki):
+            return math.inf
+        for a, b in zip(onceki, simdiki):
+            fark = abs(float(b) - float(a))
+            if not math.isfinite(fark):
+                return math.inf
+            toplam += fark
+    return toplam
+
+
 class MtcYoluHatasi(ValueError):
     """Bir alt-gorevin eklem adlari eklem_adlari kumesini kapsamiyor."""
 

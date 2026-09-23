@@ -569,15 +569,21 @@ function secimiBildir() {
   window.dispatchEvent(new CustomEvent("onizleme-secimi", { detail: d }));
 }
 
-function secenekSatiri(s) {
-  const satir = el("div", "opt" + (s === seciliSecenek ? " sel" : "") + (s.ok ? "" : " bad"));
+// Bir secenek karti. Yol onizlemesi ve pick & place onizlemesi AYNI karti
+// kullanir (ikisi de yol_onizleme.secenek_ozeti bicimi); secili olan ve
+// secince ne olacagi disaridan gelir.
+function secenekSatiri(s, secili, sec) {
+  const satir = el("div", "opt" + (s === secili ? " sel" : "") + (s.ok ? "" : " bad"));
   satir.tabIndex = 0;
   satir.setAttribute("role", "option");
-  satir.setAttribute("aria-selected", s === seciliSecenek ? "true" : "false");
+  satir.setAttribute("aria-selected", s === secili ? "true" : "false");
   satir.appendChild(el("span", "num", String(s.index)));
   satir.appendChild(el("span", "name", s.label));
   satir.appendChild(el("span", "state", s.ok ? "OK" : "Rejected"));
   const bilgi = [s.method || "no plan"];
+  // total_deg yalnizca MTC zincirlerinde var: yolun TOPLAM eklem donusu,
+  // siralama olcusu ("en kisa yol" - bkz. mtc_yolu.toplam_eklem_yolu_deg).
+  if (s.total_deg !== undefined && s.total_deg !== null) bilgi.push(`total ${s.total_deg}°`);
   if (s.max_joint && s.max_deg !== null) bilgi.push(`max ${s.max_joint} ${s.max_deg}°`);
   if (s.duration_s !== null) bilgi.push(`${s.duration_s} s`);
   satir.appendChild(el("span", "meta", bilgi.join(" · ")));
@@ -585,7 +591,6 @@ function secenekSatiri(s) {
     satir.appendChild(el("span", "why",
       (s.reason || "rejected") + (s.details ? ": " + s.details : "")));
   }
-  const sec = () => { seciliSecenek = s; onizlemeCiz(); };
   satir.onclick = sec;
   satir.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); sec(); } };
   return satir;
@@ -619,7 +624,8 @@ function onizlemeCiz() {
       (onizleme.details ? " — " + onizleme.details : ""));
   }
   $("#pv-info").textContent = bilgi.join("\n");
-  secenekler.forEach((s) => kap.appendChild(secenekSatiri(s)));
+  secenekler.forEach((s) => kap.appendChild(secenekSatiri(
+    s, seciliSecenek, () => { seciliSecenek = s; onizlemeCiz(); })));
   if (!secenekler.length) kap.appendChild(el("div", "note", "No options."));
   $("#pv-run").disabled = !(seciliSecenek && seciliSecenek.ok);
   $("#pv-clear").disabled = false;
@@ -693,11 +699,13 @@ function kurOnizleme() {
 let pnpNesneler = [];
 let pnpSeciliNesne = null;
 let ppOnizleme = null;          // /api/pickplace/preview ozeti ya da null
-let ppSecenek = null;           // ppOnizleme.options[0] (tek secenek - tum zincir)
+let ppSecenek = null;           // kullanicinin sectigi zincir (varsayilan: en kisa)
 let gosterilenPpId = null;
 let ppYukleniyor = false;
 let pnpVizyonBilgi = null;      // /api/vision/info sonucu (sonDurum'a KARISTIRILMAZ -
                                 // telemetri her turda sonDurum'u bastan yaziyor)
+let pnpSlotSecildi = false;     // kullanici slot secimine dokundu mu (dokunduysa
+                                // slot listesi yeniden yuklenirken secimi bozma)
 
 function pnpHata(mesaj) {
   $("#pnp-err").textContent = mesaj || "";
@@ -717,19 +725,46 @@ function pnpKameralar() {
   $("#pnp-camR").src = acik ? `${taban}/stream/R` : "";
 }
 
+// "Custom" secilince X/Y/Z alanlari gorunur; birakma yonelimi (RX/RY/RZ)
+// girilmez, kavramanin yonelimi aynen kullanilir (bkz. pnpBirakmaPozu).
+function pnpSlotDegisti() {
+  $("#pnp-place-xyz").hidden = $("#pnp-slot").value !== "custom";
+}
+
+// Secili birakma pozu: [x, y, z, rx, ry, rz]. Gecersiz girdide null doner
+// (sayiAlan alanin yaninda uyariyi kendisi gosterir).
+function pnpBirakmaPozu(nesne) {
+  const secim = $("#pnp-slot").value;
+  if (secim !== "custom") {
+    const slot = (pnpVizyonBilgi && pnpVizyonBilgi.slots || [])[parseInt(secim, 10)];
+    if (!slot) { pnpHata("No place slot available (check the vision API)."); return null; }
+    return slot;
+  }
+  const x = sayiAlan($("#pnp-place-x"));
+  const y = sayiAlan($("#pnp-place-y"));
+  const z = sayiAlan($("#pnp-place-z"));
+  if (x === null || y === null || z === null) return null;
+  return [x, y, z, ...nesne.grasp.rpy_deg];
+}
+
 async function pnpBilgiYukle() {
   try {
     pnpVizyonBilgi = await api("/api/vision/info");
     pnpVizyonHata(pnpVizyonBilgi.handeye ? ""
       : "Hand-eye calibration missing or invalid - object positions may be wrong.");
+    // "Custom" secenegi HTML'de sabit duruyor (vision API'ye ulasilamasa da
+    // kalsin) - slotlar onun ONUNE eklenir.
     const sec = $("#pnp-slot");
-    sec.innerHTML = "";
+    const ozel = sec.querySelector('option[value="custom"]');
+    sec.querySelectorAll('option:not([value="custom"])').forEach((o) => o.remove());
     (pnpVizyonBilgi.slots || []).forEach((s, i) => {
       const o = document.createElement("option");
       o.value = String(i);
       o.textContent = `Slot ${i + 1} — x=${s[0].toFixed(0)} y=${s[1].toFixed(0)} z=${s[2].toFixed(0)}`;
-      sec.appendChild(o);
+      sec.insertBefore(o, ozel);
     });
+    if (!pnpSlotSecildi && sec.options.length > 1) sec.selectedIndex = 0;
+    pnpSlotDegisti();
     pnpKameralar();
   } catch (e) {
     pnpVizyonHata("Vision API not reachable: " + e.message);
@@ -824,18 +859,21 @@ async function pnpAlgila() {
 }
 
 function ppOnizlemeCiz() {
+  const kap = $("#pnp-options");
+  kap.innerHTML = "";
   const planliyor = sonDurum.job && sonDurum.job.running && sonDurum.job.kind === "preview"
     && sonDurum.job.label === "Plan pick & place chain";
   if (!ppOnizleme) {
+    ppSecenek = null;
     $("#pnp-info").textContent = planliyor
-      ? "Planning pick & place chain… (the robot does not move)"
+      ? "Planning pick & place chains… (the robot does not move)"
       : "No plan. Select a detected object and a place slot, then press “Plan pick & place”.";
     $("#pnp-run").disabled = true;
     secimiBildir();
     return;
   }
-  const s = (ppOnizleme.options || [])[0];
-  if (!s) {
+  const secenekler = ppOnizleme.options || [];
+  if (!secenekler.length) {
     // IK/MTC baslama noktasinda basarisiz oldu - hic secenek yok (bkz.
     // server.py pp_onizle "basarisiz" yardimcisi, yollari_onizle ile ayni desen).
     ppSecenek = null;
@@ -846,14 +884,22 @@ function ppOnizlemeCiz() {
     secimiBildir();
     return;
   }
-  ppSecenek = s;
-  const satirlar = [`${s.ok ? "Runnable" : "REJECTED (" + s.reason + ")"} · ${s.duration_s ?? "?"} s`];
-  if (s.max_joint && s.max_deg !== null) satirlar.push(`Largest joint rotation: ${s.max_joint} ${s.max_deg}°`);
+  // Sunucu secenekleri EN KISA YOL basta olacak sekilde siralar (toplam
+  // eklem donusu; bkz. server.py pp_onizle). Ilk cizimde ya da secenek
+  // listesi degistiginde en kisa calistirilabilir olan secili gelir.
+  if (!ppSecenek || !secenekler.includes(ppSecenek)) {
+    ppSecenek = secenekler.find((s) => s.ok) || secenekler[0];
+  }
+  const s = ppSecenek;
+  const satirlar = [`${secenekler.length} option(s) planned — shortest total joint travel first. ` +
+                    "Pick one to see it in the 3D view."];
   if (s.stages && s.stages.length) {
     satirlar.push(...s.stages.filter((a) => a.tip !== "sahne")
       .map((a) => `  ${a.t0}–${a.t1}s  ${a.tip === "gripper" ? "[gripper]" : a.ad}`));
   }
   $("#pnp-info").textContent = satirlar.join("\n");
+  secenekler.forEach((o) => kap.appendChild(secenekSatiri(
+    o, ppSecenek, () => { ppSecenek = o; ppOnizlemeCiz(); })));
   $("#pnp-run").disabled = !s.ok;
   secimiBildir();
 }
@@ -878,6 +924,8 @@ async function ppOnizlemeYukle(beklenenId) {
 function kurNesneAlBirak() {
   $("#pnp-cams").onchange = pnpKameralar;
   $("#pnp-detect").onclick = pnpAlgila;
+  $("#pnp-slot").onchange = () => { pnpSlotSecildi = true; pnpSlotDegisti(); };
+  pnpSlotDegisti();
 
   $("#pnp-discard").onclick = async () => {
     try {
@@ -894,18 +942,37 @@ function kurNesneAlBirak() {
       pnpHata("Select a graspable object first (Detect, then click one in the list).");
       return;
     }
-    const slotIdx = parseInt($("#pnp-slot").value, 10);
-    const slot = (pnpVizyonBilgi && pnpVizyonBilgi.slots || [])[slotIdx];
-    if (!slot) { pnpHata("No place slot available (check the vision API)."); return; }
+    const slot = pnpBirakmaPozu(pnpSeciliNesne);
+    if (!slot) return;
     const approach = sayiAlan($("#pnp-approach"), true);
-    const objh = sayiAlan($("#pnp-objh"), true);
-    if (approach === null || objh === null) return;
+    const derinlik = sayiAlan($("#pnp-depth"), true);
+    if (approach === null || derinlik === null) return;
     // box.size_mm = [genislik (uzun yatay), kalinlik (kapanma yonu), yukseklik]
     // (bkz. detect_api.py _nesne_sozlugu / OBB.extents sirasi) - dims_cm
     // BUYUKTEN KUCUGE siralanmis oldugu icin eksenlere geri eslenemez.
-    const boyut = pnpSeciliNesne.box ? pnpSeciliNesne.box.size_mm : [null, null, null];
+    const kutu = pnpSeciliNesne.box;
+    if (!kutu) { pnpHata("The selected object has no measured box - press Detect again."); return; }
+    const boyut = kutu.size_mm;
+    const yukseklik = boyut[2];
+    if (!(yukseklik > 0)) { pnpHata("The detected object height is not usable."); return; }
+    if (yukseklik > 160) {
+      pnpHata(`Detected object height ${yukseklik.toFixed(0)} mm is above the 160 mm limit.`);
+      return;
+    }
+    if (derinlik >= yukseklik) {
+      pnpHata(`Grasp depth ${derinlik} mm must be smaller than the detected object ` +
+              `height ${yukseklik.toFixed(0)} mm.`);
+      return;
+    }
+    // Kavrama noktasi: tespitin kendi x,y'si; z ise OLCULEN UST YUZUN
+    // (center_z + yukseklik/2 - bkz. valiz-olcum-robot src/cell.py:223,
+    // ground_z = center_z - H/2) girilen kadar altinda. Vision'in kendi
+    // z'si nesne yuksekliginin ortasi (GRASP_HEIGHT_FRACTION=0.5), bizim
+    // kuralimiz degil (bkz. GUNCEL_DURUM §5 Gripper).
+    const ustZ = kutu.center_mm[2] + yukseklik / 2;
     const govde = {
-      grasp_point: pnpSeciliNesne.grasp.point_mm,
+      grasp_point: [pnpSeciliNesne.grasp.point_mm[0], pnpSeciliNesne.grasp.point_mm[1],
+                    ustZ - derinlik],
       grasp_rpy: pnpSeciliNesne.grasp.rpy_deg,
       place_pose: slot,
       approach_mm: approach,
@@ -913,9 +980,11 @@ function kurNesneAlBirak() {
       grip_force: parseInt($("#pnp-gforce").value, 10) || 5,
       object_w_mm: boyut[1] || null,   // kapanma yonundeki kalinlik - TAHMIN (bkz. panel notu)
       object_d_mm: boyut[0] || 50,
-      object_h_mm: objh,
+      object_h_mm: yukseklik,
+      // Kac farkli kol yolu planlansin (sunucu en kisadan uzuna siralar).
+      max_options: parseInt($("#pnp-nopts").value, 10) || 3,
     };
-    yaz("Planning pick & place chain… (the robot does not move)");
+    yaz("Planning pick & place chains… (the robot does not move)");
     try {
       await api("/api/pickplace/preview", { method: "POST", body: govde });
     } catch (e) {
@@ -928,15 +997,18 @@ function kurNesneAlBirak() {
     if (!ppOnizleme || !ppSecenek || !ppSecenek.ok) return;
     const s = ppSecenek;
     const ok = await onayla("Run pick & place",
-      "The robot will follow the plan shown: approach → grip → lift → transfer → " +
-      "lower → release → retreat.\n" +
+      `The robot will follow plan ${s.index} (${s.label}) as shown: approach → grip → lift → ` +
+      "transfer → lower → release → retreat.\n" +
+      (s.total_deg !== undefined && s.total_deg !== null
+        ? `Total joint travel: ${s.total_deg}°.\n` : "") +
       (s.max_joint && s.max_deg !== null ? `Largest joint rotation: ${s.max_joint} ${s.max_deg}°.\n` : "") +
       "Keep the emergency stop within reach.",
       $("#pnp-run"));
     if (!ok) return;
     pnpHata("");
     try {
-      await api("/api/pickplace/preview/run", { method: "POST", body: { id: ppOnizleme.id } });
+      await api("/api/pickplace/preview/run",
+                { method: "POST", body: { id: ppOnizleme.id, option: s.index } });
       yaz("Run pick & place: sent");
     } catch (e) {
       pnpHata("Run rejected: " + e.message);

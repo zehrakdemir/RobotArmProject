@@ -193,6 +193,27 @@ def probe(ip, Robot):
         return None
 
 
+def probe_bekleyerek(ip, Robot, saniye=5, denemeler=PROBE_RETRIES):
+    """probe()'u thread icinde calistirir; asili kalirsa terk edip devam eder.
+
+    probe icindeki XML-RPC cagrisi, port acik ama karsi taraf sessizse
+    sonsuza kadar bekleyebiliyor (main()'deki setdefaulttimeout notuna bak).
+    daemon=True: sure dolunca thread terk edilir, script beklemez.
+    """
+    for _ in range(denemeler):
+        kutu = {}
+
+        def _isci(kutu=kutu):
+            kutu["info"] = probe(ip, Robot)
+
+        t = threading.Thread(target=_isci, daemon=True)
+        t.start()
+        t.join(timeout=saniye)
+        if kutu.get("info"):
+            return kutu["info"]
+    return None
+
+
 def emit_result(chosen):
     robot_model = chosen["model"]
     web_version = chosen["web_version"]
@@ -326,15 +347,45 @@ def main():
     # DEGIL; .env icindeki FAIRINO_ROBOT_IP ile verilebilir. Verilirse
     # tum ag taramasi atlanir (ve --full bile taramaya zorlamaz -
     # kullanici acikca hangi robotu istedigini soylemis olur).
+    # Virgulle birden fazla adres verilebilir; sirayla denenir ve CEVAP VEREN
+    # ILK adres kullanilir. Boylece ayni kurulum hem gercek robota hem
+    # simulatore baglanabilir, oncelik yazma sirasidir:
+    #   FAIRINO_ROBOT_IP=192.168.57.2,192.168.58.2
+    # (once gercek robot; o kapaliysa SimMachine)
     forced_ip = paths.robot_ip_override()
     if forced_ip:
-        log(f"FAIRINO_ROBOT_IP={forced_ip} verildi - ag taramasi atlaniyor.")
-        info = probe(forced_ip, Robot)
-        if not info:
-            log(f"HATA: {forced_ip} adresindeki robota ulasilamadi.")
-            sys.exit(1)
-        emit_result(info)
-        return
+        adaylar = [p.strip() for p in forced_ip.split(",") if p.strip()]
+        if len(adaylar) == 1:
+            log(f"FAIRINO_ROBOT_IP={adaylar[0]} verildi - ag taramasi atlaniyor.")
+        else:
+            log(f"FAIRINO_ROBOT_IP {len(adaylar)} adres veriyor - ag taramasi "
+                f"atlaniyor, oncelik sirasiyla denenecek: {', '.join(adaylar)}")
+        for sira, ip in enumerate(adaylar, 1):
+            # Tek adres verilmisse kullanici acikca onu istemis: eski davranis
+            # aynen korunur (dogrudan probe, sure siniri yok).
+            if len(adaylar) == 1:
+                info = probe(ip, Robot)
+            else:
+                # Ulasilamayan adrese RPC denemek hem pahali (3 x 5 sn) hem de
+                # ZARARLI: sure dolunca terk edilen daemon thread'ler SDK'yi
+                # bozuyor ve SONRAKI aday da cevapsiz gorunuyor (olculdu:
+                # 57.2 sonrasi calisir durumdaki 58.2 "cevap yok" verdi).
+                # Once ucuz port kontrolu - hepsi 0.3 sn.
+                if not port_open(ip):
+                    log(f"  -> {ip}: port {RPC_PORT} kapali, atlaniyor")
+                    continue
+                info = probe_bekleyerek(ip, Robot)
+            if info:
+                if len(adaylar) > 1:
+                    log(f"  -> {ip}: DOGRULANDI (aday {sira}/{len(adaylar)}), "
+                        f"model={info['model']}, web={info['web_version']}")
+                emit_result(info)
+                return
+            log(f"  -> {ip}: cevap yok"
+                + (", sirakine geciliyor..." if sira < len(adaylar) else ""))
+        log("HATA: verilen adreslerin hicbirinde robota ulasilamadi: "
+            f"{', '.join(adaylar)}")
+        sys.exit(1)
 
     if "--full" in sys.argv:
         log("--full verildi: onbellek atlanip her zaman tam ag taramasi yapiliyor.")

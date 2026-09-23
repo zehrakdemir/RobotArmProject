@@ -315,12 +315,18 @@ class PickPlace:
             })
         return out
 
-    def zinciri_calistir(self, sira):
-        """son_zincir'deki sira'inci (0,1,2) ONCEDEN PLANLANMIS cozumu
-        AYNEN calistirir - yeniden planlama YOK (bkz. zinciri_onceden_planla
+    def zinciri_calistir(self, sira, zincir=None):
+        """Bir zincirin sira'inci (0,1,2) ONCEDEN PLANLANMIS cozumunu AYNEN
+        calistirir - yeniden planlama YOK (bkz. zinciri_onceden_planla
         gerekcesi). Gripper aktuasyonu CAGIRANIN isi: gripper MTC disinda
-        (bkz. modul docstring'i)."""
-        task, cozum = self.son_zincir[sira]
+        (bkz. modul docstring'i).
+
+        zincir: calistirilacak [(task, cozum) x3] listesi. Verilmezse SON
+        planlanan zincir (son_zincir). Onizlemede birden fazla secenek
+        planlandigi icin (bkz. server.py pp_onizle) son_zincir artik
+        "kullanicinin sectigi" zincir DEGIL - o yol secilen secenegin
+        zincirini acikca gecirir."""
+        task, cozum = (zincir or self.son_zincir)[sira]
         try:
             ec = task.execute(cozum)
             val = getattr(ec, "val", None)

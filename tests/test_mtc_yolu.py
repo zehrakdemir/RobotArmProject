@@ -4,7 +4,12 @@ import math
 
 import pytest
 
-from fairino_cobot.mtc_yolu import EKLEM_ADLARI, MtcYoluHatasi, asamalari_birlestir
+from fairino_cobot.mtc_yolu import (
+    EKLEM_ADLARI,
+    MtcYoluHatasi,
+    asamalari_birlestir,
+    toplam_eklem_yolu_deg,
+)
 
 
 def _stage(ad, joint_names, noktalar_deg_ve_t):
@@ -113,3 +118,36 @@ def test_bos_gorev_listesi():
     noktalar, zamanlar, bilgi = asamalari_birlestir([])
 
     assert noktalar == [] and zamanlar == [] and bilgi == []
+
+
+# -- toplam eklem yolu ("en kisa yol" olcusu) -------------------------------
+
+def test_toplam_yol_ardisik_farklarin_toplami():
+    noktalar = [[0, 0, 0, 0, 0, 0], [10, 0, 0, 0, 0, 0], [10, -5, 0, 0, 0, 0]]
+
+    assert toplam_eklem_yolu_deg(noktalar) == 15.0
+
+
+def test_toplam_yol_geri_donen_eklemi_de_sayiyor():
+    """Gidip geri donen eklem 'sifir' sayilmamali - kol o yolu gercekten
+    aliyor (bkz. fonksiyonun gerekcesi)."""
+    gidip_gelen = [[0] * 6, [90, 0, 0, 0, 0, 0], [0] * 6]
+    duz = [[0] * 6, [45, 0, 0, 0, 0, 0], [90, 0, 0, 0, 0, 0]]
+
+    assert toplam_eklem_yolu_deg(gidip_gelen) == 180.0
+    assert toplam_eklem_yolu_deg(duz) == 90.0
+
+
+def test_toplam_yol_tek_nokta_ve_bos_yol_sifir():
+    assert toplam_eklem_yolu_deg([]) == 0.0
+    assert toplam_eklem_yolu_deg([[0] * 6]) == 0.0
+
+
+def test_toplam_yol_gercek_olmayan_deger_sonsuz():
+    """NaN/sonsuz iceren yol 'kisa' sayilmamali - siralamada sona dusmeli."""
+    assert toplam_eklem_yolu_deg([[0] * 6, [float("nan"), 0, 0, 0, 0, 0]]) == math.inf
+    assert toplam_eklem_yolu_deg([[0] * 6, [float("inf"), 0, 0, 0, 0, 0]]) == math.inf
+
+
+def test_toplam_yol_uzunluk_tutmuyorsa_sonsuz():
+    assert toplam_eklem_yolu_deg([[0] * 6, [0] * 5]) == math.inf

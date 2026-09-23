@@ -1,6 +1,10 @@
 """IK aday siralamasi. Robot, ROS2 ve SDK GEREKTIRMEZ."""
 
-from fairino_cobot.ik_secimi import ik_adaylarini_sirala, uygun_cifti_bul
+from fairino_cobot.ik_secimi import (
+    ik_adaylarini_sirala,
+    uygun_cifti_bul,
+    uygun_ciftleri_bul,
+)
 
 
 def test_en_yakin_aday_once_geliyor():
@@ -109,3 +113,58 @@ def test_aday_yoksa_hicbir_sey_planlanmiyor():
     assert (pick, place) == (None, None)
     assert cagrilar == []
     assert deneme == {"alma": 0, "zincir": 0}
+
+
+# -- birden fazla secenek (onizlemede sunulan yollar) -----------------------
+
+def test_her_pick_icin_tek_cift_toplaniyor():
+    """Secenekler farkli KOL DURUSLARI olsun diye bir pick'in ikinci place
+    cozumu alinmaz; sonraki pick adayina gecilir."""
+    ciftler, deneme = uygun_ciftleri_bul(
+        [_j(0), _j(50), _j(80)], [_j(10), _j(20)],
+        lambda p: True, lambda p, q: True, en_fazla=3)
+
+    assert ciftler == [(_j(0), _j(10)), (_j(50), _j(20)), (_j(80), _j(20))]
+    assert deneme == {"alma": 3, "zincir": 3}
+
+
+def test_en_fazla_kadar_secenek_toplanip_duruluyor():
+    ciftler, deneme = uygun_ciftleri_bul(
+        [_j(0), _j(50), _j(80)], [_j(10)],
+        lambda p: True, lambda p, q: True, en_fazla=2)
+
+    assert ciftler == [(_j(0), _j(10)), (_j(50), _j(10))]
+    assert deneme["alma"] == 2, "ucuncu pick adayi hic denenmemeli"
+
+
+def test_planlanamayan_pick_secenek_uretmiyor():
+    ciftler, _ = uygun_ciftleri_bul(
+        [_j(0), _j(50)], [_j(10)],
+        lambda p: p != _j(0), lambda p, q: True, en_fazla=3)
+
+    assert ciftler == [(_j(50), _j(10))]
+
+
+def test_zincir_butcesi_bitince_duruluyor():
+    """Hicbir zincir planlanamayan sahnede onizleme dakikalarca surmesin."""
+    cagrilar = []
+
+    def zincir(p, q):
+        cagrilar.append((p, q))
+        return False
+
+    ciftler, deneme = uygun_ciftleri_bul(
+        [_j(0), _j(50)], [_j(10), _j(20), _j(30)],
+        lambda p: True, zincir, en_fazla=2, en_fazla_zincir_denemesi=4)
+
+    assert ciftler == []
+    assert deneme["zincir"] == 4 and len(cagrilar) == 4
+
+
+def test_tek_cift_sarmalayicisi_ilk_uygunu_donuyor():
+    """uygun_cifti_bul (run_at_pose yolu) davranisi degismedi."""
+    pick, place, deneme = uygun_cifti_bul(
+        [_j(0), _j(50)], [_j(10)], lambda p: True, lambda p, q: p == _j(50))
+
+    assert (pick, place) == (_j(50), _j(10))
+    assert deneme == {"alma": 2, "zincir": 2}

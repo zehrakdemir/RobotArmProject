@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -165,10 +166,19 @@ class PPOnizleme(BaseModel):
     object_w_mm: float | None = Field(None, gt=0)
     object_d_mm: float = Field(..., gt=0)
     object_h_mm: float = Field(..., gt=0, le=160)
+    # Kac farkli kol yolu planlanip secenek olarak sunulsun (23 Eylul).
+    # Her secenek AYRI bir tam zincir planlamasi (3 MTC gorevi) demek -
+    # arttirmak onizlemeyi uzatir. Ust sinir kasitli olarak dusuk.
+    max_options: int = Field(3, ge=1, le=6)
 
 
 class PPOnizlemeCalistir(BaseModel):
+    """Onizlenen pick & place zincirini calistirma istegi. option 1'den
+    baslar (OnizlemeCalistir ile ayni sozlesme); verilmezse en kisa yol
+    (1. secenek)."""
+
     id: int
+    option: int = Field(1, ge=1)
 
 
 class OnizlemeIstek(BaseModel):
@@ -808,10 +818,15 @@ def pp_onizle(istek: PPOnizleme) -> dict[str, Any]:
     run_at_pose'un aksine burada TUM yol noktalari elde oldugu icin
     mtc_yolunu_denetle ile zemin/self-collision kontrolunden de gecirilir -
     ihlal varsa secenek 'ok': False doner (yol yine gosterilir, calistirilamaz).
+
+    BIRDEN FAZLA SECENEK (23 Eylul, kullanici istegi): farkli kol duruslari
+    icin en cok max_options tam zincir planlanir ve TOPLAM EKLEM YOLU'na gore
+    siralanir - 1. secenek EN KISA yoldur, arayuz onu secili getirir. Diger
+    secenekler listede durur, kullanici baskasini secebilir.
     """
-    from fairino_cobot.ik_secimi import uygun_cifti_bul
+    from fairino_cobot.ik_secimi import uygun_ciftleri_bul
     from fairino_cobot.movecobot import GRIPPER_STROKE_M
-    from fairino_cobot.mtc_yolu import asamalari_birlestir
+    from fairino_cobot.mtc_yolu import asamalari_birlestir, toplam_eklem_yolu_deg
     from fairino_cobot.yol_onizleme import secenek_ozeti
 
     def calistir(job):
@@ -831,7 +846,7 @@ def pp_onizle(istek: PPOnizleme) -> dict[str, Any]:
         place_approach = [*istek.place_pose[:2], istek.place_pose[2] + istek.approach_mm,
                           *istek.place_pose[3:]]
 
-        baslangic, sirali_pick, red_pick = arm._ik_adaylari(*pick_approach)
+        kol_baslangici, sirali_pick, red_pick = arm._ik_adaylari(*pick_approach)
         if red_pick is not None or not sirali_pick:
             return basarisiz("pick_ik_failed",
                              red_pick.get("details") if red_pick else "no candidates")
@@ -858,32 +873,76 @@ def pp_onizle(istek: PPOnizleme) -> dict[str, Any]:
             return basarisiz("mtc_init_failed", "MTC was not initialized at startup (see server log).")
         pp.hizlari_guncelle(arm.speed_pct, arm.accel_pct)
 
-        pre_pick, pre_place, deneme = uygun_cifti_bul(
+        # Her uygun cift bulundugunda O ANIN zinciri saklanir: pp.son_zincir
+        # bir sonraki planlamada UZERINE YAZILIR, sonradan okunamaz.
+        zincirler: list[list[Any]] = []
+
+        def zincir_planla(p, q):
+            if not pp.zinciri_onceden_planla(p, q, istek.approach_mm, boyut, arm.tcp_offset_m):
+                return False
+            zincirler.append(list(pp.son_zincir))
+            return True
+
+        ciftler, deneme = uygun_ciftleri_bul(
             pick_adaylari, place_adaylari,
             lambda p: pp.alma_planla(p, istek.approach_mm),
-            lambda p, q: pp.zinciri_onceden_planla(p, q, istek.approach_mm, boyut, arm.tcp_offset_m),
+            zincir_planla,
+            en_fazla=istek.max_options,
+            # Zincir planlamasi pahali; adaylar cok oldugunda onizleme
+            # dakikalarca surmesin. Secenek basina ~4 deneme.
+            en_fazla_zincir_denemesi=4 * istek.max_options,
         )
-        job.log.append(f"pre-planning: {deneme['alma']} approach + {deneme['zincir']} chain plans")
-        if pre_pick is None:
+        job.log.append(f"pre-planning: {deneme['alma']} approach + {deneme['zincir']} chain plans "
+                       f"-> {len(ciftler)} option(s)")
+        if not ciftler:
             return basarisiz("no_feasible_pick_place_pair",
                              "no pick/place arm configuration pair could be planned end to "
                              "end. Robot did not move.")
 
-        asamalar = [pp.cozum_asamalari(cozum) for _, cozum in pp.son_zincir]
-        noktalar, zamanlar, bilgi = asamalari_birlestir(asamalar, bosluk_s=0.8)
-        problem = arm.mtc_yolunu_denetle(noktalar) if noktalar else None
+        # (maliyet, ozet, zincir) - maliyet = yolun toplam eklem donusu.
+        adaylar: list[tuple[float, dict[str, Any], list[Any]]] = []
+        for (pre_pick, pre_place), zincir in zip(ciftler, zincirler):
+            asamalar = [pp.cozum_asamalari(cozum) for _, cozum in zincir]
+            noktalar, zamanlar, bilgi = asamalari_birlestir(asamalar, bosluk_s=0.8)
+            problem = arm.mtc_yolunu_denetle(noktalar) if noktalar else None
+            # Yolun GERCEK baslangici: zincirin ilk gorevi CurrentState'ten
+            # (kolun plan anindaki durusu) basliyor - pre_pick "on-poza git"
+            # asamasinin HEDEFI. Eskiden buraya pre_pick veriliyordu; hem
+            # "en cok donen eklem" yanlis noktaya gore olculuyordu hem de
+            # /preview/run'daki bayatlik kontrolu kolu pre_pick'te sanip
+            # neredeyse her zaman preview_stale veriyordu.
+            yol_baslangici = noktalar[0] if noktalar else list(kol_baslangici)
+            maliyet = toplam_eklem_yolu_deg(noktalar)
+            ozet = secenek_ozeti(len(adaylar) + 1, "", "MTC", yol_baslangici, noktalar,
+                                 zamanlar, problem, noktalar[-1] if noktalar else None)
+            ozet["stages"] = bilgi
+            ozet["start_joints"] = [round(float(v), 3) for v in yol_baslangici]
+            ozet["pre_pick_joints"] = [round(float(v), 2) for v in pre_pick]
+            ozet["pre_place_joints"] = [round(float(v), 2) for v in pre_place]
+            ozet["total_deg"] = None if not math.isfinite(maliyet) else round(maliyet, 1)
+            adaylar.append((maliyet, ozet, zincir))
 
-        ozet = secenek_ozeti(1, "Pick & place chain", "MTC", pre_pick, noktalar, zamanlar,
-                             problem, noktalar[-1] if noktalar else None)
-        ozet["stages"] = bilgi
-        job.log.append(f"preview: {'runnable' if ozet['ok'] else 'REJECTED - ' + str(ozet['reason'])}")
+        # EN KISA YOL BASA: once calistirilabilir olanlar (reddedilen bir yol
+        # kisa olsa da secilemez), sonra toplam eklem yolu kucukten buyuge.
+        adaylar.sort(key=lambda a: (not a[1]["ok"], a[0]))
+        secenekler = []
+        for sira, (_, ozet, _) in enumerate(adaylar, start=1):
+            ozet["index"] = sira
+            ozet["label"] = ("Shortest chain" if sira == 1 and ozet["ok"]
+                             else f"Alternative chain {sira}")
+            secenekler.append(ozet)
+        for s in secenekler:
+            job.log.append(f"option {s['index']}: {'runnable' if s['ok'] else 'REJECTED - ' + str(s['reason'])}"
+                           f" · total {s['total_deg']} deg · {s['duration_s']} s")
 
         no = oturum.pp_onizleme_kaydet(
-            {"success": True, "kind": "pickplace", "start_joints": pre_pick,
+            {"success": True, "kind": "pickplace",
+             "start_joints": secenekler[0]["start_joints"],
              "target_tcp": dict(zip(("x", "y", "z", "rx", "ry", "rz"),
                                     [*istek.grasp_point, *istek.grasp_rpy])),
-             "options": [ozet], "grip_speed": istek.grip_speed, "grip_force": istek.grip_force},
-            pp.son_zincir, pp)
+             "options": secenekler, "grip_speed": istek.grip_speed,
+             "grip_force": istek.grip_force},
+            [z for _, _, z in adaylar], pp)
         job.log.append(f"stored as preview #{no}")
         return {"success": True}
 
@@ -906,10 +965,14 @@ def pp_onizleme_sil() -> dict[str, Any]:
 
 @app.post("/api/pickplace/preview/run")
 def pp_onizlemeyi_calistir(istek: PPOnizlemeCalistir) -> dict[str, Any]:
-    """Onizlenen pick & place zincirini AYNEN calistirir (yeniden planlamaz,
-    bkz. pickplace.zinciri_calistir). ROBOTU HAREKET ETTIRIR (arayuz once
-    onay ister). Gripper: ac -> [zincir 1: yaklas] -> kavra ->
-    [zincir 2: kaldir+tasi+in] -> ac -> [zincir 3: ayir+geri cekil]."""
+    """Onizlenen pick & place zincirinin SECILEN secenegini AYNEN calistirir
+    (yeniden planlamaz, bkz. pickplace.zinciri_calistir). ROBOTU HAREKET
+    ETTIRIR (arayuz once onay ister). Gripper: ac -> [zincir 1: yaklas] ->
+    kavra -> [zincir 2: kaldir+tasi+in] -> ac -> [zincir 3: ayir+geri cekil].
+
+    Hangi secenek calistirilacagi TARAYICIDAN DEGIL sunucudan gelir: istek
+    yalnizca onizleme id'si + secenek numarasi tasir, yol sunucuda saklidir
+    (onizleme_calistir ile ayni sozlesme)."""
     from fairino_cobot.gripper_controller import GripperError
     from fairino_cobot.yol_onizleme import ONIZLEME_BASLANGIC_TOLERANSI_DEG, baslangic_farki
 
@@ -923,12 +986,17 @@ def pp_onizlemeyi_calistir(istek: PPOnizlemeCalistir) -> dict[str, Any]:
     if not secenekler:
         raise HTTPException(status_code=409, detail=o["ozet"].get("details")
                             or o["ozet"].get("reason") or "No plan to run.")
-    ozet = secenekler[0]
+    if not 1 <= istek.option <= len(secenekler):
+        raise HTTPException(status_code=404,
+                            detail=f"No option {istek.option} in this plan "
+                                   f"({len(secenekler)} available).")
+    ozet = secenekler[istek.option - 1]
     if not ozet["ok"]:
         raise HTTPException(
             status_code=409,
             detail=f"This plan was rejected ({ozet.get('reason') or 'no plan'}); it cannot be run.")
-    baslangic = o["ozet"]["start_joints"]
+    baslangic = ozet["start_joints"]
+    zincir = o["zincirler"][istek.option - 1]
     pp = o["pp"]
     g_speed, g_force = o["ozet"]["grip_speed"], o["ozet"]["grip_force"]
 
@@ -944,12 +1012,12 @@ def pp_onizlemeyi_calistir(istek: PPOnizlemeCalistir) -> dict[str, Any]:
                                 f"(limit {ONIZLEME_BASLANGIC_TOLERANSI_DEG:g}). Plan again - "
                                 f"robot did not move.")}
 
-        job.log.append("Run previewed pick & place chain")
+        job.log.append(f"Run previewed pick & place chain (option {istek.option}/{len(secenekler)})")
         try:
             gripper.move(position=0, speed=g_speed, force=g_force)
         except GripperError as e:
             job.log.append(f"WARNING: gripper open failed: {e}")
-        if not pp.zinciri_calistir(0):
+        if not pp.zinciri_calistir(0, zincir):
             return {"success": False, "reason": "chain_failed", "details": "stage 1/3 (approach)"}
 
         try:
@@ -958,7 +1026,7 @@ def pp_onizlemeyi_calistir(istek: PPOnizlemeCalistir) -> dict[str, Any]:
         except GripperError as e:
             return {"success": False, "reason": "grip_failed", "details": str(e)}
 
-        if not pp.zinciri_calistir(1):
+        if not pp.zinciri_calistir(1, zincir):
             return {"success": False, "reason": "chain_failed", "details": "stage 2/3 (transfer)"}
 
         try:
@@ -966,7 +1034,7 @@ def pp_onizlemeyi_calistir(istek: PPOnizlemeCalistir) -> dict[str, Any]:
         except GripperError as e:
             job.log.append(f"WARNING: gripper open failed: {e}")
 
-        if not pp.zinciri_calistir(2):
+        if not pp.zinciri_calistir(2, zincir):
             return {"success": False, "reason": "chain_failed", "details": "stage 3/3 (retreat)"}
         return {"success": True}
 

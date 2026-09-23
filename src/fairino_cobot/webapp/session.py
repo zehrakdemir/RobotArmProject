@@ -110,10 +110,11 @@ class RobotSession:
         self._onizleme_seq = 0
 
         # Pick & place MTC onizlemesi (server.py /api/pickplace/preview):
-        # onizleme ile AYNI desen, ama "planlar" degil "zincir" - 3 (task,
-        # cozum) cifti (bkz. pickplace.zinciri_onceden_planla) + o zinciri
-        # planlayan PickPlace nesnesinin kendisi (task/cozum nesneleri
-        # yalnizca kendi PickPlace'i yasadigi surece calistirilabilir).
+        # onizleme ile AYNI desen, ama "planlar" degil "zincirler" - secenek
+        # sirasiyla, her secenek icin 3 (task, cozum) cifti (bkz.
+        # pickplace.zinciri_onceden_planla) + o zincirleri planlayan
+        # PickPlace nesnesinin kendisi (task/cozum nesneleri yalnizca kendi
+        # PickPlace'i yasadigi surece calistirilabilir).
         # Ikisi (onizleme / pp_onizleme) KARSILIKLI DISLAR: biri
         # kaydedilince oteki temizlenir - viewer'da ayni anda tek bir
         # "hayalet" yol gosterilir, JS'de arbitraj gerekmez.
@@ -275,13 +276,17 @@ class RobotSession:
         self.pp_onizleme = None
         return no
 
-    def pp_onizleme_kaydet(self, ozet: dict[str, Any], zincir: list[Any], pp: Any) -> int:
+    def pp_onizleme_kaydet(self, ozet: dict[str, Any], zincirler: list[Any], pp: Any) -> int:
         """Yeni pick & place onizlemesini saklar, numarasini doner.
-        onizleme_kaydet ile AYNI gerekce (bkz. onun docstring'i)."""
+        onizleme_kaydet ile AYNI gerekce (bkz. onun docstring'i).
+
+        zincirler: SECENEK SIRASIYLA (ozet["options"] ile ayni sira) her
+        secenegin 3'lu (task, cozum) zinciri."""
         with self._job_lock:
             self._pp_onizleme_seq += 1
             no = self._pp_onizleme_seq
-        self.pp_onizleme = {"id": no, "ozet": {**ozet, "id": no}, "zincir": list(zincir), "pp": pp}
+        self.pp_onizleme = {"id": no, "ozet": {**ozet, "id": no},
+                            "zincirler": list(zincirler), "pp": pp}
         self.onizleme = None
         return no
 

@@ -305,6 +305,10 @@ def robot_ip_override() -> str | None:
     Robotun IP'si makineye/aga ozgu bir deger - kodun icine gomulmez,
     .env ile verilir (.env.example'a bak). Verilmezse detect_robot.py
     agi tarayip kendisi bulur.
+
+    Virgulle birden fazla adres verilebilir ("57.2,58.2"); detect_robot
+    bunlari sirayla dener ve cevap veren ILKINI kullanir. Bolme isi
+    detect_robot'ta - burada ham deger dondurulur.
     """
     ip = os.environ.get("FAIRINO_ROBOT_IP", "").strip()
     return ip or None
