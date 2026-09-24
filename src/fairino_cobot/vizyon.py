@@ -44,9 +44,9 @@ def _istek(yol: str, method: str = "GET", govde: dict | None = None,
             hata_govde = {}
         raise VizyonHatasi(hata_govde.get("err") or f"HTTP {e.code}") from e
     except urllib.error.URLError as e:
-        raise VizyonHatasi(f"vision API'sine ulasilamadi ({url}): {e.reason}") from e
+        raise VizyonHatasi(f"could not reach the vision API ({url}): {e.reason}") from e
     except (TimeoutError, OSError) as e:
-        raise VizyonHatasi(f"vision API zaman asimi ({url}): {e}") from e
+        raise VizyonHatasi(f"vision API timed out ({url}): {e}") from e
 
 
 def bilgi(taban_url: str | None = None) -> dict:
@@ -64,5 +64,5 @@ def algila(taban_url: str | None = None) -> dict:
     sonuc = _istek("/detect", method="POST", govde={}, zaman_asimi=VISION_TIMEOUT_S,
                    taban_url=taban_url)
     if not sonuc.get("ok"):
-        raise VizyonHatasi(sonuc.get("err") or "tespit basarisiz")
+        raise VizyonHatasi(sonuc.get("err") or "detection failed")
     return sonuc

@@ -53,9 +53,9 @@ def test_algila_basarili_sonucu_donuyor(monkeypatch):
 
 def test_algila_basarisiz_govdedeki_mesaji_firlatir(monkeypatch):
     monkeypatch.setattr(vizyon.urllib.request, "urlopen",
-                        lambda req, timeout=None: _SahteYanit({"ok": False, "err": "kamera yok"}))
+                        lambda req, timeout=None: _SahteYanit({"ok": False, "err": "no camera"}))
 
-    with pytest.raises(vizyon.VizyonHatasi, match="kamera yok"):
+    with pytest.raises(vizyon.VizyonHatasi, match="no camera"):
         vizyon.algila(taban_url="http://x:1")
 
 
@@ -63,11 +63,11 @@ def test_http_hatasi_govdesindeki_err_okunur(monkeypatch):
     def sahte_urlopen(req, timeout=None):
         raise urllib.error.HTTPError(
             req.full_url, 409, "conflict", {},
-            io.BytesIO(json.dumps({"err": "baska bir tespit calisiyor"}).encode()))
+            io.BytesIO(json.dumps({"err": "another detection is already running"}).encode()))
 
     monkeypatch.setattr(vizyon.urllib.request, "urlopen", sahte_urlopen)
 
-    with pytest.raises(vizyon.VizyonHatasi, match="baska bir tespit"):
+    with pytest.raises(vizyon.VizyonHatasi, match="another detection"):
         vizyon.algila(taban_url="http://x:1")
 
 
@@ -87,5 +87,5 @@ def test_zaman_asimi_okunabilir_mesaj_verir(monkeypatch):
 
     monkeypatch.setattr(vizyon.urllib.request, "urlopen", sahte_urlopen)
 
-    with pytest.raises(vizyon.VizyonHatasi, match="zaman asimi"):
+    with pytest.raises(vizyon.VizyonHatasi, match="timed out"):
         vizyon.algila(taban_url="http://x:1")

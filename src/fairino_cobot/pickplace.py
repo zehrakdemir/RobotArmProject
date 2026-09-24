@@ -68,7 +68,7 @@ class PickPlace:
         mtc = load_mtc()
         if mtc is None:
             raise RuntimeError(
-                "MTC yuklenemedi. Kurulum: sudo apt install "
+                "MTC could not be loaded. Install: sudo apt install "
                 "ros-humble-moveit-task-constructor-core "
                 "ros-humble-moveit-task-constructor-capabilities")
         self.core, self.stages = mtc

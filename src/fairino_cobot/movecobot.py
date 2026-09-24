@@ -1964,7 +1964,7 @@ class CobotArm:
                 1, "Joint move", hedef_deg, baslangic,
                 speed_pct=speed_pct, accel_pct=accel_pct))
         else:
-            raise ValueError(f"bilinmeyen onizleme turu: {tur}")
+            raise ValueError(f"unknown preview kind: {tur}")
 
         return {**cikti, "success": True,
                 "options": [o for o, _ in secenekler],
