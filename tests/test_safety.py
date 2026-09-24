@@ -6,7 +6,13 @@ yazildigi icin (bkz. safety.py modul basligi) temiz bir makinede de kosuyor.
 
 import math
 
-from fairino_cobot.safety import asiri_eklem_hareketi, bilek_tekili, tekil_ihlali
+from fairino_cobot.safety import (
+    asiri_eklem_hareketi,
+    bilek_tekili,
+    kavranan_nesne_kutusu_merkezi,
+    kutunun_en_alcak_z,
+    tekil_ihlali,
+)
 
 
 def test_canli_olay_yakalaniyor():
@@ -193,3 +199,69 @@ def test_bilek_sonsuz_planin_herhangi_bir_noktasinda_yakalaniyor():
 
 def test_bilek_bos_liste():
     assert bilek_tekili([], 10.0, "x") is None
+
+
+# ---------------------------------------------------------------------------
+# KAVRANAN NESNENIN CARPISMA KUTUSU
+# ---------------------------------------------------------------------------
+# Kural 21 Eylul'de degisti: nesneler artik ust yuzun birkac cm altindan
+# kavraniyor (vision'in GRASP_HEIGHT_FRACTION=0.5'i, yani ortadan kavrama,
+# kullanilmiyor). Kutu TCP'de ortali kalirsa model nesneyi oldugundan
+# yukarida gosterir.
+
+
+def test_ortadan_kavramada_kutu_tcp_de_kalir():
+    """derinlik = yukseklik/2 verilirse kutu eski yerinde (TCP'de) durur -
+    davranis degismemis olmali."""
+    merkez = kavranan_nesne_kutusu_merkezi((0.01, 0.0, 0.2), 49.0, 24.5)
+    assert merkez == (0.01, 0.0, 0.2)
+
+
+def test_derinlik_verilmezse_eski_davranis():
+    """Kayitli pick & place hareketlerinde derinlik bilinmiyor - o zaman
+    kutu yine TCP'de ortalanir."""
+    assert kavranan_nesne_kutusu_merkezi((0.0, 0.0, 0.2), 49.0) == (0.0, 0.0, 0.2)
+
+
+def test_ustten_kavramada_kutu_asagi_kayar():
+    """49mm nesne, ust yuzun 10mm altindan: nesne TCP'nin 10mm ustunden
+    39mm altina uzanir, yani merkez TCP'nin 14.5mm ALTINDA (tool +Z nesneye
+    dogru bakiyor)."""
+    _, _, z = kavranan_nesne_kutusu_merkezi((0.0, 0.0, 0.2), 49.0, 10.0)
+    assert abs(z - (0.2 + 0.0145)) < 1e-9
+
+
+def test_derinlik_yukseklikle_sinirlanir():
+    """Nesneden daha derin bir kavrama fiziksel olarak anlamsiz; kutu
+    nesnenin tamamen ustune cikmasin diye kirpiliyor."""
+    _, _, z = kavranan_nesne_kutusu_merkezi((0.0, 0.0, 0.2), 40.0, 999.0)
+    assert abs(z - (0.2 - 0.02)) < 1e-9
+
+
+def test_kutunun_en_alcak_z_birim_yonelimde():
+    """Alet asagi bakmiyorken (birim kuaterniyon) kutu dogrudan asagi
+    uzanir: merkez 0.2, yarim yukseklik 0.0245 -> 0.1755."""
+    z = kutunun_en_alcak_z((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0),
+                           (0.0, 0.0, 0.2), (0.05, 0.03, 0.049))
+    assert abs(z - (0.2 - 0.0245)) < 1e-9
+
+
+def test_kutunun_en_alcak_z_tcp_asagi_bakarken():
+    """Gercek kavrama durusu: alet X ekseni etrafinda 180 derece donuk
+    (RX=180), yani tool +Z DUNYA -Z'sine bakiyor. Flans 0.5m'de olsun;
+    kutu merkezi alette +0.2 -> dunyada 0.3, alt yuzu 0.3 - 0.0245."""
+    z = kutunun_en_alcak_z((0.0, 0.0, 0.5), (1.0, 0.0, 0.0, 0.0),
+                           (0.0, 0.0, 0.2), (0.05, 0.03, 0.049))
+    assert abs(z - (0.5 - 0.2 - 0.0245)) < 1e-9
+
+
+def test_kutunun_en_alcak_z_yatik_alette_en_uzak_koseyi_alir():
+    """45 derece yatik bir alette en alcak nokta kutunun bir KOSESI - kutu
+    orta noktasina bakmak nesnenin zemine girdigini kacirir."""
+    yarim_kok2 = math.sqrt(0.5)
+    # Y ekseni etrafinda 90 derece: tool +Z dunya +X'e doner.
+    z = kutunun_en_alcak_z((0.0, 0.0, 0.0), (0.0, yarim_kok2, 0.0, yarim_kok2),
+                           (0.0, 0.0, 0.2), (0.05, 0.03, 0.049))
+    # Merkez artik dunyada z=0; en alcak nokta kutunun yarim genisligi kadar
+    # asagida (donmus eksende genislik dusey).
+    assert abs(z - (-0.025)) < 1e-9

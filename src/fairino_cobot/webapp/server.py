@@ -145,6 +145,13 @@ class PPPozdaCalistir(BaseModel):
     # On planlamada nesnenin genisligi (kavrama yonunde, mm). Gercekte gripper
     # kapaninca olculuyor; verilmezse tam strok (GRIPPER_STROKE_M) alinir.
     object_w_mm: float | None = Field(None, gt=0)
+    # Kavrama noktasi nesnenin UST YUZUNUN kac mm altinda (panel "Grasp depth
+    # below top"). Carpisma kutusunu dogru yere koymak icin gerekli: kutu
+    # TCP'de ORTALANIRSA kod "nesne tam ortasindan kavranmis" varsayar, oysa
+    # nesnenin buyuk kismi kavrama noktasinin ALTINDA (bkz.
+    # safety.kavranan_nesne_kutusu_merkezi). Verilmezse eski (ortadan)
+    # davranis - kayitli hareketlerde derinlik bilinmiyor.
+    grasp_depth_mm: float | None = Field(None, gt=0)
     # Kac kol durusu icin tam zincir planlanip aralarindan EN KISA yol
     # secilsin (23 Eylul). 1 = eski davranis (ilk uygun cift). Her artis
     # fazladan bir tam zincir planlamasi (3 MTC gorevi) demek.
@@ -170,6 +177,13 @@ class PPOnizleme(BaseModel):
     object_w_mm: float | None = Field(None, gt=0)
     object_d_mm: float = Field(..., gt=0)
     object_h_mm: float = Field(..., gt=0, le=160)
+    # Kavrama noktasi nesnenin UST YUZUNUN kac mm altinda (panel "Grasp depth
+    # below top"). Carpisma kutusunu dogru yere koymak icin gerekli: kutu
+    # TCP'de ORTALANIRSA kod "nesne tam ortasindan kavranmis" varsayar, oysa
+    # nesnenin buyuk kismi kavrama noktasinin ALTINDA (bkz.
+    # safety.kavranan_nesne_kutusu_merkezi). Verilmezse eski (ortadan)
+    # davranis - kayitli hareketlerde derinlik bilinmiyor.
+    grasp_depth_mm: float | None = Field(None, gt=0)
     # Kac farkli kol yolu planlanip secenek olarak sunulsun (23 Eylul).
     # Her secenek AYRI bir tam zincir planlamasi (3 MTC gorevi) demek -
     # arttirmak onizlemeyi uzatir. Ust sinir kasitli olarak dusuk.
@@ -767,7 +781,8 @@ def pp_pozda_calistir(istek: PPPozdaCalistir) -> dict[str, Any]:
         zincirler: list[list[Any]] = []
 
         def zincir_planla(p, q):
-            if not pp.zinciri_onceden_planla(p, q, yaklasma, boyut, arm.tcp_offset_m):
+            if not pp.zinciri_onceden_planla(p, q, yaklasma, boyut,
+                                             arm.tcp_offset_m, istek.grasp_depth_mm):
                 return False
             zincirler.append(list(pp.son_zincir))
             return True
@@ -811,6 +826,7 @@ def pp_pozda_calistir(istek: PPPozdaCalistir) -> dict[str, Any]:
             "grip_speed": istek.grip_speed,
             "grip_force": istek.grip_force,
             "object_dh_mm": [istek.object_d_mm, istek.object_h_mm],
+            "kavrama_derinligi_mm": istek.grasp_depth_mm,
         }
         # DIKKAT: run_pick_place asamalari YENIDEN PLANLAR (secilen ciftin
         # eklem hedeflerinden). MTC plan sonucu deterministik olmadigi icin
@@ -919,7 +935,8 @@ def pp_onizle(istek: PPOnizleme) -> dict[str, Any]:
         zincirler: list[list[Any]] = []
 
         def zincir_planla(p, q):
-            if not pp.zinciri_onceden_planla(p, q, istek.approach_mm, boyut, arm.tcp_offset_m):
+            if not pp.zinciri_onceden_planla(p, q, istek.approach_mm, boyut,
+                                             arm.tcp_offset_m, istek.grasp_depth_mm):
                 return False
             zincirler.append(list(pp.son_zincir))
             return True
@@ -945,7 +962,11 @@ def pp_onizle(istek: PPOnizleme) -> dict[str, Any]:
         for (pre_pick, pre_place), zincir in zip(ciftler, zincirler):
             asamalar = [pp.cozum_asamalari(cozum) for _, cozum in zincir]
             noktalar, zamanlar, bilgi = asamalari_birlestir(asamalar, bosluk_s=0.8)
-            problem = arm.mtc_yolunu_denetle(noktalar) if noktalar else None
+            # Tasinan nesne de kontrole giriyor (zemin + self-collision):
+            # kutu, kavrama derinligine gore TCP'nin ALTINA yerlestirilir.
+            problem = arm.mtc_yolunu_denetle(
+                noktalar, {"boyut_mm": boyut,
+                           "kavrama_derinligi_mm": istek.grasp_depth_mm}) if noktalar else None
             # Yolun GERCEK baslangici: zincirin ilk gorevi CurrentState'ten
             # (kolun plan anindaki durusu) basliyor - pre_pick "on-poza git"
             # asamasinin HEDEFI. Eskiden buraya pre_pick veriliyordu; hem

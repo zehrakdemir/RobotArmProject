@@ -46,7 +46,13 @@ from pathlib import Path
 
 from fairino_cobot import paths
 from fairino_cobot.ik_secimi import ik_adaylarini_sirala
-from fairino_cobot.safety import asiri_eklem_hareketi, bilek_tekili, tekil_ihlali
+from fairino_cobot.safety import (
+    asiri_eklem_hareketi,
+    bilek_tekili,
+    kavranan_nesne_kutusu_merkezi,
+    kutunun_en_alcak_z,
+    tekil_ihlali,
+)
 from fairino_cobot.yol_onizleme import (
     ONIZLEME_BASLANGIC_TOLERANSI_DEG,
     baslangic_farki,
@@ -409,6 +415,28 @@ def check_trajectory_for_floor(trajectory, links, floor_z_m):
             if pose.position.z < floor_z_m:
                 violations.append((i, link, pose.position.z))
     return violations
+
+
+def check_trajectory_for_carried_object_floor(trajectory, link, merkez_m, boyut_m, floor_z_m):
+    """KAVRANAN nesnenin zemine girip girmedigi.
+
+    check_trajectory_for_floor yalnizca LINK ORIJINLERININ Z'sine bakar;
+    gripper'in ucunda asili duran nesne bir link degil, o kontrolde hic
+    gorunmez. Burada kutunun en alcak kosesi hesaplanip zeminle
+    karsilastiriliyor (bkz. safety.kutunun_en_alcak_z).
+
+    En kotu (en alcak) noktayi (adim, z) olarak doner, ihlal yoksa None.
+    """
+    en_kotu = None
+    for i in range(len(trajectory)):
+        poz = trajectory[i].get_pose(link)
+        q = poz.orientation
+        z = kutunun_en_alcak_z(
+            (poz.position.x, poz.position.y, poz.position.z),
+            (q.x, q.y, q.z, q.w), merkez_m, boyut_m)
+        if z < floor_z_m and (en_kotu is None or z < en_kotu[1]):
+            en_kotu = (i, z)
+    return en_kotu
 
 
 def check_trajectory_for_self_collision(scene, trajectory, group_name):
@@ -809,6 +837,9 @@ class CobotArm:
 
         self._add_floor_collision(Pose, CollisionObject, SolidPrimitive)
         self._add_gripper_collision(Pose, CollisionObject, AttachedCollisionObject, SolidPrimitive)
+        # Yukaridaki iki kutu + link padding MoveItPy'in KENDI sahnesine
+        # eklendi; MTC baska bir sahneden (move_group) plan yapiyor.
+        self._sahneyi_move_group_ile_paylas()
         _tlog("CobotArm hazir.")
 
         self._rclpy = rclpy
@@ -1026,6 +1057,16 @@ class CobotArm:
             remove.object.operation = CollisionObject.REMOVE
             with psm.read_write() as scene:
                 scene.process_attached_collision_object(remove)
+                # AttachedCollisionObject REMOVE = DETACH; cisim silinmez,
+                # dunya nesnesine donusur (bkz.
+                # _kavranan_nesneyi_sahneden_sil gerekcesi). Ikinci adim
+                # olmadan gripper'in icinde bir dunya nesnesi kalir ve
+                # sonraki planlar duser.
+                dunyadan_sil = CollisionObject()
+                dunyadan_sil.header.frame_id = "base_link"
+                dunyadan_sil.id = GRASPED_OBJECT_ID
+                dunyadan_sil.operation = CollisionObject.REMOVE
+                scene.apply_collision_object(dunyadan_sil)
                 scene.current_state.update()
             print("  Nesne modelden ayrildi (birakildi).")
         except Exception as e:
@@ -1995,7 +2036,7 @@ class CobotArm:
                                 f"again - robot did not move.")}
         return self._yurut_ve_dogrula(plan_result)
 
-    def mtc_yolunu_denetle(self, noktalar_deg):
+    def mtc_yolunu_denetle(self, noktalar_deg, nesne=None):
         """MTC zincirinin (onizleme icin birlestirilmis) TUM noktalarini,
         tek-tek hareketlerin gectigi AYNI iki kontrolden (zemin +
         kendine-carpma) gecirir. Robot HAREKET ETMEZ - salt kontrol.
@@ -2015,33 +2056,192 @@ class CobotArm:
         urettigi max_joint/max_deg (buyuk eklem donuslerini gosterir, bkz.
         9-49) bu riski kismen gorunur kilar.
 
+        nesne: {"boyut_mm": [genislik, derinlik, yukseklik],
+        "kavrama_derinligi_mm": float|None} verilirse KAVRANAN NESNE de
+        kontrole girer - kutu gripper'in ucuna gecici olarak ilistirilip
+        (sahneden cikisi garantili: finally) hem zemin hem self-collision
+        kontrolu onunla yapilir. Boylece tasinan nesnenin masaya surtmesi ya
+        da kola carpmasi da yakalanir; eskiden hicbir katman bunu
+        gormuyordu. Verilmezse eski davranis (yalnizca kol + gripper kutusu).
+
         Ihlal varsa red sozlugu ({"success": False, "reason", "details"}),
         temizse None."""
         psm = self._moveit.get_planning_scene_monitor()
-        with psm.read_only() as scene:
-            taban = copy.deepcopy(scene.current_state)
-            durumlar = []
-            for nokta in noktalar_deg:
-                s = copy.deepcopy(taban)
-                s.set_joint_group_positions(self.group_name, [math.radians(v) for v in nokta])
-                s.update()
-                durumlar.append(s)
+        nesne_merkez_m = nesne_boyut_m = None
+        try:
+            # DIKKAT: ilistirme try'IN ICINDE. Disinda olsaydi bu iki satirdan
+            # biri hata verince finally hic calismaz ve kutu sahnede ILISIK
+            # kalirdi - sonraki her plan onu kolun ucunda tasirdi.
+            if nesne:
+                boyut_mm = list(nesne["boyut_mm"])
+                nesne_merkez_m = kavranan_nesne_kutusu_merkezi(
+                    self.tcp_offset_m, boyut_mm[2], nesne.get("kavrama_derinligi_mm"))
+                nesne_boyut_m = [b / 1000.0 for b in boyut_mm]
+                with psm.read_write() as scene:
+                    scene.process_attached_collision_object(
+                        self._kavranan_nesne_mesaji(nesne_merkez_m, nesne_boyut_m))
+                    scene.current_state.update()
+            with psm.read_only() as scene:
+                taban = copy.deepcopy(scene.current_state)
+                durumlar = []
+                for nokta in noktalar_deg:
+                    s = copy.deepcopy(taban)
+                    s.set_joint_group_positions(self.group_name, [math.radians(v) for v in nokta])
+                    s.update()
+                    durumlar.append(s)
 
-            violations = check_trajectory_for_floor(durumlar, ALL_LINKS, FLOOR_Z_M)
-            if violations:
-                worst = min(violations, key=lambda v: v[2])
-                return {"success": False, "reason": "floor_collision",
-                        "details": f"step {worst[0]}, link '{worst[1]}', "
-                                   f"Z={worst[2] * 1000:.1f}mm"}
+                violations = check_trajectory_for_floor(durumlar, ALL_LINKS, FLOOR_Z_M)
+                if violations:
+                    worst = min(violations, key=lambda v: v[2])
+                    return {"success": False, "reason": "floor_collision",
+                            "details": f"step {worst[0]}, link '{worst[1]}', "
+                                       f"Z={worst[2] * 1000:.1f}mm"}
 
-            steps = check_trajectory_for_self_collision(scene, durumlar, self.group_name)
-            if steps:
-                ws, wd = min(steps, key=lambda x: x[1])
-                return {"success": False, "reason": "self_collision",
-                        "details": f"{len(steps)} points in the plan fall below the minimum "
-                                   f"clearance ({MIN_CLEARANCE_M * 1000:.0f}mm) - worst step "
-                                   f"{ws}/{len(durumlar)}, distance={wd * 1000:.1f}mm"}
+                if nesne_boyut_m is not None:
+                    ihlal = check_trajectory_for_carried_object_floor(
+                        durumlar, TIP_LINK, nesne_merkez_m, nesne_boyut_m, FLOOR_Z_M)
+                    if ihlal:
+                        adim, z = ihlal
+                        return {"success": False, "reason": "floor_collision",
+                                "details": f"step {adim}, carried object, "
+                                           f"Z={z * 1000:.1f}mm"}
+
+                steps = check_trajectory_for_self_collision(scene, durumlar, self.group_name)
+                if steps:
+                    ws, wd = min(steps, key=lambda x: x[1])
+                    return {"success": False, "reason": "self_collision",
+                            "details": f"{len(steps)} points in the plan fall below the minimum "
+                                       f"clearance ({MIN_CLEARANCE_M * 1000:.0f}mm) - worst step "
+                                       f"{ws}/{len(durumlar)}, distance={wd * 1000:.1f}mm"}
+        finally:
+            if nesne_boyut_m is not None:
+                self._kavranan_nesneyi_sahneden_sil()
         return None
+
+    def _kavranan_nesneyi_sahneden_sil(self):
+        """Kavranan nesne kutusunu sahneden TAMAMEN kaldirir.
+
+        NEDEN IKI ADIM: MoveIt'te AttachedCollisionObject + REMOVE "sil"
+        DEGIL, "AYIR (detach)" demektir - ayrilan cisim silinmez, gripper'in
+        o anki global pozunda DUNYA nesnesine donusur
+        (planning_scene.cpp:1517 "REMOVE  // == DETACH" ve 1561
+        world_->addToObject). Yalnizca detach yapilsaydi gripper'in tam
+        icinde duran bir dunya nesnesi kalirdi ve BUNDAN SONRAKI HER plan()
+        (jog, TCP pozu, onizleme) "invalid start state" ile duserdi - kol
+        yazilimdan hic hareket ettirilemezdi. Ikinci adim (duz
+        CollisionObject REMOVE) o dunya nesnesini siler.
+        """
+        from moveit_msgs.msg import CollisionObject
+        psm = self._moveit.get_planning_scene_monitor()
+        with psm.read_write() as scene:
+            scene.process_attached_collision_object(
+                self._kavranan_nesne_mesaji(None, None, ekle=False))
+            dunyadan_sil = CollisionObject()
+            dunyadan_sil.header.frame_id = "base_link"
+            dunyadan_sil.id = GRASPED_OBJECT_ID
+            dunyadan_sil.operation = CollisionObject.REMOVE
+            scene.apply_collision_object(dunyadan_sil)
+            scene.current_state.update()
+
+    def _kavranan_nesne_mesaji(self, merkez_m, boyut_m, ekle=True):
+        """mtc_yolunu_denetle'nin gecici olarak ilistirdigi nesne kutusu.
+        pickplace._nesne_msg ile AYNI geometri (ayni saf fonksiyondan) -
+        MTC'nin sahnesine ekledigi kutu ile burada kontrol edilen kutu
+        ayrismasin."""
+        from geometry_msgs.msg import Pose
+        from moveit_msgs.msg import AttachedCollisionObject, CollisionObject
+        from shape_msgs.msg import SolidPrimitive
+        a = AttachedCollisionObject()
+        a.link_name = TIP_LINK
+        a.object.header.frame_id = TIP_LINK
+        a.object.id = GRASPED_OBJECT_ID
+        if not ekle:
+            a.object.operation = CollisionObject.REMOVE
+            return a
+        box = SolidPrimitive()
+        box.type = SolidPrimitive.BOX
+        box.dimensions = list(boyut_m)
+        poz = Pose()
+        poz.position.x, poz.position.y, poz.position.z = merkez_m
+        poz.orientation.w = 1.0
+        a.object.primitives.append(box)
+        a.object.primitive_poses.append(poz)
+        a.object.operation = CollisionObject.ADD
+        # Gripper govdesiyle ve son linkle temas normaldir - nesne cenelerin
+        # ARASINDA. (jodell_gripper de ayni linke ilisik oldugu icin MoveIt
+        # ikisini zaten carpistirmaz, bkz. collision_common.cpp:143-147.)
+        a.touch_links = [TIP_LINK]
+        return a
+
+    def _sahneyi_move_group_ile_paylas(self):
+        """Zemin kutusunu, gripper kutusunu ve link padding'i MOVE_GROUP'un
+        sahnesine de yazar.
+
+        NEDEN: bunlar bugune kadar yalnizca MoveItPy'in kendi sahnesine
+        ekleniyordu. MoveItPy'in planning scene monitor'u kendi topic'lerini
+        kullaniyor (bkz. write_moveit_cpp_yaml: publish_planning_scene_topic
+        "/moveit_cpp/publish_planning_scene"), yani /planning_scene'e hicbir
+        sey yayinlanmiyor. MTC ise baslangic sahnesini move_group'tan alir
+        (stages.CurrentState -> /get_planning_scene).
+
+        OLCULDU (23 Eylul, calisan container): move_group'un sahnesi BOSTU -
+        world objects [], attached [], link_padding hepsi 0.0, /planning_scene
+        publisher sayisi 0. Yani pick & place zemin, gripper hacmi ve 6mm pay
+        OLMADAN planlaniyordu; diger tum hareketleri koruyan katmanlar bu
+        yolda hic devrede degildi (bkz. GUNCEL_DURUM 9-27).
+
+        Mesaj MoveItPy'in KENDI sahnesinden aliniyor (planning_scene_message ->
+        PlanningScene::getPlanningSceneMsg) - ikinci bir geometri/ACM tanimi
+        yazilmiyor, iki sahne ayni seyi gorur. is_diff=True: move_group'un
+        sahnesi silinmez, uzerine eklenir (moveit_core
+        planning_scene.cpp:1158-1206).
+
+        ACM konusunda DIKKAT: diff modunda bile ACM birlestirilmez, tamamen
+        DEGISTIRILIR (planning_scene.cpp:1185). Iki taraf ayni SRDF'i
+        yukledigi icin sonuc pratikte esdeger (SRDF varsayilanlari + bizim
+        floor<->base_link izni), ama move_group'un ACM'ine BASKA bir
+        bilesenin ekledigi izinler kaybolur. Su kurulumda baska bileşen yok.
+
+        BASARISIZ OLURSA hareket engellenmez - yalnizca uyarir. Bu bir ek
+        koruma; olmadiginda davranis eskisiyle AYNI olur (daha kotusu degil).
+        """
+        from moveit_msgs.srv import ApplyPlanningScene
+        try:
+            psm = self._moveit.get_planning_scene_monitor()
+            with psm.read_only() as scene:
+                msg = scene.planning_scene_message
+            msg.is_diff = True
+            # robot_state.is_diff: move_group'un KENDI ilisik cisimleri
+            # silinmesin diye. Eklem acilarini yazmayi engellemez
+            # (joint_state.name dolu oldugu icin setCurrentState yine
+            # calisir, planning_scene.cpp:1180-1182) - ama move_group'un
+            # CurrentStateMonitor'u /joint_states'ten hemen duzeltir.
+            msg.robot_state.is_diff = True
+            cli = self._node.create_client(ApplyPlanningScene, "/apply_planning_scene")
+            if not cli.wait_for_service(timeout_sec=15.0):
+                print("UYARI: /apply_planning_scene bulunamadi - pick & place ZEMIN ve "
+                      "GRIPPER KUTUSU OLMADAN planlanir (move_group sahnesi bos kalir).")
+                return
+            istek = ApplyPlanningScene.Request()
+            istek.scene = msg
+            fut = cli.call_async(istek)
+            son = time.time() + 15.0
+            while not fut.done() and time.time() < son:
+                time.sleep(0.05)
+            tamam = fut.done() and getattr(fut.result(), "success", False)
+            self._node.destroy_client(cli)
+            if not tamam:
+                print("UYARI: move_group sahnesi guncellenemedi - pick & place ZEMIN ve "
+                      "GRIPPER KUTUSU OLMADAN planlanir.")
+                return
+            print(f"  move_group sahnesi guncellendi (MTC artik bunlari goruyor): "
+                  f"dunya={[o.id for o in msg.world.collision_objects]}, "
+                  f"ilisik={[a.object.id for a in msg.robot_state.attached_collision_objects]}, "
+                  f"link padding={len(msg.link_padding)} link "
+                  f"({LINK_PADDING_M * 1000:.0f}mm)")
+        except Exception as e:
+            print(f"UYARI: move_group sahnesi paylasilamadi ({type(e).__name__}: {e}) - "
+                  "pick & place ZEMIN ve GRIPPER KUTUSU OLMADAN planlanir.")
 
     def shutdown(self):
         if self._shutdown_called:
@@ -3314,7 +3514,8 @@ def run_pick_place(arm, gripper, cfg, sor=False, onay_iste=True, pp=None):
 
     # --- 3) ilistir, kaldir, birakma pozuna git, in ---
     if not pp.kaldir_ve_birakma_pozuna_git(cfg["pre_place_joints"], yaklasma, yaklasma,
-                                           [obj_w, obj_d, obj_h], arm.tcp_offset_m):
+                                           [obj_w, obj_d, obj_h], arm.tcp_offset_m,
+                                           cfg.get("kavrama_derinligi_mm")):
         return False
 
     # --- 4) birak, ayir, geri cekil ---

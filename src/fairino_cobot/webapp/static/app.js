@@ -981,6 +981,9 @@ function kurNesneAlBirak() {
       object_w_mm: boyut[1] || null,   // kapanma yonundeki kalinlik - TAHMIN (bkz. panel notu)
       object_d_mm: boyut[0] || 50,
       object_h_mm: yukseklik,
+      // Carpisma kutusu bu degere gore TCP'nin ALTINA yerlestirilir
+      // (kutu TCP'de ortalanirsa nesne oldugundan yukarida modellenir).
+      grasp_depth_mm: derinlik,
       // Kac farkli kol yolu planlansin (sunucu en kisadan uzuna siralar).
       max_options: parseInt($("#pnp-nopts").value, 10) || 3,
     };

@@ -240,11 +240,19 @@ class PickPlace:
             print(f"  {baslik}: calistirma hatasi ({type(e).__name__}: {e})")
             return False
 
-    def _nesne_msg(self, boyut_mm, tcp_offset_m):
-        """Kavranan nesnenin CollisionObject'i - cenelerin arasinda (TCP'de)."""
+    def _nesne_msg(self, boyut_mm, tcp_offset_m, kavrama_derinligi_mm=None):
+        """Kavranan nesnenin CollisionObject'i - cenelerin arasinda.
+
+        Kutu TCP'de ORTALANMAZ: kavrama noktasi nesnenin ust yuzunun
+        kavrama_derinligi_mm kadar altindadir, yani nesnenin buyuk kismi
+        TCP'nin ALTINDA kalir (bkz. safety.kavranan_nesne_kutusu_merkezi -
+        gerekce orada). Derinlik verilmezse eski ortadan-kavrama davranisi.
+        """
         from geometry_msgs.msg import Pose
         from moveit_msgs.msg import CollisionObject
         from shape_msgs.msg import SolidPrimitive
+
+        from fairino_cobot.safety import kavranan_nesne_kutusu_merkezi
         co = CollisionObject()
         co.header.frame_id = self.tip
         co.id = "grasped_object"
@@ -252,7 +260,8 @@ class PickPlace:
         box.type = SolidPrimitive.BOX
         box.dimensions = [b / 1000.0 for b in boyut_mm]
         p = Pose()
-        p.position.x, p.position.y, p.position.z = tcp_offset_m
+        p.position.x, p.position.y, p.position.z = kavranan_nesne_kutusu_merkezi(
+            tcp_offset_m, boyut_mm[2], kavrama_derinligi_mm)
         p.orientation.w = 1.0
         co.primitives.append(box)
         co.primitive_poses.append(p)
@@ -338,9 +347,9 @@ class PickPlace:
             print(f"  zincir {sira + 1}/3: calistirma hatasi ({type(e).__name__}: {e})")
             return False
 
-    def _nesneyi_ilistir(self, t, boyut_mm, tcp_offset_m):
+    def _nesneyi_ilistir(self, t, boyut_mm, tcp_offset_m, kavrama_derinligi_mm=None):
         ms = self.stages.ModifyPlanningScene("nesneyi ilistir")
-        ms.addObject(self._nesne_msg(boyut_mm, tcp_offset_m))
+        ms.addObject(self._nesne_msg(boyut_mm, tcp_offset_m, kavrama_derinligi_mm))
         ms.attachObject("grasped_object", self.tip)
         # Gripper govdesiyle temas normaldir - carpisma sayilmasin.
         ms.allowCollisions("grasped_object", [self.tip], True)
@@ -377,11 +386,12 @@ class PickPlace:
         return self._calistir(t, "Alma pozuna yaklasma")
 
     def kaldir_ve_birakma_pozuna_git(self, place_joints_deg, kaldirma_mm,
-                                     inme_mm, boyut_mm, tcp_offset_m):
+                                     inme_mm, boyut_mm, tcp_offset_m,
+                                     kavrama_derinligi_mm=None):
         """Nesneyi modele ILISTIR (attach), duz cizgi kaldir, birakma pozuna
         git, duz cizgi in. (post_grasp_retreat + transport + place approach)"""
         t = self._task("tasi")
-        self._nesneyi_ilistir(t, boyut_mm, tcp_offset_m)
+        self._nesneyi_ilistir(t, boyut_mm, tcp_offset_m, kavrama_derinligi_mm)
         self._move_relative_z(t, "nesneyi kaldir", -kaldirma_mm / 1000.0)
         # place_joints_deg burada BIRAKMA ON-POZU (bkz. alma_pozuna_yaklas):
         # once guvenli mesafeye gidilir, sonra duz cizgi inilir.
@@ -413,7 +423,8 @@ class PickPlace:
         return self._sadece_planla(t, "Alma on-planlama")
 
     def zinciri_onceden_planla(self, pre_pick_joints_deg, pre_place_joints_deg,
-                               yaklasma_mm, boyut_mm, tcp_offset_m):
+                               yaklasma_mm, boyut_mm, tcp_offset_m,
+                               kavrama_derinligi_mm=None):
         """yaklas -> (kavra) -> kaldir -> tasi -> in -> (birak) -> geri cekil
         zincirini UC AYRI MTC gorevine BOLEREK onceden planlar (robot hareket
         etmez, gripper'a dokunulmaz). Ilk gorev CANLI robot durusundan
@@ -444,7 +455,7 @@ class PickPlace:
             return False
 
         t2 = self._gorev_sabit_baslangicla("tasi-onplan", sol1.end.scene)
-        self._nesneyi_ilistir(t2, boyut_mm, tcp_offset_m)
+        self._nesneyi_ilistir(t2, boyut_mm, tcp_offset_m, kavrama_derinligi_mm)
         self._move_relative_z(t2, "nesneyi kaldir", -yaklasma_mm / 1000.0)
         self._move_to(t2, "birakma on-pozuna git", pre_place_joints_deg)
         self._move_relative_z(t2, "duz in", +yaklasma_mm / 1000.0)

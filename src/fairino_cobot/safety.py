@@ -140,3 +140,64 @@ def bilek_tekili(duruslar_deg: list[list[float]], pay_deg: float, ne: str) -> di
             "away with joint jog or an absolute joint target, then try again."
         ),
     }
+
+
+def kavranan_nesne_kutusu_merkezi(
+    tcp_offset_m: tuple[float, float, float],
+    yukseklik_mm: float,
+    kavrama_derinligi_mm: float | None = None,
+) -> tuple[float, float, float]:
+    """Kavranan nesnenin carpisma kutusunun, ALET (tip) cercevesindeki
+    merkezi. Tool +Z nesneye dogru bakar (bkz. pickplace._move_relative_z:
+    yaklasma +Z).
+
+    NEDEN GEREKLI: SolidPrimitive.BOX verilen pozun ETRAFINDA SIMETRIK
+    buyur. Kutu dogrudan TCP'ye konursa nesnenin yarisi TCP'nin yukarisinda
+    (gripper govdesine dogru), yarisi asagisinda kabul edilir - yani kod
+    "nesne tam ortasindan kavranmis" varsayar. Bu varsayim 21 Eylul'e kadar
+    DOGRUYDU (vision'in GRASP_HEIGHT_FRACTION=0.5'i yuksekligin ortasindan
+    kavriyordu). O gun kural degisti: artik UST YUZUN birkac cm altindan
+    kavraniyor (webapp "Grasp depth below top"), yani nesnenin buyuk kismi
+    kavrama noktasinin ALTINDA. Kutu buna gore kaydirilmazsa modeldeki
+    nesne gercekte oldugundan (yukseklik/2 - derinlik) kadar YUKARIDA
+    durur; hem zemin kontrolu nesnenin alt ucunu gormez hem de model
+    gereksiz yere gripper govdesinin icine tasar.
+
+    kavrama_derinligi_mm None ise eski (ortadan kavrama) davranis korunur -
+    kayitli pick & place hareketlerinde derinlik bilinmiyor.
+    """
+    ox, oy, oz = tcp_offset_m
+    h = yukseklik_mm / 1000.0
+    if kavrama_derinligi_mm is None:
+        derinlik = h / 2.0
+    else:
+        derinlik = min(max(kavrama_derinligi_mm / 1000.0, 0.0), h)
+    return (ox, oy, oz + h / 2.0 - derinlik)
+
+
+def kutunun_en_alcak_z(
+    baglanti_konumu_m: tuple[float, float, float],
+    baglanti_kuaterniyonu: tuple[float, float, float, float],
+    merkez_m: tuple[float, float, float],
+    boyut_m: tuple[float, float, float],
+) -> float:
+    """Bir baglantiya (link) SABIT bir kutunun DUNYA cercevesindeki en
+    alcak noktasinin Z'si.
+
+    check_trajectory_for_floor yalnizca link ORIJINLERININ Z'sine bakiyor;
+    kavranan nesne bir link degil, gripper'in ucunda asili bir kutu -
+    orijin kontrolu onu hic gormez. Burada kutunun 8 kosesinin en
+    alcagi hesaplaniyor (eksene hizali sinir kutusunun alt yuzu).
+
+    baglanti_kuaterniyonu: (x, y, z, w). Yalnizca donme matrisinin Z satiri
+    gerekiyor - kutu, baglantiyla ayni yonelimde kabul ediliyor (pickplace
+    kutuyu birim kuaterniyonla ekliyor).
+    """
+    qx, qy, qz, qw = baglanti_kuaterniyonu
+    # Donme matrisinin Z (ucuncu) satiri.
+    rz = (2.0 * (qx * qz - qw * qy),
+          2.0 * (qy * qz + qw * qx),
+          1.0 - 2.0 * (qx * qx + qy * qy))
+    merkez_z = baglanti_konumu_m[2] + sum(rz[i] * merkez_m[i] for i in range(3))
+    yayilim = sum(abs(rz[i]) * boyut_m[i] / 2.0 for i in range(3))
+    return merkez_z - yayilim
