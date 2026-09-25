@@ -114,7 +114,11 @@ def _post(path: str, body: dict, timeout: float = 20.0) -> dict:
     return r.json()
 
 
-def _wait_job(timeout: float = 40.0, poll: float = 1.0) -> dict:
+def _wait_job(timeout: float = 40.0, poll: float = 0.2) -> dict:
+    """Is bitene kadar bekler. poll, MoveIt'in tipik planlama suresinden
+    (0.1-0.5s) kucuk olmali: 1.0s iken 0.2s'lik bir planlama bile tam 1
+    saniye surmus gibi oluyordu ve tum akista 15-25 boyle bekleme var
+    (2026-09-25). Robotun davranisi degismez, sadece daha sik soruluyor."""
     t0 = time.time()
     while time.time() - t0 < timeout:
         st = _get("/api/state")
@@ -222,12 +226,15 @@ def move_pose(x: float, y: float, z: float, rx: float, ry: float, rz: float,
     alt_rz = rz + 180.0 if rz <= 0 else rz - 180.0
     a = _try_preview(x, y, z, rx, ry, rz, prefer_lin, cur_joints)
     b = _try_preview(x, y, z, rx, ry, alt_rz, prefer_lin, cur_joints)
-    candidates = [(rz, a), (alt_rz, b)]
-    candidates = [(r, f) for r, f in candidates if f is not None]
+    # ucuncu eleman: sunucudaki TEK onizleme yuvasini bu deneme mi tutuyor?
+    # b EN SON denendigi icin yuvada o var.
+    candidates = [(rz, a, False), (alt_rz, b, True)]
+    candidates = [(r, f, last) for r, f, last in candidates if f is not None]
     if not candidates:
         _log("  HICBIR yonelim planlanamadi (tekillik/IK) - bu adim atlaniyor")
         return False
-    used_rz, (preview_id, option, travel, _goal_joints) = min(candidates, key=lambda t: t[1][2])
+    used_rz, (preview_id, option, travel, goal_joints), yuvada_taze = min(
+        candidates, key=lambda t: t[1][2])
     _log(f"  secilen yonelim rz={used_rz:.1f} (en buyuk eklem hareketi {travel:.1f} derece)")
     if travel > 90.0:
         _log(f"  UYARI: {travel:.1f} derecelik eklem hareketi hala buyuk - "
@@ -238,14 +245,17 @@ def move_pose(x: float, y: float, z: float, rx: float, ry: float, rz: float,
         _log("  [dry-run] yurutulmedi")
         return True
     # Iki yonelim de denendigi icin sunucudaki TEK onizleme yuvasi son
-    # denemeyle (alt_rz) ezilmis olabilir - kazanan rz KAZANANI ise, onu
+    # denemeyle (alt_rz) ezilmis olabilir - kazanan ILK deneme ise, onu
     # calistirmadan once TAZELE (409 "onizleme eskimis" hatasini onler,
-    # 2026-09-18'de canli tespit edildi).
-    fresh = _try_preview(x, y, z, rx, ry, used_rz, prefer_lin, cur_joints)
-    if fresh is None:
-        _log("  yeniden planlama basarisiz - bu adim atlaniyor")
-        return False
-    preview_id, option, _, goal_joints = fresh
+    # 2026-09-18'de canli tespit edildi). Kazanan zaten son denenense yuva
+    # dogru plani tutuyor ve bu ucuncu planlama gereksiz - atlaniyor
+    # (2026-09-25: poz basina 3 planlama -> ~%50 ihtimalle 2).
+    if not yuvada_taze:
+        fresh = _try_preview(x, y, z, rx, ry, used_rz, prefer_lin, cur_joints)
+        if fresh is None:
+            _log("  yeniden planlama basarisiz - bu adim atlaniyor")
+            return False
+        preview_id, option, _, goal_joints = fresh
     if not auto_run:
         # Kullanici istegi (2026-09-23): sadece onizleme yapilsin, robot
         # movecobot'un KENDI arayuzunden (ayni sunucu-tarafi onizleme, ayni
