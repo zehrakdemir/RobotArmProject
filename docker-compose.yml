@@ -5,7 +5,16 @@ services:
     ports:
       - "8501:8501"
       - "8090:8090"  # tools/pnp_web - al-yerlestir arayuzu
-      - "8502:8502"  # tools/detect_api - Huseyin'in movecobot-web'i icin vizyon koprusu
+      # 8502 (tools/detect_api - Huseyin'in movecobot-web'i icin vizyon koprusu)
+      # 2026-09-25: KAPATILDI. Bu portu ayri ve elle baslatilan `detect-api-bridge`
+      # konteyneri tutuyor (ayni imaj, `python3 -m tools.detect_api`). Ikisi birden
+      # 8502'yi baglayamaz: bu esleme acikken `compose up` sirasinda konteyner
+      # "Bind for 0.0.0.0:8502 failed: port is already allocated" ile ACILMIYOR ve
+      # icindeki pickcobot (8090) da gelmiyor. Kopruyu kesmemek icin esleme burada
+      # kapali. Kopruyu bu konteynerin icine tasimak istersen: detect-api-bridge'i
+      # durdur, asagidaki satiri geri ac, sonra konteyner icinde
+      # `python3 -m tools.detect_api` calistir.
+      # - "8502:8502"
     # .env icindeki TUM degiskenler (SGBM_*, WLS_*, TILT_THRESHOLD_DEG, ...)
     # konteynira aktarilir. Yeniden build gerekmez: `docker compose up -d` yeter.
     env_file:
