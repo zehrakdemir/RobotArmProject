@@ -57,3 +57,62 @@ def tcp_donusu(wrist3_q: Quat, tcp_rpy_deg: tuple[float, float, float]) -> Quat:
     RX/RY/RZ'si verilir. Tool tanimi degismedikce sonuc duruştan bagimsizdir.
     """
     return quat_carp(quat_ters(wrist3_q), fairino_rpy_quat(*tcp_rpy_deg))
+
+
+def quat_dondur(q: Quat, v: tuple[float, float, float]) -> tuple[float, float, float]:
+    """v vektorunu q ile dondurur (q * v * q^-1)."""
+    x, y, z, _ = quat_carp(quat_carp(q, (v[0], v[1], v[2], 0.0)), quat_ters(q))
+    return (x, y, z)
+
+
+# ---------------------------------------------------------------------------
+# Kavrama noktasi (parmak uclari) - pick & place
+# ---------------------------------------------------------------------------
+# STANDART YOL (25 Eylul, kullanici istegi "normalde nasil yapiyorlar"):
+# robota "su noktayi tut" denir; o nokta aletin KAVRAMA noktasidir (parmak
+# uclarinin ortasi). Fairino'da bu, aletin TCP'sini parmak ucuna kalibre
+# etmek (WebApp arac koordinati, 4/6 nokta); MoveIt/MTC'de el linkine sabit
+# bir ofsetle ik_frame vermek (MTC demo: setIKFrame(grasp_frame_transform,
+# hand_frame)). Robotun TCP ayarina DOKUNULMAZ: el-goz kalibrasyonu bugunku
+# TCP okumalariyla yapildi (GUNCEL_DURUM §12). Ofset yalnizca MTC'ye verilir.
+#
+# Bizim TCP parmak ucunda degil: wrist3'ten 199,4 mm (SDK+FK olcumu), parmak
+# ucu ~19-20 mm daha asagida (17 Eylul masa olcumu 19, CAD 20,0). 19,
+# 24 Eylul'den beri web panelinde kullanilan deger (kullanici karari) - 3
+# canli kavrama bununla yapildi. Dogrulanmadi.
+PARMAK_UCU_MM = 19.0
+
+# Birakmada nesnenin alti yuzeyin bu kadar ustunde birakilir: MTC demo'sunun
+# place_surface_offset'i (0.0001 m, config/panda_config.yaml). Tam 0'da
+# nesne yuzeye degerdi. 24-25 Eylul'de 6,1 idi (+6 mm ilistirilen nesne
+# padding'i); son inise nesne-zemin izni verilince (pickplace
+# _birakmada_zemin_izni) gerek kalmadi.
+BIRAKMA_PAYI_MM = 0.1
+
+
+def kavrama_cercevesi(
+    tcp_ofset_m: tuple[float, float, float],
+    tcp_q: Quat,
+    parmak_ucu_mm: float = PARMAK_UCU_MM,
+) -> tuple[tuple[float, float, float], Quat]:
+    """wrist3_link -> kavrama noktasi (parmak uclari) donusumu: TCP'nin
+    kendi +Z'si boyunca parmak_ucu_mm ilerisi, yonelim TCP'ninkiyle ayni.
+    Tool +Z nesneye dogru bakar (pickplace._move_relative_z: yaklasma +Z)."""
+    ileri = quat_dondur(tcp_q, (0.0, 0.0, parmak_ucu_mm / 1000.0))
+    return (tuple(o + d for o, d in zip(tcp_ofset_m, ileri)), tcp_q)
+
+
+def birakma_noktasi(
+    yuzey_xyz_mm: tuple[float, float, float],
+    yukseklik_mm: float,
+    kavrama_derinligi_mm: float,
+    pay_mm: float = BIRAKMA_PAYI_MM,
+) -> list[float]:
+    """Birakmada kavrama noktasinin (parmak uclari) konumu (taban, mm).
+
+    MTC demo'su gibi birakma yeri NESNENIN yeri olarak verilir: x, y =
+    nesnenin konacagi nokta, z = uzerine konacagi YUZEYIN yuksekligi (masa
+    / zemin icin 0). Parmak uclari nesnenin ust yuzunun kavrama_derinligi_mm
+    altinda tutuyor; nesnenin alti yuzeyin pay_mm ustunde kalir."""
+    x, y, z = yuzey_xyz_mm
+    return [x, y, z + pay_mm + yukseklik_mm - kavrama_derinligi_mm]

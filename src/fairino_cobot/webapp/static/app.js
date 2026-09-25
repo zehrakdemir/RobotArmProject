@@ -710,22 +710,16 @@ function kurOnizleme() {
 // bkz. secimiBildir) gosterilir. Yalnizca "Run this plan" ve onaydan sonra
 // robot hareket eder; calistirilan zincir ekranda gosterilenin AYNISI.
 
-// Parmak uclari TCP'nin kac mm altinda. 17 Eylul: parmak masaya degerken TCP
-// z = 18,7-20,1 mm; masanin z=0 oldugu varsayimiyla. Kullanici bunu baz aldi
-// (24 Eylul); masa z'si ayrica olculmedi.
-const PARMAK_UCU_MM = 19;
+// Pozlar KAVRAMA NOKTASININ (parmak uclarinin ortasi), TCP'nin degil: sunucu
+// MTC'ye parmak ucunu ik_frame olarak veriyor (bkz. server.py PPOnizleme,
+// tcp_cercevesi.PARMAK_UCU_MM). Arayuz TCP-parmak ucu farkini bilmez.
 
 // Masa ust yuzunun robot tabanindaki z'si. Tespitin merkez z'si el-goz
 // kalibrasyonundan ~80 mm yuksek geliyor (24 Eylul: tespit ust yuz 131,
 // kullanici ~50 dedi, olculen yukseklik 48); yukseklik ise masa duzlemine
 // uzakliktan olculdugu icin el-goz'den etkilenmiyor. Ust yuz = masa + yukseklik.
-// 0: yukaridaki 19 mm ile ayni varsayim (masa = robot tabani duzlemi).
+// 0: parmak ucu olcumuyle (17 Eylul) ayni varsayim (masa = robot tabani duzlemi).
 const MASA_Z_MM = 0;
-// Birakmada nesnenin alti masanin bu kadar ustunde kalir: MTC demo'sunun
-// place_surface_offset'i (0,1 mm) + link padding (6 mm, GUNCEL_DURUM §6).
-// Ilistirilen nesne padding'i aliyor; yalniz 0,1 mm ile birakma IK'si
-// "floor - grasped_object" carpismasiyla dusuyordu (24 Eylul, olculdu).
-const BIRAKMA_PAYI_MM = 6.1;
 
 // Tespitin x/y'sine eklenen duzeltme (taban, mm). 24 Eylul olcumu: paket
 // Detect'in (-400,4; 202,0) noktasindan kavranip AYNI yere birakildi -
@@ -783,8 +777,10 @@ function pnpKameralar() {
   $("#pnp-camR").src = acik ? `${taban}/stream/R` : "";
 }
 
-// "Custom" secilince X/Y/Z alanlari gorunur; birakma yonelimi (RX/RY/RZ)
-// girilmez, kavramanin yonelimi aynen kullanilir (bkz. pnpBirakmaPozu).
+// "Custom" secilince X/Y/Z alanlari gorunur: X/Y = nesnenin birakilacagi
+// yer, Z = uzerine konacagi yuzeyin yuksekligi (zemin 0; nesne yuksekligi
+// ve birakma payi sunucuda eklenir). Birakma yonelimi (RX/RY/RZ) girilmez,
+// kavramanin yonelimi aynen kullanilir (bkz. pnpBirakmaPozu).
 function pnpSlotDegisti() {
   $("#pnp-place-xyz").hidden = $("#pnp-slot").value !== "custom";
 }
@@ -802,10 +798,7 @@ function pnpBirakmaPozu(nesne) {
   const y = sayiAlan($("#pnp-place-y"));
   const z = sayiAlan($("#pnp-place-z"));
   if (x === null || y === null || z === null) return null;
-  // +0,1 mm: MTC demo'sundaki place_surface_offset (0.0001 m) - kavrama
-  // z'siyle birakilan nesnenin alti masaya DEGMESIN (degerse zemin
-  // carpismasi sayilir; izin yalnizca kaldirmada, bkz. pickplace.py).
-  return [x, y, z + BIRAKMA_PAYI_MM, ...kavramaRpy(nesne)];
+  return [x, y, z, ...kavramaRpy(nesne)];
 }
 
 async function pnpBilgiYukle() {
@@ -960,7 +953,7 @@ function ppPanelCiz() {
   }
   const h = ppOnizleme.target_tcp;
   if (h) {
-    bilgi.push(`grasp TCP x=${h.x.toFixed(1)} y=${h.y.toFixed(1)} z=${h.z.toFixed(1)}  ` +
+    bilgi.push(`grasp point (fingertips) x=${h.x.toFixed(1)} y=${h.y.toFixed(1)} z=${h.z.toFixed(1)}  ` +
       `rx=${h.rx.toFixed(1)} ry=${h.ry.toFixed(1)} rz=${h.rz.toFixed(1)}`);
   }
   if (!secenekler.length) {
@@ -1058,21 +1051,15 @@ function kurNesneAlBirak() {
     //   Grasp depth: parmak uclari ust yuzun bu kadar altina iner.
     //   Approach:    inise parmak uclari ust yuzun bu kadar ustundeyken
     //                baslanir; kaldirma ayni noktaya geri cikar.
-    // Robota giden poz TCP'dir; parmak uclari TCP'nin PARMAK_UCU_MM altinda.
-    // Ust yuz = center_z + yukseklik/2 (bkz. valiz-olcum-robot src/cell.py:223).
-    if (derinlik <= PARMAK_UCU_MM) {
-      pnpHata(`Grasp depth must be greater than ${PARMAK_UCU_MM} mm ` +
-              `(finger tips are ${PARMAK_UCU_MM} mm below the TCP).`);
-      return;
-    }
-    const inis = approach + derinlik;   // TCP'nin duz inis/kalkis mesafesi
+    // Robota giden poz da parmak uclarinin (kavrama noktasi) pozu.
+    const inis = approach + derinlik;   // parmak uclarinin duz inis/kalkis mesafesi
     if (inis > 200) {
       pnpHata(`Approach + grasp depth (${inis} mm) must be at most 200 mm.`);
       return;
     }
     const ustZ = MASA_Z_MM + yukseklik;   // bkz. MASA_Z_MM
     const govde = {
-      grasp_point: [...duzeltXY(pnpSeciliNesne.grasp.point_mm), ustZ - derinlik + PARMAK_UCU_MM],
+      grasp_point: [...duzeltXY(pnpSeciliNesne.grasp.point_mm), ustZ - derinlik],
       grasp_rpy: kavramaRpy(pnpSeciliNesne),
       place_pose: slot,
       approach_mm: inis,
@@ -1081,10 +1068,8 @@ function kurNesneAlBirak() {
       object_w_mm: boyut[1] || null,   // kapanma yonundeki kalinlik - TAHMIN (bkz. panel notu)
       object_d_mm: boyut[0] || 50,
       object_h_mm: yukseklik,
-      // Carpisma kutusu bu degere gore TCP'nin ALTINA yerlestirilir
-      // (kutu TCP'de ortalanirsa nesne oldugundan yukarida modellenir).
-      // TCP'nin (parmak ucunun degil) ust yuzden derinligi.
-      grasp_depth_mm: derinlik - PARMAK_UCU_MM,
+      // Birakma yuksekligi ve carpisma kutusunun yeri buna gore hesaplanir.
+      grasp_depth_mm: derinlik,
       // Kac farkli kol yolu planlansin (sunucu en kisadan uzuna siralar).
       max_options: parseInt($("#pnp-nopts").value, 10) || 3,
     };

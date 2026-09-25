@@ -374,6 +374,22 @@ class PickPlace:
         ms.allowCollisions("grasped_object", ["floor"], False)
         t.add(ms)
 
+    def _birakmada_zemin_izni(self, t):
+        """Kaldirmadaki iznin aynasi, YALNIZCA son inis ("duz in") icin:
+        nesne birakilacagi yuzeye (zemin) degebilir. Ilistirilen nesne 6 mm
+        padding aliyor; izin olmadan nesne yuzeyin 0,1 mm ustune (MTC
+        demo'su) indirilemiyordu ("floor - grasped_object", 24 Eylul), 6,1
+        mm'den dusuruluyordu. Yalnizca bu tek cift serbest; kol, gripper
+        kutusu ve tasima yolu kontrolleri aynen kalir.
+
+        MTC ModifyPlanningScene geri yonde izni TERSINE uygular
+        (modify_planning_scene.cpp apply(): invert), Connect ACM
+        karsilastirmaz (connect.cpp compatible()): bu asamadan onceki
+        tasima yolu izinsiz planlanir."""
+        ms = self.stages.ModifyPlanningScene("birakma: nesne-zemin izni")
+        ms.allowCollisions("grasped_object", ["floor"], True)
+        t.add(ms)
+
     def _nesneyi_ayir(self, t):
         # Ayrilan nesne silinmez, gripper'in icinde DUNYA nesnesine donusur
         # (bkz. GUNCEL_DURUM §7) ve gripper kutusu TCP'nin ~30 mm altina
@@ -491,10 +507,12 @@ class PickPlace:
         (pre_pick, pre_place) eklem hedeflerini (derece, joint_names
         sirasinda) MALIYET sirasiyla doner: [(pre_pick, pre_place, maliyet)].
 
-        kavrama_mm / birakma_mm: TCP'nin kavrama ve birakma noktasi (x,y,z;
-        taban). rz_listesi: denenecek gripper yonleri (paralel gripper icin
-        rz ve rz+180). tcp_cercevesi: (oteleme_m, quaternion) - bkz.
-        CobotArm.tcp_ik_cercevesi."""
+        kavrama_mm / birakma_mm: tcp_cercevesi'nin kavrama ve birakma
+        noktasi (x,y,z; taban). rz_listesi: denenecek gripper yonleri
+        (paralel gripper icin rz ve rz+180). tcp_cercevesi: ik_frame,
+        (oteleme_m, quaternion) - web onizlemesi parmak uclarini verir (bkz.
+        CobotArm.kavrama_ik_cercevesi); kavrama_derinligi_mm o noktanin
+        nesnenin ust yuzunden derinligi."""
         from geometry_msgs.msg import PoseStamped
 
         ofset, q = tcp_cercevesi
@@ -521,16 +539,17 @@ class PickPlace:
         t.add(alma)
         self._nesneyi_ilistir(t, boyut_mm, ofset, kavrama_derinligi_mm)
         self._move_relative_z(t, "nesneyi kaldir", -yaklasma_mm / 1000.0)
-        izin = self.stages.ModifyPlanningScene("nesne-zemin iznini kaldir")
-        izin.allowCollisions("grasped_object", ["floor"], False)
-        t.add(izin)
-        izin = t["nesne-zemin iznini kaldir"]
+        # Birakma IK'si bu sahneden: nesne ilisik VE nesne-zemin izni acik
+        # (son inisin sahnesi, bkz. _birakmada_zemin_izni).
+        kaldir = t["nesneyi kaldir"]
+        self._zemin_iznini_kaldir(t)
 
         t.add(self.stages.Connect("birakma pozuna git", [(self.group, self.jip)]))
+        self._birakmada_zemin_izni(t)
         self._move_relative_z(t, "duz in", +yaklasma_mm / 1000.0)
         birak = self.core.Alternatives("birakma yonu")
         for rz in rz_listesi:
-            birak.insert(self._hedef_ik(f"birakma rz {rz:.1f}", birakma_mm, rz, ik_frame, izin))
+            birak.insert(self._hedef_ik(f"birakma rz {rz:.1f}", birakma_mm, rz, ik_frame, kaldir))
         t.add(birak)
         self._nesneyi_ayir(t)
         self._move_relative_z(t, "geri cekil", -yaklasma_mm / 1000.0)
@@ -602,6 +621,7 @@ class PickPlace:
         self._move_relative_z(t2, "nesneyi kaldir", -yaklasma_mm / 1000.0)
         self._zemin_iznini_kaldir(t2)
         self._move_to(t2, "birakma on-pozuna git", pre_place_joints_deg)
+        self._birakmada_zemin_izni(t2)
         self._move_relative_z(t2, "duz in", +yaklasma_mm / 1000.0)
         sol2 = self._planla(t2, "2/3 tasima on-planlama")
         if sol2 is None:

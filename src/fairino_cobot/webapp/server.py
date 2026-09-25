@@ -166,24 +166,35 @@ class PPOnizleme(BaseModel):
     istegi (bkz. webapp Pick & place bolumu). PPPozdaCalistir'den farki:
     hareket etmez, tum zinciri (points/times) doner ve mtc_yolunu_denetle
     ile zemin/self-collision kontrolunden GECIRIR - artik tum yol
-    noktalari elde oldugu icin bu bedava (bkz. o fonksiyonun docstring'i)."""
+    noktalari elde oldugu icin bu bedava (bkz. o fonksiyonun docstring'i).
 
+    STANDART KAVRAMA/BIRAKMA TANIMI (25 Eylul, MTC demo'su gibi): pozlar
+    TCP'nin degil KAVRAMA NOKTASININ (parmak uclarinin ortasi) - sunucu
+    MTC'ye ik_frame olarak parmak ucunu verir (CobotArm.kavrama_ik_cercevesi),
+    istemci TCP-parmak ucu farkini hic bilmez. Birakma NESNENIN yeriyle
+    verilir: place_pose z = nesnenin konacagi YUZEYIN yuksekligi (zemin 0);
+    nesne yuksekligi ve birakma payi sunucuda eklenir
+    (tcp_cercevesi.birakma_noktasi)."""
+
+    # Parmak uclarinin kavramadaki konumu (taban, mm).
     grasp_point: list[float] = Field(..., min_length=3, max_length=3)
     grasp_rpy: list[float] = Field(..., min_length=3, max_length=3)
+    # x, y = nesnenin birakilacagi yer, z = uzerine konacagi yuzey (mm).
+    # rx/ry/rz kullanilmaz: birakma yonelimi kavramanin yonelimi.
     place_pose: list[float] = Field(..., min_length=6, max_length=6)
+    # Parmak uclarinin duz inis/kalkis mesafesi (kavrama noktasina kadar).
     approach_mm: float = Field(..., gt=0, le=200)
     grip_speed: int = Field(..., ge=1, le=100)
     grip_force: int = Field(..., ge=1, le=100)
     object_w_mm: float | None = Field(None, gt=0)
     object_d_mm: float = Field(..., gt=0)
     object_h_mm: float = Field(..., gt=0, le=160)
-    # Kavrama noktasi nesnenin UST YUZUNUN kac mm altinda (panel "Grasp depth
-    # below top"). Carpisma kutusunu dogru yere koymak icin gerekli: kutu
-    # TCP'de ORTALANIRSA kod "nesne tam ortasindan kavranmis" varsayar, oysa
-    # nesnenin buyuk kismi kavrama noktasinin ALTINDA (bkz.
-    # safety.kavranan_nesne_kutusu_merkezi). Verilmezse eski (ortadan)
-    # davranis - kayitli hareketlerde derinlik bilinmiyor.
-    grasp_depth_mm: float | None = Field(None, gt=0)
+    # Parmak uclari nesnenin UST YUZUNUN kac mm altinda (panel "Grasp depth
+    # below top"). Hem birakma yuksekligi hem carpisma kutusunun yeri buna
+    # bagli: kutu kavrama noktasinda ORTALANIRSA kod "nesne tam ortasindan
+    # kavranmis" varsayar, oysa nesnenin buyuk kismi kavrama noktasinin
+    # ALTINDA (bkz. safety.kavranan_nesne_kutusu_merkezi).
+    grasp_depth_mm: float = Field(..., gt=0)
     # Kac farkli kol yolu planlanip secenek olarak sunulsun (23 Eylul).
     # Her secenek AYRI bir tam zincir planlamasi (3 MTC gorevi) demek -
     # arttirmak onizlemeyi uzatir. Ust sinir kasitli olarak dusuk.
@@ -891,6 +902,7 @@ def pp_onizle(istek: PPOnizleme) -> dict[str, Any]:
     """
     from fairino_cobot.movecobot import GRIPPER_STROKE_M
     from fairino_cobot.mtc_yolu import asamalari_birlestir, tasima_araligi, toplam_eklem_yolu_deg
+    from fairino_cobot.tcp_cercevesi import birakma_noktasi
     from fairino_cobot.yol_onizleme import secenek_ozeti
 
     def calistir(job):
@@ -905,8 +917,18 @@ def pp_onizle(istek: PPOnizleme) -> dict[str, Any]:
                 [], None)
             return {"success": False, "reason": reason, "details": details}
 
+        if istek.grasp_depth_mm >= istek.object_h_mm:
+            return basarisiz("invalid_grasp_depth",
+                             f"Grasp depth {istek.grasp_depth_mm:g} mm must be smaller than the "
+                             f"object height {istek.object_h_mm:g} mm.")
         obj_w = istek.object_w_mm if istek.object_w_mm else GRIPPER_STROKE_M * 1000
         boyut = [obj_w, istek.object_d_mm, istek.object_h_mm]
+        # MTC'nin ik_frame'i = parmak uclari; kutu ve derinlik de ona gore.
+        kavrama_cercevesi = arm.kavrama_ik_cercevesi()
+        kavrama_ofseti = kavrama_cercevesi[0]
+        birakma = birakma_noktasi(istek.place_pose[:3], istek.object_h_mm, istek.grasp_depth_mm)
+        job.log.append(f"place: surface z={istek.place_pose[2]:.1f} mm -> fingertips "
+                       f"z={birakma[2]:.1f} mm")
 
         # PickPlace OTURUM BASI TEK SEFERLIK kuruldu (bkz. session.py
         # _baglanmayi_dene) - burada YENIDEN KURULMAZ. "Plan pick & place"
@@ -928,7 +950,7 @@ def pp_onizle(istek: PPOnizleme) -> dict[str, Any]:
 
         def zincir_planla(p, q):
             if not pp.zinciri_onceden_planla(p, q, istek.approach_mm, boyut,
-                                             arm.tcp_offset_m, istek.grasp_depth_mm):
+                                             kavrama_ofseti, istek.grasp_depth_mm):
                 return False
             zincirler.append(list(pp.son_zincir))
             return True
@@ -944,8 +966,8 @@ def pp_onizle(istek: PPOnizleme) -> dict[str, Any]:
         rz_listesi = [_aci_norm(rz), _aci_norm(rz + 180.0)]
         kol_baslangici = arm.get_current_state()["joints_deg"]
         adaylar_std = pp.standart_ciftleri_bul(
-            istek.grasp_point, istek.place_pose[:3], rz_listesi, istek.approach_mm, boyut,
-            arm.tcp_ik_cercevesi(), istek.grasp_depth_mm, en_fazla=istek.max_options)
+            istek.grasp_point, birakma, rz_listesi, istek.approach_mm, boyut,
+            kavrama_cercevesi, istek.grasp_depth_mm, en_fazla=istek.max_options)
         job.log.append(f"standard MTC: {len(adaylar_std)} cheapest arm configuration pair(s) "
                        f"(gripper rz {rz_listesi[0]:.1f} / {rz_listesi[1]:.1f})")
         ciftler: list[tuple[list[float], list[float]]] = []
@@ -967,10 +989,12 @@ def pp_onizle(istek: PPOnizleme) -> dict[str, Any]:
             asamalar = [pp.cozum_asamalari(cozum) for _, cozum in zincir]
             noktalar, zamanlar, bilgi = asamalari_birlestir(asamalar, bosluk_s=0.8)
             # Tasinan nesne de kontrole giriyor (zemin + self-collision):
-            # kutu, kavrama derinligine gore TCP'nin ALTINA yerlestirilir.
+            # kutu, kavrama derinligine gore parmak uclarinin ALTINA
+            # yerlestirilir (MTC sahnesindeki kutuyla ayni yer).
             problem = arm.mtc_yolunu_denetle(
                 noktalar, {"boyut_mm": boyut,
                            "kavrama_derinligi_mm": istek.grasp_depth_mm,
+                           "ofset_m": kavrama_ofseti,
                            "tasima_araligi": tasima_araligi(bilgi)}) if noktalar else None
             # Yolun GERCEK baslangici: zincirin ilk gorevi CurrentState'ten
             # (kolun plan anindaki durusu) basliyor - pre_pick "on-poza git"
@@ -1006,6 +1030,7 @@ def pp_onizle(istek: PPOnizleme) -> dict[str, Any]:
         no = oturum.pp_onizleme_kaydet(
             {"success": True, "kind": "pickplace",
              "start_joints": secenekler[0]["start_joints"],
+             # 3D gorunumdeki yesil hedef: kavrama noktasi (parmak uclari).
              "target_tcp": dict(zip(("x", "y", "z", "rx", "ry", "rz"),
                                     [*istek.grasp_point, *istek.grasp_rpy])),
              "options": secenekler, "grip_speed": istek.grip_speed,

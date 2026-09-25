@@ -2105,6 +2105,14 @@ class CobotArm:
         t = durum["tcp_pose"]
         return self.tcp_offset_m, tcp_donusu((q.x, q.y, q.z, q.w), (t["rx"], t["ry"], t["rz"]))
 
+    def kavrama_ik_cercevesi(self):
+        """tcp_ik_cercevesi'nin parmak uclarina (kavrama noktasina) kaydirilmis
+        hali: MTC ik_frame'i bu olunca hedef pozlar dogrudan "parmaklar
+        nereye" olarak verilir (bkz. tcp_cercevesi.kavrama_cercevesi).
+        Robotun TCP ayari DEGISMEZ. Robot HAREKET ETMEZ."""
+        from fairino_cobot.tcp_cercevesi import kavrama_cercevesi
+        return kavrama_cercevesi(*self.tcp_ik_cercevesi())
+
     def mtc_yolunu_denetle(self, noktalar_deg, nesne=None):
         """MTC zincirinin (onizleme icin birlestirilmis) TUM noktalarini,
         tek-tek hareketlerin gectigi AYNI iki kontrolden (zemin +
@@ -2126,7 +2134,8 @@ class CobotArm:
         9-49) bu riski kismen gorunur kilar.
 
         nesne: {"boyut_mm": [genislik, derinlik, yukseklik],
-        "kavrama_derinligi_mm": float|None} verilirse KAVRANAN NESNE de
+        "kavrama_derinligi_mm": float|None, "ofset_m": (x,y,z)|None}
+        verilirse KAVRANAN NESNE de
         kontrole girer - kutu gripper'in ucuna gecici olarak ilistirilip
         (sahneden cikisi garantili: finally) hem zemin hem self-collision
         kontrolu onunla yapilir. Boylece tasinan nesnenin masaya surtmesi ya
@@ -2143,8 +2152,11 @@ class CobotArm:
             # kalirdi - sonraki her plan onu kolun ucunda tasirdi.
             if nesne:
                 boyut_mm = list(nesne["boyut_mm"])
+                # ofset_m: derinligin olculdugu nokta (wrist3'te). Verilmezse
+                # TCP; pick & place onizlemesi parmak ucunu verir.
                 nesne_merkez_m = kavranan_nesne_kutusu_merkezi(
-                    self.tcp_offset_m, boyut_mm[2], nesne.get("kavrama_derinligi_mm"))
+                    nesne.get("ofset_m") or self.tcp_offset_m, boyut_mm[2],
+                    nesne.get("kavrama_derinligi_mm"))
                 nesne_boyut_m = [b / 1000.0 for b in boyut_mm]
                 with psm.read_write() as scene:
                     scene.process_attached_collision_object(

@@ -4,7 +4,16 @@ import math
 
 import pytest
 
-from fairino_cobot.tcp_cercevesi import fairino_rpy_quat, quat_carp, quat_ters, tcp_donusu
+from fairino_cobot.tcp_cercevesi import (
+    BIRAKMA_PAYI_MM,
+    PARMAK_UCU_MM,
+    birakma_noktasi,
+    fairino_rpy_quat,
+    kavrama_cercevesi,
+    quat_carp,
+    quat_ters,
+    tcp_donusu,
+)
 
 
 def _vektor_dondur(q, v):
@@ -45,3 +54,33 @@ def test_tcp_donusu_geri_uretir():
     tcp = (180.0, 0.0, -129.2)
     q_rel = tcp_donusu(q_w3, tcp)
     assert _ayni_donus(quat_carp(q_w3, q_rel), fairino_rpy_quat(*tcp))
+
+
+def test_kavrama_cercevesi_donuksuz_tcp():
+    """Bizim olcum (24 Eylul): TCP wrist3'e gore donuksuz, (-0,13; 0,07;
+    199,39) mm -> parmak ucu wrist3 +Z'sinde 19 mm ileride, yonelim ayni."""
+    ofset, q = kavrama_cercevesi((-0.00013, 0.00007, 0.19939), (0.0, 0.0, 0.0, 1.0))
+    assert ofset == pytest.approx((-0.00013, 0.00007, 0.19939 + PARMAK_UCU_MM / 1000), abs=1e-12)
+    assert q == (0.0, 0.0, 0.0, 1.0)
+
+
+def test_kavrama_cercevesi_donuk_tcp_kendi_z_ekseninde():
+    """TCP wrist3'e gore donukse ofset TCP'nin KENDI Z'si boyunca eklenir."""
+    q = fairino_rpy_quat(90, 0, 0)   # TCP Z'si wrist3'te -Y
+    ofset, _ = kavrama_cercevesi((0.0, 0.0, 0.2), q, 20.0)
+    assert ofset == pytest.approx((0.0, -0.02, 0.2), abs=1e-12)
+
+
+def test_birakma_noktasi_zemine():
+    """Zemine (z=0) 48 mm yuksek nesne, parmaklar ust yuzun 30 mm altinda:
+    parmak ucu = 0 + pay + 48 - 30."""
+    assert birakma_noktasi((-400.0, 200.0, 0.0), 48.0, 30.0) == pytest.approx(
+        [-400.0, 200.0, BIRAKMA_PAYI_MM + 18.0])
+
+
+def test_birakma_noktasi_kavramayla_ayni_yukseklik():
+    """Ayni yuzeye birakilan nesne, kavrandigi yukseklige (pay kadar
+    yukarida) doner: kavrama ucu = masa + h - d."""
+    masa, h, d = 25.0, 50.0, 20.0
+    kavrama_z = masa + h - d
+    assert birakma_noktasi((0.0, 0.0, masa), h, d)[2] == pytest.approx(kavrama_z + BIRAKMA_PAYI_MM)
