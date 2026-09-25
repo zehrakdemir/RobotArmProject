@@ -374,6 +374,20 @@ def set_manual_confirm(body: ManualConfirmBody) -> dict:
     return {"ok": True, "manual_confirm": S.manual_confirm}
 
 
+class SpeedBody(BaseModel):
+    speed_pct: float
+    accel_pct: float
+
+
+@app.post("/api/speed")
+def set_speed(body: SpeedBody) -> dict:
+    def _do():
+        r = pnp._post("/api/settings", {"speed_pct": body.speed_pct, "accel_pct": body.accel_pct})
+        return _result(True, f"Hiz %{r.get('speed_pct')} / Ivme %{r.get('accel_pct')} olarak ayarlandi.",
+                       settings=r)
+    return _safe(_do)
+
+
 # ---------------------------------------------------------------------------
 # Adimlar - her biri kullanicinin tek tikiyla tetiklenir, hicbiri otomatik
 # zincirlenmez. Her adim kendi ici guvenli (kucuk jog / hata kontrolu / az
@@ -640,7 +654,16 @@ _PAGE = """<!doctype html>
 <body>
 <header>
   <h1>pickcobot</h1>
-  <span id="robot-badge">robot: -</span>
+  <div style="display:flex;align-items:center;gap:14px">
+    <span id="robot-badge">robot: -</span>
+    <div style="display:flex;align-items:center;gap:6px">
+      <label style="margin:0">Hiz %</label>
+      <input type="number" id="speed-pct" value="10" min="1" max="100" style="width:60px">
+      <label style="margin:0">Ivme %</label>
+      <input type="number" id="accel-pct" value="10" min="1" max="100" style="width:60px">
+      <button onclick="setSpeed()">Uygula</button>
+    </div>
+  </div>
 </header>
 <main>
   <section id="col-measure">
@@ -736,6 +759,13 @@ async function get(url) {
 async function setManualConfirm() {
   const enabled = document.getElementById("manual-confirm").checked;
   await post("/api/manual_confirm", {enabled: enabled});
+}
+
+async function setSpeed() {
+  const speed = parseFloat(document.getElementById("speed-pct").value);
+  const accel = parseFloat(document.getElementById("accel-pct").value);
+  const r = await post("/api/speed", {speed_pct: speed, accel_pct: accel});
+  renderLog(r.log || []);
 }
 
 function setStatus(id, ok, msg) {
