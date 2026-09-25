@@ -717,7 +717,22 @@ def _detect_3d(Pa, PXa, n, d, K, up_idx, have_he, base, lr_last,
             mkc[pc0[:, 1], pc0[:, 0]] = 255
             mkc = cv2.morphologyEx(mkc, cv2.MORPH_CLOSE,
                                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)))
-            mkc = cv2.erode(mkc, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 17)))
+            # NOT (2026-09-25): burada eskiden erode(17,17) vardi. erode her kenari
+            # iceri ceker -> ayak izi HER nesnede sabit -16px kuculur; bu rig'de
+            # (rektifiye fx=1533, kamera-masa ~818mm -> 0.53mm/px) ~9mm, boy ve en'de
+            # BIREBIR ESIT mutlak mm. Kumpas karsilastirmasinda iki bagimsiz olcumde
+            # esit mutlak kayip gorulmesi bunun imzasi (olcek/kalibrasyon hatasi olsa
+            # oransal olurdu). Kerneli kucultmek yetmez (7,7 hala -6px ~= -3mm yer).
+            # Dogru operator OPEN = erode+dilate: ince golge/masa sizmasini ve saçilan
+            # tekil pikselleri atar ama govde boyutunu geri verir (sapma ~+1mm, arti
+            # yonde = gripper acikligi icin guvenli taraf). Cekirdek 7; 11 gurultuyu
+            # biraz daha temizler ama ince nesneleri (< ~11px) tumden silebilir -
+            # silinirse asagidaki <200px kontrolu ham piksele duser.
+            # UYARI: bu, olculen eksigin ~%60-75'ini kapatir, TAMAMINI degil; kalan
+            # ~3-6mm baska kaynaktan (dusuk dokulu kenarlarda stereo nokta kaybi,
+            # [1,99] yuzdelik kirpma, silueti orta-yukseklik duzlemine izdusurme).
+            mkc = cv2.morphologyEx(mkc, cv2.MORPH_OPEN,
+                                   cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
             ys2, xs2 = np.nonzero(mkc)
             if len(xs2) < 200:
                 ys2, xs2 = PXa[sel][:, 1], PXa[sel][:, 0]
