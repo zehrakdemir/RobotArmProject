@@ -9,6 +9,14 @@
 //
 // Renkler: gri = kolun su anki durusu, --accent = secili calistirilabilir yol,
 // --err = reddedilen yol, --ok = hedef TCP noktasi.
+//
+// Pick & place onizlemesinde (onizleme.object) nesne de canlandirilir:
+// kavramaya kadar alma yerinde, gripper kapaninca uc linke bagli, acilinca
+// birakma yerinde. Zaman cizelgesi secenegin "gripper" asamalarindan gelir.
+//
+// "Show safety layers" (#pv-safety): planlayicinin carpisma modeli - zemin
+// kutusu, link padding kabugu, gripper kutusu + padding, tasinan nesnenin
+// kutusu + padding. YALNIZCA GORSEL; hicbir kontrolu acip kapatmaz.
 
 import * as THREE from "three";
 import { OrbitControls } from "/static/lib/three/OrbitControls.js";
@@ -20,6 +28,7 @@ const oynatBtn = document.getElementById("pv-play");
 const kaydirici = document.getElementById("pv-scrub");
 const hizSec = document.getElementById("pv-rate");
 const zamanEl = document.getElementById("pv-time");
+const guvenlikKutu = document.getElementById("pv-safety");
 
 const css = getComputedStyle(document.documentElement);
 const renk = (ad) => new THREE.Color(css.getPropertyValue(ad).trim());
@@ -39,6 +48,57 @@ function mesaj(metin) {
 // URDF rpy: sabit eksenli X-Y-Z, R = Rz(yaw) * Ry(pitch) * Rx(roll). three.js'te
 // "ZYX" sirasi ayni matrisi verir.
 const rpy = (a) => new THREE.Euler(a[0], a[1], a[2], "ZYX");
+
+// Link padding kabugu: MoveIt'in mesh padding'inin aynisi (geometric_shapes
+// 2.3.4 Mesh::scaleAndPadd + computeVertexNormals): her kose, komsu
+// ucgenlerin koseye dusen ACIYLA agirliklandirilmis normali boyunca "pay"
+// kadar disari itilir. STL ucgenleri ayri kose tasir; once ayni konumdaki
+// koseler birlestirilir (yoksa her ucgen kendi normaliyle ayrilir).
+function sisirilmisGeometri(geo, pay) {
+  const p = geo.getAttribute("position");
+  const anahtarlar = new Map();
+  const koseler = [];
+  const indeks = new Uint32Array(p.count);
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+    const k = `${Math.round(x * 1e6)},${Math.round(y * 1e6)},${Math.round(z * 1e6)}`;
+    let j = anahtarlar.get(k);
+    if (j === undefined) { j = koseler.length / 3; anahtarlar.set(k, j); koseler.push(x, y, z); }
+    indeks[i] = j;
+  }
+  const normaller = new Float64Array(koseler.length);
+  const v = (j) => new THREE.Vector3(koseler[j * 3], koseler[j * 3 + 1], koseler[j * 3 + 2]);
+  for (let f = 0; f + 2 < indeks.length; f += 3) {
+    const ids = [indeks[f], indeks[f + 1], indeks[f + 2]];
+    const [a, b, c] = ids.map(v);
+    const n = new THREE.Vector3().subVectors(b, a).cross(new THREE.Vector3().subVectors(c, a));
+    if (n.lengthSq() === 0) continue;
+    n.normalize();
+    const acilar = [
+      new THREE.Vector3().subVectors(b, a).angleTo(new THREE.Vector3().subVectors(c, a)),
+      new THREE.Vector3().subVectors(a, b).angleTo(new THREE.Vector3().subVectors(c, b)),
+      new THREE.Vector3().subVectors(a, c).angleTo(new THREE.Vector3().subVectors(b, c)),
+    ];
+    ids.forEach((j, s) => {
+      normaller[j * 3] += n.x * acilar[s];
+      normaller[j * 3 + 1] += n.y * acilar[s];
+      normaller[j * 3 + 2] += n.z * acilar[s];
+    });
+  }
+  const konum = new Float32Array(koseler.length);
+  for (let j = 0; j < koseler.length / 3; j++) {
+    const n = new THREE.Vector3(normaller[j * 3], normaller[j * 3 + 1], normaller[j * 3 + 2]);
+    if (n.lengthSq() > 0) n.normalize();
+    konum[j * 3] = koseler[j * 3] + n.x * pay;
+    konum[j * 3 + 1] = koseler[j * 3 + 1] + n.y * pay;
+    konum[j * 3 + 2] = koseler[j * 3 + 2] + n.z * pay;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(konum, 3));
+  g.setIndex(new THREE.BufferAttribute(indeks, 1));
+  g.computeVertexNormals();
+  return g;
+}
 
 let cizici = null;
 try {
@@ -74,8 +134,19 @@ function kur() {
   const izgara = new THREE.GridHelper(2, 20, renk("--dim"), renk("--line"));
   izgara.rotation.x = Math.PI / 2;
   sahne.add(izgara);
+  // Eksen ucgenleri "Show axes" (#pv-axes) acikken gorunur.
+  const eksenParcalari = [];
+  const eksenKutu = document.getElementById("pv-axes");
+  function eksenleriGoster() {
+    const acik = !!(eksenKutu && eksenKutu.checked);
+    for (const e of eksenParcalari) e.visible = acik;
+  }
+  if (eksenKutu) eksenKutu.onchange = eksenleriGoster;
   // Base (dunya) cercevesi: Base jog yonleri bu eksenlere gore. Sabittir.
-  sahne.add(new THREE.AxesHelper(BASE_EKSEN_M));
+  const baseEksen = new THREE.AxesHelper(BASE_EKSEN_M);
+  sahne.add(baseEksen);
+  eksenParcalari.push(baseEksen);
+  eksenleriGoster();
 
   const boyutla = () => {
     const w = kap.clientWidth;
@@ -98,6 +169,37 @@ function kur() {
   });
   const kutuCanli = new THREE.MeshBasicMaterial({ color: renk("--dim"), wireframe: true });
   const kutuHayalet = new THREE.MeshBasicMaterial({ color: renk("--accent"), wireframe: true });
+  // Guvenlik katmanlari (yalnizca gorsel): padding kabuklari --warn, zemin --err.
+  const kabukMalzeme = new THREE.MeshStandardMaterial({
+    color: renk("--warn"), roughness: 0.8, metalness: 0.0,
+    transparent: true, opacity: 0.22, depthWrite: false,
+  });
+  const zeminMalzeme = new THREE.MeshBasicMaterial({
+    color: renk("--err"), transparent: true, opacity: 0.10, depthWrite: false,
+  });
+  const planKutuMalzeme = new THREE.MeshBasicMaterial({ color: renk("--warn"), wireframe: true });
+  // Pick & place: tasinan nesne (dolu) ve birakma/alma yerleri (tel kafes).
+  const nesneMalzeme = new THREE.MeshStandardMaterial({
+    color: renk("--ok"), roughness: 0.7, metalness: 0.0, transparent: true, opacity: 0.85,
+  });
+  const birakmaMalzeme = new THREE.LineBasicMaterial({ color: renk("--ok") });
+  const almaMalzeme = new THREE.LineBasicMaterial({ color: renk("--dim") });
+
+  // Guvenlik katmani parcalari: { nesne, kosul } - kosul() false ise kutucuk
+  // acik olsa da gizli (ör. canli kolun kabugu yol gosterilirken).
+  const guvenlikParcalari = [];
+  let yolGosteriliyor = false;
+  const guvenlikAcik = () => !!(guvenlikKutu && guvenlikKutu.checked);
+  function guvenlikGoster() {
+    const acik = guvenlikAcik();
+    for (const p of guvenlikParcalari) p.nesne.visible = acik && (!p.kosul || p.kosul());
+  }
+  if (guvenlikKutu) {
+    guvenlikKutu.onchange = () => {
+      guvenlikGoster();
+      if (anim) kareyiUygula(anim.t);
+    };
+  }
 
   const yolCizgisi = new THREE.Line(new THREE.BufferGeometry(),
     new THREE.LineBasicMaterial({ color: renk("--accent") }));
@@ -105,7 +207,21 @@ function kur() {
   const hedefNokta = new THREE.Mesh(new THREE.SphereGeometry(0.012, 20, 12),
     new THREE.MeshBasicMaterial({ color: renk("--ok") }));
   hedefNokta.visible = false;
-  sahne.add(yolCizgisi, hedefNokta);
+  // Pick & place: birakmada parmak uclarinin noktasi (hedefNokta = kavrama).
+  const birakmaNokta = new THREE.Mesh(new THREE.SphereGeometry(0.012, 20, 12),
+    new THREE.MeshBasicMaterial({ color: renk("--ok") }));
+  birakmaNokta.visible = false;
+  sahne.add(yolCizgisi, hedefNokta, birakmaNokta);
+
+  // Pick & place nesnesi ve alma/birakma yerleri. Matrisler elle kurulur.
+  const elleKonumlu = (o) => { o.matrixAutoUpdate = false; o.visible = false; sahne.add(o); return o; };
+  const ppNesne = elleKonumlu(new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), nesneMalzeme));
+  const ppAlma = elleKonumlu(new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)), almaMalzeme));
+  const ppBirakma = elleKonumlu(new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)), birakmaMalzeme));
+  // Planlayicinin tasinan nesne kutusu ve attached padding'li hali.
+  const ppPlanKutu = elleKonumlu(new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), planKutuMalzeme));
+  const ppPlanKabuk = elleKonumlu(new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), kabukMalzeme));
+  let pp = null;   // pick & place zaman cizelgesi (ppKur), yoksa null
 
   // Kameranin tespit ettigi nesneler: tel-kafes kutular. app.js "Detect"
   // sonucunu "algilanan-nesneler" olayiyla gonderir - robota/plana bagli
@@ -160,8 +276,14 @@ function kur() {
   let sonDeneme = 0;
   let sonAcilar = null;
 
-  function robotKur(m, geometriler, malzeme, kutuMalzeme) {
+  // kabukKosulu: bu robotun guvenlik kabuklari ne zaman gorunsun (bkz.
+  // guvenlikParcalari).
+  function robotKur(m, geometriler, malzeme, kutuMalzeme, kabukGeometrileri, kabukKosulu) {
     const linkler = {};
+    const guvenlikEkle = (nesne) => {
+      nesne.visible = false;
+      guvenlikParcalari.push({ nesne, kosul: kabukKosulu });
+    };
     for (const l of m.links) {
       const g = new THREE.Group();
       linkler[l.name] = g;
@@ -172,6 +294,15 @@ function kur() {
         parca.quaternion.setFromEuler(rpy(l.rpy));
         parca.scale.fromArray(l.scale);
         g.add(parca);
+      }
+      const kabukGeo = kabukGeometrileri[l.name];
+      if (kabukGeo) {
+        const kabuk = new THREE.Mesh(kabukGeo, kabukMalzeme);
+        kabuk.position.fromArray(l.xyz);
+        kabuk.quaternion.setFromEuler(rpy(l.rpy));
+        kabuk.scale.fromArray(l.scale);
+        g.add(kabuk);
+        guvenlikEkle(kabuk);
       }
     }
     // Her eklem: ust link -> sabit donusum (origin) -> eklem ekseninde donen grup -> alt link.
@@ -210,7 +341,9 @@ function kur() {
       // Yonelim wrist3_link'in yonelimidir - olculen TCP ofseti yalnizca
       // oteleme (bkz. compute_tcp_offset); predict_tcp_pose da TCP'nin
       // RX/RY/RZ'si olarak ayni yonelimi veriyor.
-      tcp.add(new THREE.AxesHelper(TCP_EKSEN_M));
+      const tcpEksen = new THREE.AxesHelper(TCP_EKSEN_M);
+      tcp.add(tcpEksen);
+      eksenParcalari.push(tcpEksen);
       uc.add(tcp);
     }
     // Gripper carpisma kutusu: planlayicinin kullandigi kutu (movecobot.py).
@@ -219,8 +352,20 @@ function kur() {
       const kutu = new THREE.Mesh(new THREE.BoxGeometry(k.size[0], k.size[1], k.size[2]), kutuMalzeme);
       kutu.position.fromArray(k.xyz);
       linkler[k.link].add(kutu);
+      // Kutu da bir guvenlik katmani: yalnizca "Show safety layers" acikken.
+      guvenlikEkle(kutu);
+      // Kutu ilisik (attached) cisim: attached padding her yone eklenir
+      // (kutu primitifinde olcu + 2 x pay).
+      const pay = m.safety && m.safety.padding_m ? m.safety.padding_m.attached : 0;
+      if (pay > 0) {
+        const kabuk = new THREE.Mesh(new THREE.BoxGeometry(
+          k.size[0] + 2 * pay, k.size[1] + 2 * pay, k.size[2] + 2 * pay), kabukMalzeme);
+        kabuk.position.fromArray(k.xyz);
+        linkler[k.link].add(kabuk);
+        guvenlikEkle(kabuk);
+      }
     }
-    return { kok, eklemler, kayarlar, tcp };
+    return { kok, eklemler, kayarlar, tcp, linkler };
   }
 
   // Gripper acikligi: position 0 = tam acik, 100 = tam kapali (gripper_controller).
@@ -266,11 +411,35 @@ function kur() {
       await Promise.all(m.links.filter((l) => l.mesh).map(async (l) => {
         geometriler[l.name] = await yukleyici.loadAsync(l.mesh);
       }));
+      // Link padding kabugu: yalnizca carpisma geometrisi gorsel mesh'le
+      // AYNI olan linklere (sunucu URDF'ten soyler); MoveIt padding'i
+      // carpisma geometrisine uyguluyor. Pay metre; mesh olcekliyse olcege bolunur.
+      const guvenlik = m.safety || {};
+      const linkPayi = guvenlik.padding_m ? guvenlik.padding_m.link : 0;
+      const kabukGeometrileri = {};
+      if (linkPayi > 0) {
+        for (const l of m.links) {
+          if (geometriler[l.name] && l.collision_mesh_is_visual) {
+            kabukGeometrileri[l.name] = sisirilmisGeometri(geometriler[l.name], linkPayi / (l.scale[0] || 1));
+          }
+        }
+      }
       model = m;
-      canli = robotKur(m, geometriler, canliMalzeme, kutuCanli);
-      hayalet = robotKur(m, geometriler, hayaletMalzeme, kutuHayalet);
+      canli = robotKur(m, geometriler, canliMalzeme, kutuCanli, kabukGeometrileri, () => !yolGosteriliyor);
+      hayalet = robotKur(m, geometriler, hayaletMalzeme, kutuHayalet, kabukGeometrileri, null);
       hayalet.kok.visible = false;
       sahne.add(canli.kok, hayalet.kok);
+      // Zemin carpisma kutusu (ust yuzu z = 0; taban_link ile temasi serbest).
+      const z = guvenlik.floor_box;
+      if (z) {
+        const zemin = new THREE.Mesh(new THREE.BoxGeometry(z.size[0], z.size[1], z.size[2]), zeminMalzeme);
+        zemin.position.fromArray(z.xyz);
+        zemin.visible = false;
+        sahne.add(zemin);
+        guvenlikParcalari.push({ nesne: zemin, kosul: null });
+      }
+      guvenlikGoster();
+      eksenleriGoster();
       mesaj(Object.keys(geometriler).length ? "" : "Robot meshes were not found; only the path line is shown.");
       if (sonAcilar) acilariUygula(canli, sonAcilar);
       if (window.sonGripperKonumu != null) {
@@ -296,6 +465,110 @@ function kur() {
     if (!acik) { zamanEl.textContent = "—"; kaydirici.value = 0; oynatBtn.textContent = "Play"; }
   }
 
+  // --- pick & place nesnesi -----------------------------------------------
+  const olcekli = (M, boyut) => M.clone().multiply(new THREE.Matrix4().makeScale(...boyut));
+  function elleKoy(o, M) { o.matrix.copy(M); o.matrixWorldNeedsUpdate = true; }
+
+  function ppTemizle() {
+    if (pp && hayalet && window.sonGripperKonumu != null) {
+      parmaklariUygula(hayalet, window.sonGripperKonumu);   // canli gripper'a don
+    }
+    pp = null;
+    for (const o of [ppNesne, ppAlma, ppBirakma, ppPlanKutu, ppPlanKabuk, birakmaNokta]) o.visible = false;
+  }
+
+  // Secenegin zaman cizelgesinden nesnenin yolunu kurar. Hayalet kol bu
+  // sirada yol noktalarina konur; cagiran sonra kareyiUygula ile geri alir.
+  function ppKur(noktalar) {
+    ppTemizle();
+    const n = onizleme && onizleme.object;
+    const asamalar = (secenek && secenek.stages) || [];
+    const gripperlar = asamalar.filter((a) => a.tip === "gripper");
+    const uc = n && hayalet.linkler[n.tip_link];
+    if (!n || !uc || gripperlar.length < 2) return;
+    const [g1, g2] = gripperlar;
+    if (!noktalar[g1.ilk] || !noktalar[g2.ilk]) return;
+    const boyut = n.size_mm.map((v) => Math.max(v, 1) / 1000);
+
+    // Parmaklarin kapanma ekseni (uc link cercevesinde): gripper modelinin
+    // surucu parmak ekleminin ekseni. Gercek nesnenin kalinligi (size_mm[0])
+    // bu eksende. Model yoksa uc linkin X'i (planlayici kutusuyla ayni).
+    acilariUygula(hayalet, noktalar[g1.ilk]);
+    hayalet.kok.updateMatrixWorld(true);
+    const ucQ = uc.getWorldQuaternion(new THREE.Quaternion());
+    let aci = 0;
+    const surucu = hayalet.kayarlar.find((k) => !k.mimic);
+    if (surucu && surucu.grup.parent) {
+      const eksen = surucu.eksen.clone()
+        .applyQuaternion(surucu.grup.parent.getWorldQuaternion(new THREE.Quaternion()))
+        .applyQuaternion(ucQ.clone().invert());
+      if (Math.hypot(eksen.x, eksen.y) > 1e-6) aci = Math.atan2(eksen.y, eksen.x);
+    }
+    const merkez = new THREE.Vector3().fromArray(n.center_tip_m);
+    const yerel = new THREE.Matrix4().compose(merkez,
+      new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), aci), new THREE.Vector3(1, 1, 1));
+    // Planlayicinin kutusu uc link eksenlerinde (pickplace._nesne_msg, yonelim birim).
+    const planYerel = new THREE.Matrix4().makeTranslation(merkez.x, merkez.y, merkez.z);
+
+    const ucMatrisi = (nokta) => {
+      acilariUygula(hayalet, nokta);
+      hayalet.kok.updateMatrixWorld(true);
+      return uc.matrixWorld.clone();
+    };
+    const Malma = ucMatrisi(noktalar[g1.ilk]).multiply(yerel);
+    const Mbirakma = ucMatrisi(noktalar[g2.ilk]).multiply(yerel);
+
+    const pay = model.safety && model.safety.padding_m ? model.safety.padding_m.attached : 0;
+    const genislik = n.size_mm[0];
+    const kapaliYuzde = n.stroke_mm > 0
+      ? 100 - Math.min(Math.max(genislik / n.stroke_mm, 0), 1) * 100 : 100;
+    pp = { g1, g2, uc, yerel, planYerel, boyut, pay, kapaliYuzde,
+           Malma, Mbirakma };
+
+    elleKoy(ppAlma, olcekli(Malma, boyut));
+    elleKoy(ppBirakma, olcekli(Mbirakma, boyut));
+    ppAlma.visible = true;
+    ppBirakma.visible = true;
+    const b = n.place_point_mm;
+    if (b) {
+      birakmaNokta.position.set(b[0] / 1000, b[1] / 1000, b[2] / 1000);
+      birakmaNokta.visible = true;
+    }
+  }
+
+  const ara = (a, b, s) => a + (b - a) * Math.min(Math.max(s, 0), 1);
+  const oran = (t, a) => (a.t1 > a.t0 ? (t - a.t0) / (a.t1 - a.t0) : 1);
+
+  // Hayalet kol t anindaki acilarda; nesne, parmaklar ve planlayici kutusu.
+  function ppKare(t) {
+    if (!pp) return;
+    const { g1, g2, uc, kapaliYuzde } = pp;
+    hayalet.kok.updateMatrixWorld(true);
+    // Parmaklar: acik -> (1. gripper) nesne genisligine kapanir -> (2.) acilir.
+    let yuzde = 0;
+    if (t >= g1.t0 && t < g2.t0) yuzde = ara(0, kapaliYuzde, oran(t, g1));
+    else if (t >= g2.t0) yuzde = ara(kapaliYuzde, 0, oran(t, g2));
+    parmaklariUygula(hayalet, yuzde);
+
+    // Nesne: kavramadan once alma yerinde, birakmadan sonra birakma yerinde,
+    // arada uc linke bagli.
+    const tasiniyor = t >= g1.t0 && t < g2.t0;
+    const M = tasiniyor ? uc.matrixWorld.clone().multiply(pp.yerel)
+                        : (t < g1.t0 ? pp.Malma : pp.Mbirakma);
+    elleKoy(ppNesne, olcekli(M, pp.boyut));
+    ppNesne.visible = true;
+
+    // Planlayicinin kutusu yalnizca ilisikken var (kapanmadan acilmanin sonuna).
+    const ilisik = guvenlikAcik() && t >= g1.t1 && t < g2.t1;
+    ppPlanKutu.visible = ilisik;
+    ppPlanKabuk.visible = ilisik && pp.pay > 0;
+    if (ilisik) {
+      const P = uc.matrixWorld.clone().multiply(pp.planYerel);
+      elleKoy(ppPlanKutu, olcekli(P, pp.boyut));
+      elleKoy(ppPlanKabuk, olcekli(P, pp.boyut.map((v) => v + 2 * pp.pay)));
+    }
+  }
+
   function kareyiUygula(t) {
     const { noktalar, zamanlar, sure } = anim;
     let i = 1;
@@ -310,6 +583,7 @@ function kur() {
       const q = noktalar[i];
       acilariUygula(hayalet, p.map((v, k) => v + (q[k] - v) * a));
     }
+    ppKare(t);
     const gosterilen = Math.min(t, sure);
     zamanEl.textContent = `${gosterilen.toFixed(1)} / ${sure.toFixed(1)} s`;
     kaydirici.value = sure > 0 ? Math.round((gosterilen / sure) * 1000) : 1000;
@@ -332,7 +606,10 @@ function kur() {
     canliMalzeme.depthWrite = !noktalar;
     hayalet.kok.visible = !!noktalar;
     yolCizgisi.visible = !!noktalar;
+    yolGosteriliyor = !!noktalar;
+    guvenlikGoster();
     if (!noktalar) {
+      ppTemizle();
       anim = null;
       kontrolleriAc(false);
       return;
@@ -355,6 +632,7 @@ function kur() {
     const zamanlar = secenek.times && secenek.times.length === noktalar.length
       ? secenek.times : noktalar.map((_, i) => i * 0.1);
     const sure = zamanlar[zamanlar.length - 1] || 0;
+    ppKur(noktalar);
     anim = { noktalar, zamanlar, sure, t: hareketAzalt ? sure : 0, oynuyor: !hareketAzalt };
     kontrolleriAc(true);
     oynatBtn.textContent = anim.oynuyor ? "Pause" : "Play";
@@ -385,7 +663,8 @@ function kur() {
   // (GUNCEL_DURUM 9-6) - gorunum ne okunduysa onu gosterir.
   window.addEventListener("gripper-durumu", (e) => {
     parmaklariUygula(canli, e.detail);
-    parmaklariUygula(hayalet, e.detail);
+    // Pick & place onizlemesinde hayaletin parmaklari zaman cizelgesinden (ppKare).
+    if (!pp) parmaklariUygula(hayalet, e.detail);
   });
   const secimAl = (d) => { onizleme = d.onizleme; secenek = d.secenek; secimiCiz(); };
   window.addEventListener("onizleme-secimi", (e) => secimAl(e.detail));

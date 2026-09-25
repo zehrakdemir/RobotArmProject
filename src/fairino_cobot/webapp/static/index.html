@@ -65,12 +65,25 @@
               <option value="2">2×</option>
               <option value="5">5×</option>
             </select>
+            <label class="toggle pv-safety" title="Draw the collision model the planner uses. View only: it does not turn any check on or off.">
+              <input type="checkbox" id="pv-safety"><span>Show safety layers</span>
+            </label>
+            <label class="toggle pv-safety" title="Base frame at the robot base and TCP frame at the tool">
+              <input type="checkbox" id="pv-axes"><span>Show axes</span>
+            </label>
           </div>
           <div class="note">
             Grey: the arm now. Blue: selected path. Red: rejected path. Green dot: target TCP.
-            Axis triads (X red, Y green, Z blue): the long one at the base is the base frame
+            Axis triads (“Show axes”; X red, Y green, Z blue): the long one at the base is the base frame
             (Base jog), the short one at the tool is the TCP frame (Tool jog) and turns with
             the tool. Floor grid at Z = 0. Drag to rotate, scroll to zoom.
+            <br>Pick &amp; place: the green box is the object; it waits at the pick spot
+            (grey outline), rides in the gripper after it closes and stays at the place spot
+            (green outline) after it opens. Green dots: grasp point and release point (fingertips).
+            <br>Safety layers (view only, hidden until “Show safety layers” is ticked): wire box
+            at the tool = gripper collision box; orange shell = 6 mm padding on the arm links,
+            the gripper box and the carried object; orange wire box = the object box the planner
+            carries; red block = floor collision box (top at Z = 0).
           </div>
         </div>
         <div>
@@ -157,6 +170,16 @@
           </div>
           <div id="pnp-info" class="note" style="white-space:pre-wrap"></div>
           <div id="pnp-err" class="note warn" role="alert" hidden></div>
+          <div id="pnp-save" hidden>
+            <div style="height:8px"></div>
+            <div class="row">
+              <label class="field"><span>Save last run as</span>
+                <input type="text" id="pnp-save-name" placeholder="name" autocomplete="off"></label>
+              <button id="pnp-save-btn">Save move</button>
+            </div>
+            <div class="note" id="pnp-save-info"></div>
+            <div id="pnp-save-err" class="note warn" role="alert" hidden></div>
+          </div>
           <div class="note">
             The chain (approach → grip → lift → transfer → lower → release → retreat) is
             planned and listed in Path preview above; pick an option there and run it. It

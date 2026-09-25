@@ -101,6 +101,11 @@ class RobotSession:
         # approach_mm, pick, pre_pick, place, pre_place. Kaydedilince bosalir.
         self.pp_taslak: dict[str, Any] = {}
 
+        # Son BASARIYLA calistirilan onizlenmis pick & place zinciri (server.py
+        # /api/pickplace/preview/run): kaydedilebilmesi icin parametreleri
+        # (/api/pickplace/save_last). Yoksa None.
+        self.pp_son_calisan: dict[str, Any] | None = None
+
         # Web yol onizlemesi (server.py /api/preview): son planlanan secenekler.
         # {"id", "ozet" (arayuze giden JSON), "planlar" (secenek sirasiyla
         # plan_result ya da None)}. Plan nesneleri arayuze GITMEZ; calistirma
@@ -300,6 +305,8 @@ class RobotSession:
         out: dict[str, Any] = {
             "preview_id": onizleme["id"] if onizleme else None,
             "pp_preview_id": pp_onizleme["id"] if pp_onizleme else None,
+            # Kaydedilebilir son pick & place calismasi (arayuz "Save" gosterir).
+            "pp_last_run": (self.pp_son_calisan or {}).get("ran_at"),
             "ready": self.ready,
             "startup_error": self.startup_error,
             "startup_log": self.startup_log[-12:],

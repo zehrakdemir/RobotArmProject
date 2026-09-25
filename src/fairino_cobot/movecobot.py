@@ -820,6 +820,10 @@ class CobotArm:
         # Gripper carpisma kutusunun olculeri; _add_gripper_collision dolduruyor
         # (kutu sahneye eklenmezse None kalir ve gorunumde de cizilmez).
         self.gripper_kutusu = None
+        # Zemin carpisma kutusu, ayni sekilde (_add_floor_collision; yalnizca gorunum).
+        self.zemin_kutusu = None
+        # Planlayiciya verilen padding (asagida _rdp): gorunum kabugu cizer.
+        self.padding_m = {"link": LINK_PADDING_M, "attached": LINK_PADDING_M}
         self._parmak_yayinini_baslat()
         _tlog("MoveItPy baslatiliyor (planlama pipeline'lari + robot modeli yukleniyor, "
               "bu genelde en uzun suren asama)...")
@@ -882,6 +886,11 @@ class CobotArm:
                 # kontrolu aynen devam ediyor.
                 scene.allowed_collision_matrix.set_entry("floor", "base_link", True)
                 scene.current_state.update()
+            # 3D gorunum icin (web /api/model): sahneye eklenen kutunun AYNISI.
+            self.zemin_kutusu = {
+                "xyz": [box_pose.position.x, box_pose.position.y, box_pose.position.z],
+                "size": list(box.dimensions),
+            }
         except Exception as e:
             print(f"UYARI: Zemin collision nesnesi eklenemedi ({type(e).__name__}: {e})")
 
@@ -2905,6 +2914,12 @@ def drag_teach_add_steps(arm, gripper, steps, name, defaults):
 # Kayitli hareketler: JSON depo + ~/.bashrc alias senkronizasyonu
 # ---------------------------------------------------------------------------
 
+# Kayitli pick & place turleri. "pick_place_chain" web onizlemesinden kaydedilir
+# (server.py /api/pickplace/save_last) ve YALNIZCA web arayuzunden oynatilir:
+# once onizleme, sonra Run. run_pick_place onu reddeder.
+PICK_PLACE_TIPLERI = ("pick_place", "pick_place_chain")
+
+
 def load_moves():
     if MOVES_FILE.exists():
         return json.loads(MOVES_FILE.read_text(encoding="utf-8"))
@@ -3535,6 +3550,12 @@ def run_pick_place(arm, gripper, cfg, sor=False, onay_iste=True, pp=None):
     Alias ile dogrudan calistirmada (sor=False) kayitli degerler kullanilir.
 
     pp: hazir bir PickPlace (pickplace_olustur). Verilmezse burada kurulur."""
+    if cfg.get("type") == "pick_place_chain":
+        # Bu yol nesne kutusunu TCP'ye gore koyuyor ve son iniste nesne-zemin
+        # izni vermiyor; web'den kaydedilen zincir burada guvenle oynatilamaz.
+        print("HATA: bu kayit web arayuzunden kaydedildi; yalnizca orada oynatilir "
+              "(Saved moves -> Play: once Path preview'da gosterilir, sonra Run).")
+        return False
     if "pre_pick_joints" not in cfg or "pre_place_joints" not in cfg:
         print("HATA: bu kayit ESKI bicimde (on-pozlar yok). Menuden [5] ile ayni "
               "ismi verip yeniden olusturun.")
@@ -3693,7 +3714,7 @@ def edit_saved_move(arm, gripper):
         if name not in moves:
             print(f"  '{name}' bulunamadi.")
             return
-        if moves[name].get("type") == "pick_place":
+        if moves[name].get("type") in PICK_PLACE_TIPLERI:
             # Pick & place kaydinin adimi yok (iki poz + parametrelerden
             # ibaret, asamalari MTC uretiyor) - adim editoru ile duzenlenemez.
             print(f"  '{name}' bir pick & place kaydi; adim listesi yok, bu editorle "
@@ -3738,7 +3759,7 @@ def list_saved_moves():
     print("\n=== Kayitli hareketler ===")
     for name, m in sorted(moves.items()):
         modified = f", duzenlendi: {m['modified']}" if m.get("modified") else ""
-        ne = "pick & place" if m.get("type") == "pick_place" else f"{len(m.get('steps', []))} adim"
+        ne = "pick & place" if m.get("type") in PICK_PLACE_TIPLERI else f"{len(m.get('steps', []))} adim"
         print(f"  {name:20s}  {ne:12s}  hiz=%{m['speed_pct']:.0f} "
               f"ivme=%{m['accel_pct']:.0f}  ({m['created']}{modified})")
 
@@ -3856,7 +3877,7 @@ def replay_from_menu(arm, gripper, robot_ip):
     if name not in moves:
         print(f"  '{name}' bulunamadi.")
         return
-    if moves[name].get("type") == "pick_place":
+    if moves[name].get("type") in PICK_PLACE_TIPLERI:
         run_pick_place(arm, gripper, moves[name], sor=True)
         return
     print(f"\n(Bu oturumun hizinda calisacak: %{arm.speed_pct:.0f}/%{arm.accel_pct:.0f}. "
@@ -3877,7 +3898,7 @@ def replay_cli(name):
     robot_ip = robot_info["ROBOT_IP"]
     model_num = robot_info["ROBOT_MODEL_NUM"]
 
-    _pp = move.get("type") == "pick_place"
+    _pp = move.get("type") in PICK_PLACE_TIPLERI
     _ne = "pick & place" if _pp else f"{len(move['steps'])} adim"
     print(f"\n>>> '{name}' oynatiliyor ({_ne}, "
           f"hiz=%{move['speed_pct']:.0f}, ivme=%{move['accel_pct']:.0f})\n")

@@ -126,6 +126,13 @@ class PPKaydet(BaseModel):
     overwrite: bool = False
 
 
+class PPSonKaydet(BaseModel):
+    """Son calistirilan onizlenmis pick & place zincirini kaydetme istegi."""
+
+    name: str
+    overwrite: bool = False
+
+
 class PPPozdaCalistir(BaseModel):
     """Kayitli bir hareket olmadan, DISARIDAN (kamera/vision) gelen yaklasim
     pozlarindan MTC pick&place calistirma istegi (17 Eylul).
@@ -523,6 +530,12 @@ def _robot_modeli() -> dict[str, Any]:
         ozet["tip_link"] = kol.tip_link
         ozet["tcp_offset_m"] = [float(v) for v in kol.tcp_offset_m]
         ozet["gripper_box"] = kol.gripper_kutusu
+        # "Show safety layers" icin (yalnizca gorunum): zemin kutusu ve
+        # planlayiciya verilen padding. Degerler sahneye eklenenlerin aynisi.
+        ozet["safety"] = {
+            "floor_box": getattr(kol, "zemin_kutusu", None),
+            "padding_m": getattr(kol, "padding_m", None),
+        }
         oturum.model_onbellek = {"ozet": ozet, "dosyalar": dosyalar}
     return oturum.model_onbellek
 
@@ -583,8 +596,8 @@ def hareketler() -> dict[str, Any]:
     moves = load_moves()
     ozet = []
     for ad, kayit in moves.items():
-        if isinstance(kayit, dict) and kayit.get("type") == "pick_place":
-            ozet.append({"name": ad, "type": "pick_place", "steps": 2,
+        if isinstance(kayit, dict) and kayit.get("type") in ("pick_place", "pick_place_chain"):
+            ozet.append({"name": ad, "type": kayit["type"], "steps": 2,
                          "speed_pct": kayit.get("speed_pct"),
                          "accel_pct": kayit.get("accel_pct"),
                          "saved_at": kayit.get("saved_at")})
@@ -605,6 +618,8 @@ def oynat(ad: str, istek: OynatIstek) -> dict[str, Any]:
     if ad not in moves:
         raise HTTPException(status_code=404, detail=f"No saved move named '{ad}'.")
     kayit = moves[ad]
+    if isinstance(kayit, dict) and kayit.get("type") == "pick_place_chain":
+        return _kayitli_zinciri_onizle(ad, kayit, istek)
 
     def calistir(job):
         job.log.append(f"Playing '{ad}'")
@@ -630,6 +645,55 @@ def oynat(ad: str, istek: OynatIstek) -> dict[str, Any]:
                 "details": "playback did not complete - see the container log for details."}
 
     return _is_baslat("replay", f"Play: {ad}", calistir)
+
+
+def _kayitli_zinciri_onizle(ad: str, kayit: dict[str, Any], istek: OynatIstek) -> dict[str, Any]:
+    """Kayitli "pick_place_chain" oynatmasi = ROBOT HAREKET ETMEDEN planlama.
+    Zincir, kayittaki pre_pick/pre_place duruslari ve olculerle kolun O ANKI
+    yerinden planlanir, yeni bir planla ayni kontrollerden (mtc_yolunu_denetle)
+    gecer ve pick & place onizlemesi olarak saklanir; robot yalnizca Path
+    preview'da "Run" (/api/pickplace/preview/run) ile hareket eder.
+
+    Eski "pick_place" kayitlarinin yolu (run_pick_place) KULLANILMAZ: o yol
+    nesne kutusunu TCP'ye gore koyuyor ve son iniste nesne-zemin izni
+    vermiyor; yuzeye birakilan nesnede iniste (nesne tutulurken) planlama
+    dusebilir.
+
+    Hiz/ivme ve gripper hiz/kuvveti: Saved moves panelindeki alanlar doluysa
+    onlar, bossa kayittakiler (diger kayitli hareketlerle ayni kural)."""
+    def secim(panel, kayitli, varsayilan):
+        if panel is not None:
+            return panel
+        return kayitli if kayitli is not None else varsayilan
+
+    def calistir(job):
+        arm = oturum.arm
+        pp = oturum.pp
+        if pp is None:
+            return _pp_basarisiz("mtc_init_failed",
+                                 "MTC was not initialized at startup (see server log).")
+        v_hiz, v_ivme = _kol_hizi()
+        hiz = secim(istek.speed_pct, kayit.get("speed_pct"), v_hiz)
+        ivme = secim(istek.accel_pct, kayit.get("accel_pct"), v_ivme)
+        pp.hizlari_guncelle(hiz, ivme)
+        boyut = [float(v) for v in kayit["object_size_mm"]]
+        derinlik = float(kayit["grasp_depth_mm"])
+        kavrama_ofseti = arm.kavrama_ik_cercevesi()[0]
+        job.log.append(f"Saved pick & place '{ad}': planning from the current arm pose "
+                       "(the robot does not move)")
+        return _pp_zincirleri_planla_ve_sakla(
+            job, arm, pp, [(list(kayit["pre_pick_joints"]), list(kayit["pre_place_joints"]))],
+            boyut, kavrama_ofseti, float(kayit["approach_mm"]), derinlik,
+            {"grip_speed": int(secim(istek.grip_speed, kayit.get("grip_speed"), 50)),
+             "grip_force": int(secim(istek.grip_force, kayit.get("grip_force"), 5)),
+             "speed_pct": hiz, "accel_pct": ivme,
+             "target_tcp": kayit.get("target_tcp"),
+             "saved_name": ad,
+             "object": _pp_nesne_bilgisi(arm, boyut, kavrama_ofseti, derinlik,
+                                         kayit.get("place_surface_mm"),
+                                         kayit.get("place_point_mm"))})
+
+    return _is_baslat("preview", "Plan pick & place chain", calistir)
 
 
 # ---------------------------------------------------------------------------
@@ -885,6 +949,122 @@ def vizyon_algila() -> dict[str, Any]:
         raise HTTPException(status_code=503, detail=str(e)) from e
 
 
+def _pp_basarisiz(reason: str, details: str) -> dict[str, Any]:
+    """Pick & place planlamasi basarisiz: sonuc da KAYDEDILIR (Path preview'daki
+    "success: false de kaydedilir" deseni, bkz. yollari_onizle) - kullanici
+    sonucu panelde gorsun, yalnizca genel log'da degil."""
+    oturum.pp_onizleme_kaydet(
+        {"success": False, "reason": reason, "details": details, "options": []},
+        [], None)
+    return {"success": False, "reason": reason, "details": details}
+
+
+def _pp_zincirleri_planla_ve_sakla(job, arm, pp, ciftler, boyut, kavrama_ofseti,
+                                   yaklasma_mm, derinlik_mm, bilgi: dict[str, Any]) -> dict[str, Any]:
+    """Verilen (pre_pick, pre_place) eklem ciftleri icin TAM zinciri robot
+    HAREKET ETMEDEN planlar, her birini mtc_yolunu_denetle'den (zemin +
+    self-collision, tasinan nesne dahil) gecirir, en kisa yol basta olacak
+    sekilde siralayip pick & place onizlemesi olarak saklar.
+
+    Yeni plan (pp_onizle) ve kayitli zincirin oynatilmasi (oynat) AYNI yoldan
+    gecer: kayittan oynatmada da once onizleme, sonra /preview/run.
+
+    bilgi: ozete aynen eklenen alanlar (grip_speed, grip_force, speed_pct,
+    accel_pct, target_tcp, object, saved_name...)."""
+    from fairino_cobot.mtc_yolu import asamalari_birlestir, tasima_araligi, toplam_eklem_yolu_deg
+    from fairino_cobot.yol_onizleme import secenek_ozeti
+
+    # Her uygun cift bulundugunda O ANIN zinciri saklanir: pp.son_zincir
+    # bir sonraki planlamada UZERINE YAZILIR, sonradan okunamaz.
+    planlanan: list[tuple[list[float], list[float], list[Any]]] = []
+    for pre_pick, pre_place in ciftler:
+        job.log.append(f"  chain: pre_pick j1={pre_pick[0]:.1f}, pre_place j1={pre_place[0]:.1f}")
+        if pp.zinciri_onceden_planla(pre_pick, pre_place, yaklasma_mm, boyut,
+                                     kavrama_ofseti, derinlik_mm):
+            planlanan.append((pre_pick, pre_place, list(pp.son_zincir)))
+    if not planlanan:
+        return _pp_basarisiz("no_feasible_pick_place_pair",
+                             "MTC found no pick & place solution for this object and place "
+                             "pose. Robot did not move.")
+
+    kol_baslangici = arm.get_current_state()["joints_deg"]
+    # (maliyet, ozet, zincir) - maliyet = yolun toplam eklem donusu.
+    adaylar: list[tuple[float, dict[str, Any], list[Any]]] = []
+    for pre_pick, pre_place, zincir in planlanan:
+        asamalar = [pp.cozum_asamalari(cozum) for _, cozum in zincir]
+        noktalar, zamanlar, asama_bilgisi = asamalari_birlestir(asamalar, bosluk_s=0.8)
+        # Tasinan nesne de kontrole giriyor (zemin + self-collision):
+        # kutu, kavrama derinligine gore parmak uclarinin ALTINA
+        # yerlestirilir (MTC sahnesindeki kutuyla ayni yer).
+        problem = arm.mtc_yolunu_denetle(
+            noktalar, {"boyut_mm": boyut,
+                       "kavrama_derinligi_mm": derinlik_mm,
+                       "ofset_m": kavrama_ofseti,
+                       "tasima_araligi": tasima_araligi(asama_bilgisi)}) if noktalar else None
+        # Yolun GERCEK baslangici: zincirin ilk gorevi CurrentState'ten
+        # (kolun plan anindaki durusu) basliyor - pre_pick "on-poza git"
+        # asamasinin HEDEFI. Eskiden buraya pre_pick veriliyordu; hem
+        # "en cok donen eklem" yanlis noktaya gore olculuyordu hem de
+        # /preview/run'daki bayatlik kontrolu kolu pre_pick'te sanip
+        # neredeyse her zaman preview_stale veriyordu.
+        yol_baslangici = noktalar[0] if noktalar else list(kol_baslangici)
+        maliyet = toplam_eklem_yolu_deg(noktalar)
+        ozet = secenek_ozeti(len(adaylar) + 1, "", "MTC", yol_baslangici, noktalar,
+                             zamanlar, problem, noktalar[-1] if noktalar else None)
+        ozet["stages"] = asama_bilgisi
+        ozet["start_joints"] = [round(float(v), 3) for v in yol_baslangici]
+        ozet["pre_pick_joints"] = [round(float(v), 2) for v in pre_pick]
+        ozet["pre_place_joints"] = [round(float(v), 2) for v in pre_place]
+        ozet["total_deg"] = None if not math.isfinite(maliyet) else round(maliyet, 1)
+        ozet["grasp_rz"] = None
+        adaylar.append((maliyet, ozet, zincir))
+
+    # EN KISA YOL BASA: once calistirilabilir olanlar (reddedilen bir yol
+    # kisa olsa da secilemez), sonra toplam eklem yolu kucukten buyuge.
+    adaylar.sort(key=lambda a: (not a[1]["ok"], a[0]))
+    secenekler = []
+    for sira, (_, ozet, _) in enumerate(adaylar, start=1):
+        ozet["index"] = sira
+        ozet["label"] = ("Shortest chain" if sira == 1 and ozet["ok"]
+                         else f"Alternative chain {sira}")
+        secenekler.append(ozet)
+    for s in secenekler:
+        job.log.append(f"option {s['index']}: {'runnable' if s['ok'] else 'REJECTED - ' + str(s['reason'])}"
+                       f" · total {s['total_deg']} deg · {s['duration_s']} s")
+
+    no = oturum.pp_onizleme_kaydet(
+        {"success": True, "kind": "pickplace",
+         "start_joints": secenekler[0]["start_joints"],
+         "options": secenekler,
+         # Kayit (/api/pickplace/save_last) icin: calistirilan zincirin
+         # yeniden planlanabilmesi bunlarla + secenegin pre_pick/pre_place'i.
+         "approach_mm": yaklasma_mm, "grasp_depth_mm": derinlik_mm,
+         **bilgi},
+        [z for _, _, z in adaylar], pp)
+    job.log.append(f"stored as preview #{no}")
+    return {"success": True}
+
+
+def _pp_nesne_bilgisi(arm, boyut, kavrama_ofseti, derinlik_mm, yuzey_mm, birakma_mm) -> dict[str, Any]:
+    """3D gorunum icin (yalnizca gorsel): nesnenin kavranip tasinmasi ve
+    birakma yeri. Kutu PLANLAYICININ kutusu: MTC ile ayni fonksiyon
+    (safety.kavranan_nesne_kutusu_merkezi), uc linkin eksenlerinde."""
+    from fairino_cobot.movecobot import GRIPPER_STROKE_M
+    from fairino_cobot.safety import kavranan_nesne_kutusu_merkezi
+
+    return {
+        "size_mm": [float(v) for v in boyut],
+        "tip_link": arm.tip_link,
+        "grip_point_tip_m": [float(v) for v in kavrama_ofseti],
+        "center_tip_m": [float(v) for v in kavranan_nesne_kutusu_merkezi(
+            kavrama_ofseti, boyut[2], derinlik_mm)],
+        "grasp_depth_mm": derinlik_mm,
+        "place_surface_mm": None if yuzey_mm is None else [float(v) for v in yuzey_mm],
+        "place_point_mm": None if birakma_mm is None else [float(v) for v in birakma_mm],
+        "stroke_mm": GRIPPER_STROKE_M * 1000.0,
+    }
+
+
 @app.post("/api/pickplace/preview")
 def pp_onizle(istek: PPOnizleme) -> dict[str, Any]:
     """Tespit edilen bir nesne icin TAM pick & place zincirini (yaklas ->
@@ -901,26 +1081,15 @@ def pp_onizle(istek: PPOnizleme) -> dict[str, Any]:
     secenekler listede durur, kullanici baskasini secebilir.
     """
     from fairino_cobot.movecobot import GRIPPER_STROKE_M
-    from fairino_cobot.mtc_yolu import asamalari_birlestir, tasima_araligi, toplam_eklem_yolu_deg
     from fairino_cobot.tcp_cercevesi import birakma_noktasi
-    from fairino_cobot.yol_onizleme import secenek_ozeti
 
     def calistir(job):
         arm = oturum.arm
 
-        def basarisiz(reason, details):
-            # Path preview'daki "success: false de KAYDEDILIR" deseniyle ayni
-            # (server.py:370-380, yollari_onizle) - kullanicı sonucu #pnp-info'da
-            # gorsun, yalnizca genel log'da degil.
-            oturum.pp_onizleme_kaydet(
-                {"success": False, "reason": reason, "details": details, "options": []},
-                [], None)
-            return {"success": False, "reason": reason, "details": details}
-
         if istek.grasp_depth_mm >= istek.object_h_mm:
-            return basarisiz("invalid_grasp_depth",
-                             f"Grasp depth {istek.grasp_depth_mm:g} mm must be smaller than the "
-                             f"object height {istek.object_h_mm:g} mm.")
+            return _pp_basarisiz("invalid_grasp_depth",
+                                 f"Grasp depth {istek.grasp_depth_mm:g} mm must be smaller than the "
+                                 f"object height {istek.object_h_mm:g} mm.")
         obj_w = istek.object_w_mm if istek.object_w_mm else GRIPPER_STROKE_M * 1000
         boyut = [obj_w, istek.object_d_mm, istek.object_h_mm]
         # MTC'nin ik_frame'i = parmak uclari; kutu ve derinlik de ona gore.
@@ -938,22 +1107,12 @@ def pp_onizle(istek: PPOnizleme) -> dict[str, Any]:
         # docstring'i.
         pp = oturum.pp
         if pp is None:
-            return basarisiz("mtc_init_failed", "MTC was not initialized at startup (see server log).")
+            return _pp_basarisiz("mtc_init_failed",
+                                 "MTC was not initialized at startup (see server log).")
         # Hiz/ivme = Ayarlar penceresi (ust cubuk), diger hareketlerle ayni.
         # arm.speed_pct acilis varsayilanidir, pencere onu degistirmez.
         hiz, ivme = _kol_hizi()
         pp.hizlari_guncelle(hiz, ivme)
-
-        # Her uygun cift bulundugunda O ANIN zinciri saklanir: pp.son_zincir
-        # bir sonraki planlamada UZERINE YAZILIR, sonradan okunamaz.
-        zincirler: list[list[Any]] = []
-
-        def zincir_planla(p, q):
-            if not pp.zinciri_onceden_planla(p, q, istek.approach_mm, boyut,
-                                             kavrama_ofseti, istek.grasp_depth_mm):
-                return False
-            zincirler.append(list(pp.son_zincir))
-            return True
 
         # STANDART MTC SECIMI (24 Eylul, kullanici istegi): kol duruslarini
         # robotun SDK IK'sindan toplayip ciftlemek yerine MTC'nin kendi
@@ -964,80 +1123,24 @@ def pp_onizle(istek: PPOnizleme) -> dict[str, Any]:
         # iki yonden secilir (nesne kavrandigi yonelimle birakilir).
         rz = istek.grasp_rpy[2]
         rz_listesi = [_aci_norm(rz), _aci_norm(rz + 180.0)]
-        kol_baslangici = arm.get_current_state()["joints_deg"]
         adaylar_std = pp.standart_ciftleri_bul(
             istek.grasp_point, birakma, rz_listesi, istek.approach_mm, boyut,
             kavrama_cercevesi, istek.grasp_depth_mm, en_fazla=istek.max_options)
         job.log.append(f"standard MTC: {len(adaylar_std)} cheapest arm configuration pair(s) "
                        f"(gripper rz {rz_listesi[0]:.1f} / {rz_listesi[1]:.1f})")
-        ciftler: list[tuple[list[float], list[float]]] = []
-        cift_rz: list[float | None] = []
-        for pre_pick, pre_place, maliyet in adaylar_std:
-            job.log.append(f"  MTC cost {maliyet:.3f}: pre_pick j1={pre_pick[0]:.1f}, "
-                           f"pre_place j1={pre_place[0]:.1f}")
-            if zincir_planla(pre_pick, pre_place):
-                ciftler.append((pre_pick, pre_place))
-                cift_rz.append(None)
-        if not ciftler:
-            return basarisiz("no_feasible_pick_place_pair",
-                             "MTC found no pick & place solution for this object and place "
-                             "pose. Robot did not move.")
+        for _, _, maliyet in adaylar_std:
+            job.log.append(f"  MTC cost {maliyet:.3f}")
 
-        # (maliyet, ozet, zincir) - maliyet = yolun toplam eklem donusu.
-        adaylar: list[tuple[float, dict[str, Any], list[Any]]] = []
-        for (pre_pick, pre_place), zincir, rz_al in zip(ciftler, zincirler, cift_rz):
-            asamalar = [pp.cozum_asamalari(cozum) for _, cozum in zincir]
-            noktalar, zamanlar, bilgi = asamalari_birlestir(asamalar, bosluk_s=0.8)
-            # Tasinan nesne de kontrole giriyor (zemin + self-collision):
-            # kutu, kavrama derinligine gore parmak uclarinin ALTINA
-            # yerlestirilir (MTC sahnesindeki kutuyla ayni yer).
-            problem = arm.mtc_yolunu_denetle(
-                noktalar, {"boyut_mm": boyut,
-                           "kavrama_derinligi_mm": istek.grasp_depth_mm,
-                           "ofset_m": kavrama_ofseti,
-                           "tasima_araligi": tasima_araligi(bilgi)}) if noktalar else None
-            # Yolun GERCEK baslangici: zincirin ilk gorevi CurrentState'ten
-            # (kolun plan anindaki durusu) basliyor - pre_pick "on-poza git"
-            # asamasinin HEDEFI. Eskiden buraya pre_pick veriliyordu; hem
-            # "en cok donen eklem" yanlis noktaya gore olculuyordu hem de
-            # /preview/run'daki bayatlik kontrolu kolu pre_pick'te sanip
-            # neredeyse her zaman preview_stale veriyordu.
-            yol_baslangici = noktalar[0] if noktalar else list(kol_baslangici)
-            maliyet = toplam_eklem_yolu_deg(noktalar)
-            ozet = secenek_ozeti(len(adaylar) + 1, "", "MTC", yol_baslangici, noktalar,
-                                 zamanlar, problem, noktalar[-1] if noktalar else None)
-            ozet["stages"] = bilgi
-            ozet["start_joints"] = [round(float(v), 3) for v in yol_baslangici]
-            ozet["pre_pick_joints"] = [round(float(v), 2) for v in pre_pick]
-            ozet["pre_place_joints"] = [round(float(v), 2) for v in pre_place]
-            ozet["total_deg"] = None if not math.isfinite(maliyet) else round(maliyet, 1)
-            ozet["grasp_rz"] = None if rz_al is None else round(rz_al, 1)
-            adaylar.append((maliyet, ozet, zincir))
-
-        # EN KISA YOL BASA: once calistirilabilir olanlar (reddedilen bir yol
-        # kisa olsa da secilemez), sonra toplam eklem yolu kucukten buyuge.
-        adaylar.sort(key=lambda a: (not a[1]["ok"], a[0]))
-        secenekler = []
-        for sira, (_, ozet, _) in enumerate(adaylar, start=1):
-            ozet["index"] = sira
-            ozet["label"] = ("Shortest chain" if sira == 1 and ozet["ok"]
-                             else f"Alternative chain {sira}")
-            secenekler.append(ozet)
-        for s in secenekler:
-            job.log.append(f"option {s['index']}: {'runnable' if s['ok'] else 'REJECTED - ' + str(s['reason'])}"
-                           f" · total {s['total_deg']} deg · {s['duration_s']} s")
-
-        no = oturum.pp_onizleme_kaydet(
-            {"success": True, "kind": "pickplace",
-             "start_joints": secenekler[0]["start_joints"],
+        return _pp_zincirleri_planla_ve_sakla(
+            job, arm, pp, [(p, q) for p, q, _ in adaylar_std], boyut, kavrama_ofseti,
+            istek.approach_mm, istek.grasp_depth_mm,
+            {"grip_speed": istek.grip_speed, "grip_force": istek.grip_force,
+             "speed_pct": hiz, "accel_pct": ivme,
              # 3D gorunumdeki yesil hedef: kavrama noktasi (parmak uclari).
              "target_tcp": dict(zip(("x", "y", "z", "rx", "ry", "rz"),
                                     [*istek.grasp_point, *istek.grasp_rpy])),
-             "options": secenekler, "grip_speed": istek.grip_speed,
-             "grip_force": istek.grip_force, "speed_pct": hiz, "accel_pct": ivme},
-            [z for _, _, z in adaylar], pp)
-        job.log.append(f"stored as preview #{no}")
-        return {"success": True}
+             "object": _pp_nesne_bilgisi(arm, boyut, kavrama_ofseti, istek.grasp_depth_mm,
+                                         istek.place_pose[:3], birakma)})
 
     return _is_baslat("preview", "Plan pick & place chain", calistir)
 
@@ -1054,6 +1157,66 @@ def pp_onizleme_oku() -> dict[str, Any]:
 def pp_onizleme_sil() -> dict[str, Any]:
     oturum.pp_onizleme = None
     return {}
+
+
+def _pp_kayit_adayi(genel: dict[str, Any], secenek: dict[str, Any]) -> dict[str, Any] | None:
+    """Onizlenen zincirin bir seceneginden kayit ("pick_place_chain")
+    icerigi. Baslangic durusu KAYDEDILMEZ (kullanici istegi, 25 Eylul):
+    oynatmada zincir kolun O ANKI yerinden yeniden planlanir. Gerekli alan
+    eksikse (eski onizleme) None."""
+    nesne = genel.get("object") or {}
+    try:
+        return {
+            "pre_pick_joints": list(secenek["pre_pick_joints"]),
+            "pre_place_joints": list(secenek["pre_place_joints"]),
+            "approach_mm": float(genel["approach_mm"]),
+            "grasp_depth_mm": float(genel["grasp_depth_mm"]),
+            "object_size_mm": [float(v) for v in nesne["size_mm"]],
+            "grip_speed": int(genel["grip_speed"]),
+            "grip_force": int(genel["grip_force"]),
+            "speed_pct": genel.get("speed_pct"),
+            "accel_pct": genel.get("accel_pct"),
+            # Yalnizca 3D gorunum icin (oynatmada planlamayi etkilemez).
+            "target_tcp": genel.get("target_tcp"),
+            "place_surface_mm": nesne.get("place_surface_mm"),
+            "place_point_mm": nesne.get("place_point_mm"),
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+@app.get("/api/pickplace/last")
+def pp_son_calisan_oku() -> dict[str, Any]:
+    """Kaydedilebilir son pick & place calismasi; yoksa bos sozluk."""
+    return dict(oturum.pp_son_calisan or {})
+
+
+@app.post("/api/pickplace/save_last")
+def pp_son_calisani_kaydet(istek: PPSonKaydet) -> dict[str, Any]:
+    """Son BASARIYLA calistirilan onizlenmis pick & place zincirini kayitli
+    hareket olarak yazar ("pick_place_chain"). Robota bir sey gondermez.
+
+    Oynatma (/api/moves/{ad}/play) robotu DOGRUDAN hareket ettirmez: zincir
+    ayni pre_pick/pre_place duruslariyla kolun o anki yerinden yeniden
+    planlanir, ayni kontrollerden gecer ve Path preview'da gosterilir;
+    robot yalnizca "Run" ile hareket eder."""
+    from fairino_cobot.movecobot import load_moves, save_moves, valid_move_name
+
+    son = oturum.pp_son_calisan
+    if not son:
+        raise HTTPException(status_code=404,
+                            detail="No completed pick & place run to save. Run a planned one first.")
+    ok, hata = valid_move_name(istek.name)
+    if not ok:
+        raise HTTPException(status_code=400, detail=f"Invalid name: {hata}")
+    moves = load_moves()
+    if istek.name in moves and not istek.overwrite:
+        raise HTTPException(status_code=409, detail=f"'{istek.name}' already exists.")
+    kayit = {k: v for k, v in son.items() if k != "ran_at"}
+    moves[istek.name] = {"created": datetime.now().isoformat(timespec="seconds"),
+                         "type": "pick_place_chain", **kayit}
+    save_moves(moves)
+    return {"saved": istek.name}
 
 
 @app.post("/api/pickplace/preview/run")
@@ -1092,8 +1255,18 @@ def pp_onizlemeyi_calistir(istek: PPOnizlemeCalistir) -> dict[str, Any]:
     zincir = o["zincirler"][istek.option - 1]
     pp = o["pp"]
     g_speed, g_force = o["ozet"]["grip_speed"], o["ozet"]["grip_force"]
+    # Basariyla biterse kaydedilebilsin (/api/pickplace/save_last).
+    kayit_adayi = _pp_kayit_adayi(o["ozet"], ozet)
 
     def calistir(job):
+        oturum.pp_son_calisan = None
+        sonuc = _pp_zinciri_yurut(job)
+        if sonuc.get("success") and kayit_adayi is not None:
+            oturum.pp_son_calisan = {**kayit_adayi,
+                                     "ran_at": datetime.now().isoformat(timespec="seconds")}
+        return sonuc
+
+    def _pp_zinciri_yurut(job):
         arm = oturum.arm
         gripper = oturum.gripper
         with arm.sdk_lock:

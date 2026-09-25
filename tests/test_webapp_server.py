@@ -288,3 +288,121 @@ def test_hazir_degilken_reddediliyor(monkeypatch):
         server.tcp_baz(server.TcpFark(dz_mm=10))
 
     assert hata.value.status_code == 503
+
+
+# --- Onizlenmis pick & place zincirinin kaydi (pick_place_chain) ------------
+
+SON_CALISMA = {
+    "pre_pick_joints": [1.0] * 6, "pre_place_joints": [2.0] * 6,
+    "approach_mm": 90.0, "grasp_depth_mm": 20.0, "object_size_mm": [18.0, 86.0, 48.0],
+    "grip_speed": 50, "grip_force": 5, "speed_pct": 10.0, "accel_pct": 10.0,
+    "target_tcp": None, "place_surface_mm": [-400.0, 330.0, 0.0],
+    "place_point_mm": [-400.0, 330.0, 28.1], "ran_at": "2026-09-25T18:00:00",
+}
+
+
+def test_zincir_kaydi_baslangic_durusu_olmadan_yaziliyor(kol, monkeypatch):
+    depo = _sahte_movecobot(monkeypatch)
+    monkeypatch.setattr(server.oturum, "pp_son_calisan", dict(SON_CALISMA))
+
+    server.pp_son_calisani_kaydet(server.PPSonKaydet(name="paket"))
+
+    k = depo["moves"]["paket"]
+    assert k["type"] == "pick_place_chain"
+    assert k["pre_pick_joints"] == [1.0] * 6 and k["pre_place_joints"] == [2.0] * 6
+    assert k["approach_mm"] == 90.0 and k["grasp_depth_mm"] == 20.0
+    assert "start_joints" not in k and "ran_at" not in k
+    assert kol.cagrilar == [], "kaydetmek robotu hareket ettirmemeli"
+
+
+def test_zincir_kaydi_calisma_yokken_reddediliyor(kol, monkeypatch):
+    depo = _sahte_movecobot(monkeypatch)
+    monkeypatch.setattr(server.oturum, "pp_son_calisan", None)
+
+    with pytest.raises(server.HTTPException) as hata:
+        server.pp_son_calisani_kaydet(server.PPSonKaydet(name="paket"))
+
+    assert hata.value.status_code == 404
+    assert depo["moves"] == {}
+
+
+def test_zincir_kaydi_ayni_isim_onaysiz_uzerine_yazilmiyor(kol, monkeypatch):
+    depo = _sahte_movecobot(monkeypatch, moves={"paket": {"steps": []}})
+    monkeypatch.setattr(server.oturum, "pp_son_calisan", dict(SON_CALISMA))
+
+    with pytest.raises(server.HTTPException) as hata:
+        server.pp_son_calisani_kaydet(server.PPSonKaydet(name="paket"))
+
+    assert hata.value.status_code == 409
+    assert depo["moves"]["paket"] == {"steps": []}
+
+
+def test_kayit_adayi_secenegin_duruslarini_aliyor():
+    genel = {"approach_mm": 90.0, "grasp_depth_mm": 20.0, "grip_speed": 50, "grip_force": 5,
+             "speed_pct": 10.0, "accel_pct": 10.0, "target_tcp": None,
+             "object": {"size_mm": [18.0, 86.0, 48.0], "place_surface_mm": [0.0, 0.0, 0.0],
+                        "place_point_mm": [0.0, 0.0, 28.1]}}
+    secenek = {"pre_pick_joints": [1.0] * 6, "pre_place_joints": [2.0] * 6,
+               "start_joints": [9.0] * 6}
+
+    k = server._pp_kayit_adayi(genel, secenek)
+
+    assert k["pre_pick_joints"] == [1.0] * 6 and k["pre_place_joints"] == [2.0] * 6
+    assert "start_joints" not in k
+    assert server._pp_kayit_adayi({}, secenek) is None, "eksik onizleme kaydedilemez"
+
+
+class SahtePP:
+    """PickPlace yerine: planlama cagrilarini kaydeder, robota dokunmaz."""
+
+    def __init__(self):
+        self.planlar = []
+        self.hizlar = []
+        self.son_zincir = None
+
+    def hizlari_guncelle(self, hiz, ivme):
+        self.hizlar.append((hiz, ivme))
+
+    def zinciri_onceden_planla(self, pre_pick, pre_place, yaklasma, boyut, ofset, derinlik):
+        self.planlar.append((pre_pick, pre_place, yaklasma, boyut, derinlik))
+        self.son_zincir = [("gorev", i) for i in range(3)]
+        return True
+
+    def cozum_asamalari(self, cozum):
+        adlar = ["j1", "j2", "j3", "j4", "j5", "j6"]
+        return [{"ad": f"asama{cozum}", "joint_names": adlar,
+                 "noktalar": [([0.0] * 6, 0.0), ([0.01 * (cozum + 1)] * 6, 1.0)]}]
+
+    def zinciri_calistir(self, sira, zincir=None):
+        raise AssertionError("oynatma zinciri CALISTIRMAMALI, yalnizca planlamali")
+
+
+def test_kayitli_zincir_oynatma_robotu_hareket_ettirmeden_onizleme_uretiyor(kol, monkeypatch):
+    """pick_place_chain oynatmasi: eski run_pick_place yolu KULLANILMAZ, zincir
+    kayittaki duruslarla planlanip Path preview'a konur; robot hareket etmez."""
+    def run_pick_place(*a, **k):
+        raise AssertionError("run_pick_place cagrilmamali")
+
+    depo = _sahte_movecobot(monkeypatch, run_pick_place=run_pick_place,
+                            moves={"paket": {"type": "pick_place_chain",
+                                             **{k: v for k, v in SON_CALISMA.items()
+                                                if k != "ran_at"}}})
+    sys.modules["fairino_cobot.movecobot"].GRIPPER_STROKE_M = 0.040
+    pp = SahtePP()
+    monkeypatch.setattr(server.oturum, "pp", pp)
+    monkeypatch.setattr(server.oturum, "pp_onizleme", None)
+    kol.tip_link = "wrist3_link"
+    kol.kavrama_ik_cercevesi = lambda: ((0.0, 0.0, 0.218), (0.0, 0.0, 0.0, 1.0))
+    kol.mtc_yolunu_denetle = lambda noktalar, nesne=None: None
+
+    server.oynat("paket", server.OynatIstek(speed_pct=20))
+    j = _isi_bekle()
+
+    assert j["ok"] is True
+    assert kol.cagrilar == [], "oynatma yalnizca planlamali"
+    assert pp.planlar == [([1.0] * 6, [2.0] * 6, 90.0, [18.0, 86.0, 48.0], 20.0)]
+    assert pp.hizlar == [(20, 10.0)], "panel hizi doluysa o, bossa kayittaki"
+    o = server.pp_onizleme_oku()
+    assert o["saved_name"] == "paket" and o["options"][0]["ok"] is True
+    assert o["options"][0]["pre_pick_joints"] == [1.0] * 6
+    assert depo["moves"]["paket"]["type"] == "pick_place_chain", "kayit degismemeli"

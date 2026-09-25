@@ -366,14 +366,20 @@ async function hareketleriYukle() {
     const adEl = el("span", "name", m.name);
     adEl.title = m.name;   // uzun ad CSS'te kisaltiliyor, tami ustune gelince gorunsun
     satir.appendChild(adEl);
-    if (m.type === "pick_place") satir.appendChild(el("span", "tag", "pick & place"));
+    const zincir = m.type === "pick_place_chain";
+    if (m.type === "pick_place" || zincir) satir.appendChild(el("span", "tag", "pick & place"));
     else satir.appendChild(el("span", "meta", m.steps + (m.steps === 1 ? " step" : " steps")));
     satir.appendChild(el("span", "sep"));
 
-    const oynat = el("button", "primary", "Play");
+    // Web'den kaydedilen zincir (pick_place_chain) dogrudan oynatilmaz: sunucu
+    // kolun o anki yerinden planlar, Path preview'da gosterir; Run ile calisir.
+    const oynat = el("button", "primary", zincir ? "Preview" : "Play");
     oynat.onclick = async () => {
-      const ok = await onayla("Play move",
-        `'${m.name}' will be played. The robot will move — keep the emergency stop within reach.`,
+      const ok = await onayla(zincir ? "Preview saved pick & place" : "Play move",
+        zincir
+          ? `'${m.name}' will be planned from where the arm is now and shown in Path preview. ` +
+            "The robot does not move until you press Run this path there."
+          : `'${m.name}' will be played. The robot will move — keep the emergency stop within reach.`,
         oynat);
       if (!ok) return;
       const sayi = (id) => { const v = parseFloat($(id).value); return isNaN(v) ? null : v; };
@@ -947,7 +953,9 @@ function ppPanelCiz() {
     ppSecenek = secenekler.find((s) => s.ok) || secenekler[0] || null;
   }
   const s = ppSecenek;
-  const bilgi = [`Pick & place — ${secenekler.length} option(s), shortest total joint travel first`];
+  const bilgi = [(ppOnizleme.saved_name ? `Saved pick & place '${ppOnizleme.saved_name}'`
+                                        : "Pick & place") +
+                 ` — ${secenekler.length} option(s), shortest total joint travel first`];
   if (ppOnizleme.speed_pct != null) {
     bilgi.push(`planned at speed ${ppOnizleme.speed_pct}% · acceleration ${ppOnizleme.accel_pct}%`);
   }
@@ -1013,7 +1021,48 @@ async function ppOnizlemeYukle(beklenenId) {
   ppOnizlemeCiz();
 }
 
+// Son BASARIYLA calisan onizlenmis zincir kaydedilebilir (sunucu tutar,
+// /api/pickplace/save_last). Baslangic durusu kaydedilmez: oynatma zinciri
+// kolun o anki yerinden planlayip Path preview'da gosterir, robot Run ile
+// hareket eder.
+let gosterilenSonCalisma = undefined;
+function ppKayitGoster(sonCalisma) {
+  if (sonCalisma === gosterilenSonCalisma) return;
+  gosterilenSonCalisma = sonCalisma;
+  $("#pnp-save").hidden = !sonCalisma;
+  $("#pnp-save-info").textContent = sonCalisma
+    ? `Last completed pick & place: ${sonCalisma}. The start position is not saved — ` +
+      "playing it plans the same chain from where the arm is and shows it in Path preview; " +
+      "the robot moves only when you press Run this path."
+    : "";
+}
+
+function ppKayitHata(mesaj) {
+  $("#pnp-save-err").textContent = mesaj || "";
+  $("#pnp-save-err").hidden = !mesaj;
+}
+
+async function ppSonCalismayiKaydet() {
+  ppKayitHata("");
+  const ad = $("#pnp-save-name").value.trim();
+  if (!ad) { ppKayitHata("Enter a name."); return; }
+  const kaydet = (ustuneYaz) => api("/api/pickplace/save_last",
+    { method: "POST", body: { name: ad, overwrite: ustuneYaz } });
+  try {
+    await kaydet(false);
+  } catch (e) {
+    if (!/already exists/.test(e.message)) { ppKayitHata("Could not save: " + e.message); return; }
+    const ok = await onayla("Overwrite move", `'${ad}' already exists. Replace it?`, $("#pnp-save-btn"));
+    if (!ok) return;
+    try { await kaydet(true); } catch (e2) { ppKayitHata("Could not save: " + e2.message); return; }
+  }
+  yaz(`Pick & place saved as '${ad}'`, "ok");
+  $("#pnp-save-name").value = "";
+  hareketleriYukle();
+}
+
 function kurNesneAlBirak() {
+  $("#pnp-save-btn").onclick = ppSonCalismayiKaydet;
   $("#pnp-cams").onchange = pnpKameralar;
   $("#pnp-detect").onclick = pnpAlgila;
   $("#pnp-slot").onchange = () => { pnpSlotSecildi = true; pnpSlotDegisti(); };
@@ -1155,6 +1204,7 @@ function durumCiz(s) {
   if ((s.pp_preview_id || null) !== gosterilenPpId) {
     ppOnizlemeYukle(s.pp_preview_id || null);
   }
+  ppKayitGoster(s.pp_last_run || null);
 
   // Acilis ekrani
   const ov = $("#overlay");

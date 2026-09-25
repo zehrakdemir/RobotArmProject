@@ -113,3 +113,32 @@ def test_parmak_acikligi_konumdan():
     assert parmak_acikligi_m(urdf, "parmak", 25) == pytest.approx(0.015)
     assert parmak_acikligi_m(urdf, "parmak", 150) == pytest.approx(0.0)   # kirpilir
     assert parmak_acikligi_m(urdf, "yok", 50) is None
+
+
+def test_carpisma_mesh_gorselle_ayni_mi():
+    """Padding kabugu yalnizca carpisma geometrisi gorsel mesh'le ayni olan
+    linklere cizilir (MoveIt padding'i carpisma geometrisine uygular)."""
+    urdf = """<robot name="r">
+  <link name="ayni">
+    <visual><origin xyz="0 0 0.1"/><geometry><mesh filename="package://d/a.STL"/></geometry></visual>
+    <collision><origin xyz="0 0 0.1" rpy="0 0 0"/><geometry><mesh filename="package://d/a.STL"/></geometry></collision>
+  </link>
+  <link name="baska_dosya">
+    <visual><geometry><mesh filename="package://d/a.STL"/></geometry></visual>
+    <collision><geometry><mesh filename="package://d/a_basit.STL"/></geometry></collision>
+  </link>
+  <link name="baska_origin">
+    <visual><geometry><mesh filename="package://d/a.STL"/></geometry></visual>
+    <collision><origin xyz="0 0 0.01"/><geometry><mesh filename="package://d/a.STL"/></geometry></collision>
+  </link>
+  <link name="kutu">
+    <visual><geometry><mesh filename="package://d/a.STL"/></geometry></visual>
+    <collision><geometry><box size="0.1 0.1 0.1"/></geometry></collision>
+  </link>
+  <link name="yalniz_gorsel">
+    <visual><geometry><mesh filename="package://d/a.STL"/></geometry></visual>
+  </link>
+</robot>"""
+    sonuc = {link["name"]: link["collision_mesh_is_visual"] for link in urdf_ozeti(urdf)["links"]}
+    assert sonuc == {"ayni": True, "baska_dosya": False, "baska_origin": False,
+                     "kutu": False, "yalniz_gorsel": False}

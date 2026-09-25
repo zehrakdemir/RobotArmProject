@@ -22,6 +22,31 @@ def _sayilar(metin: str | None, varsayilan: list[float]) -> list[float]:
     return [float(v) for v in metin.split()]
 
 
+def _carpisma_gorselle_ayni(link: ET.Element) -> bool:
+    """Linkin carpisma geometrisi gorsel mesh'inin AYNISI mi (ayni dosya,
+    olcek ve origin)? Gorunum link padding kabugunu yalnizca bu linklere
+    cizer: MoveIt padding'i carpisma geometrisine uygular, gorunum ise gorsel
+    mesh'i yukler. Carpisma geometrisi olmayan (gripper modeli gibi yalnizca
+    gorsel) linkler False."""
+    gorsel, carpisma = link.find("visual"), link.find("collision")
+    if gorsel is None or carpisma is None:
+        return False
+    gm, cm = gorsel.find("geometry/mesh"), carpisma.find("geometry/mesh")
+    if gm is None or cm is None or not gm.get("filename"):
+        return False
+    if gm.get("filename") != cm.get("filename"):
+        return False
+    if _sayilar(gm.get("scale"), [1.0] * 3) != _sayilar(cm.get("scale"), [1.0] * 3):
+        return False
+    go, co = gorsel.find("origin"), carpisma.find("origin")
+    for anahtar in ("xyz", "rpy"):
+        a = _sayilar(go.get(anahtar) if go is not None else None, [0.0] * 3)
+        b = _sayilar(co.get(anahtar) if co is not None else None, [0.0] * 3)
+        if a != b:
+            return False
+    return True
+
+
 def urdf_ozeti(urdf_metni: str) -> dict:
     """URDF'ten linklerin gorsel mesh'i ve eklemlerin kinematik zinciri.
 
@@ -46,6 +71,7 @@ def urdf_ozeti(urdf_metni: str) -> dict:
             renk = gorsel.find("material/color")
             if renk is not None:
                 kayit["rgba"] = _sayilar(renk.get("rgba"), [1.0, 1.0, 1.0, 1.0])
+        kayit["collision_mesh_is_visual"] = _carpisma_gorselle_ayni(link)
         linkler.append(kayit)
 
     eklemler = []
