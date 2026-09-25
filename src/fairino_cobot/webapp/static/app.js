@@ -584,6 +584,7 @@ function secenekSatiri(s, secili, sec) {
   // total_deg yalnizca MTC zincirlerinde var: yolun TOPLAM eklem donusu,
   // siralama olcusu ("en kisa yol" - bkz. mtc_yolu.toplam_eklem_yolu_deg).
   if (s.total_deg !== undefined && s.total_deg !== null) bilgi.push(`total ${s.total_deg}°`);
+  if (s.grasp_rz !== undefined && s.grasp_rz !== null) bilgi.push(`rz ${s.grasp_rz}°`);
   if (s.max_joint && s.max_deg !== null) bilgi.push(`max ${s.max_joint} ${s.max_deg}°`);
   if (s.duration_s !== null) bilgi.push(`${s.duration_s} s`);
   satir.appendChild(el("span", "meta", bilgi.join(" · ")));
@@ -597,6 +598,9 @@ function secenekSatiri(s, secili, sec) {
 }
 
 function onizlemeCiz() {
+  // Pick & place onizlemesi de BU panelde gosterilir (kullanici istegi,
+  // 24 Eylul); sunucu ikisini karsilikli disliyor.
+  if (ppOnizleme) { ppPanelCiz(); return; }
   const kap = $("#pv-options");
   kap.innerHTML = "";
   const planliyor = sonDurum.job && sonDurum.job.running && sonDurum.job.kind === "preview";
@@ -660,6 +664,15 @@ function kurOnizleme() {
   };
 
   $("#pv-clear").onclick = async () => {
+    if (ppOnizleme) {
+      try {
+        await api("/api/pickplace/preview", { method: "DELETE" });
+        onizlemeHata("");
+        yaz("Pick & place plan discarded");
+        ppOnizlemeYukle(null);
+      } catch (e) { onizlemeHata("Could not discard: " + e.message); }
+      return;
+    }
     try {
       await api("/api/preview", { method: "DELETE" });
       onizlemeHata("");
@@ -669,6 +682,7 @@ function kurOnizleme() {
   };
 
   $("#pv-run").onclick = async () => {
+    if (ppOnizleme) { ppCalistir(); return; }
     if (!onizleme || !seciliSecenek || !seciliSecenek.ok) return;
     const s = seciliSecenek;
     const ok = await onayla("Run previewed path",
@@ -695,6 +709,50 @@ function kurOnizleme() {
 // etmeden planlar; 3D gorunumde (viewer.js, ayni "onizleme-secimi" olayi -
 // bkz. secimiBildir) gosterilir. Yalnizca "Run this plan" ve onaydan sonra
 // robot hareket eder; calistirilan zincir ekranda gosterilenin AYNISI.
+
+// Parmak uclari TCP'nin kac mm altinda. 17 Eylul: parmak masaya degerken TCP
+// z = 18,7-20,1 mm; masanin z=0 oldugu varsayimiyla. Kullanici bunu baz aldi
+// (24 Eylul); masa z'si ayrica olculmedi.
+const PARMAK_UCU_MM = 19;
+
+// Masa ust yuzunun robot tabanindaki z'si. Tespitin merkez z'si el-goz
+// kalibrasyonundan ~80 mm yuksek geliyor (24 Eylul: tespit ust yuz 131,
+// kullanici ~50 dedi, olculen yukseklik 48); yukseklik ise masa duzlemine
+// uzakliktan olculdugu icin el-goz'den etkilenmiyor. Ust yuz = masa + yukseklik.
+// 0: yukaridaki 19 mm ile ayni varsayim (masa = robot tabani duzlemi).
+const MASA_Z_MM = 0;
+// Birakmada nesnenin alti masanin bu kadar ustunde kalir: MTC demo'sunun
+// place_surface_offset'i (0,1 mm) + link padding (6 mm, GUNCEL_DURUM §6).
+// Ilistirilen nesne padding'i aliyor; yalniz 0,1 mm ile birakma IK'si
+// "floor - grasped_object" carpismasiyla dusuyordu (24 Eylul, olculdu).
+const BIRAKMA_PAYI_MM = 6.1;
+
+// Tespitin x/y'sine eklenen duzeltme (taban, mm). 24 Eylul olcumu: paket
+// Detect'in (-400,4; 202,0) noktasindan kavranip AYNI yere birakildi -
+// parmaklar paketi TCP'nin altina ortaladi - ve Detect paketi (-400,2;
+// 213,0) gosterdi -> kapanma yonunde (burada taban y) +10,9 mm hata.
+// Dogrulama turu (duzeltilmis noktadan kavra/birak): TCP y 201,6, Detect
+// 211,7 -> +10,2 mm, paket ~1 mm kaydi. Deger iki olcumun ortalamasi.
+// x bu yontemle olculemez (uzun eksende ortalama yok), 0 birakildi. El-goz
+// masayi ~2,6° egik goruyor: hata konuma gore degisir, bu deger YALNIZCA o
+// bolgede olculdu. Kalici cozum el-goz kalibrasyonunu yenilemek.
+const TESPIT_XY_DUZELTME_MM = [0, -10.5];
+function duzeltXY(p) { return [p[0] + TESPIT_XY_DUZELTME_MM[0], p[1] + TESPIT_XY_DUZELTME_MM[1]]; }
+
+// Parmaklar tool X'ine gore 46,37° donuk (Zehra README YAW_CORRECTION_DEG;
+// 21 Eylul kullanici gozuyle dogruladi, robotla olculmedi - GUNCEL_DURUM
+// §5 Gripper). Vision'in rz'si kapanma yonu (kisa yatay eksen, taban
+// cercevesi); box.yaw_deg masa duzlemi cercevesinde, KULLANILMAZ.
+const YAW_DUZELTME_DEG = -46.37;
+
+function aciNorm(a) { return ((a + 180) % 360 + 360) % 360 - 180; }
+
+function kavramaRpy(nesne) {
+  // rz ile rz+180 (paralel gripper simetrik) SUNUCUDA ikisi de planlanir,
+  // en kisa yol secilir (bkz. server.py pp_onizle).
+  const rz = aciNorm(nesne.grasp.rpy_deg[2] + YAW_DUZELTME_DEG);
+  return [180, 0, Math.round(rz * 10) / 10];
+}
 
 let pnpNesneler = [];
 let pnpSeciliNesne = null;
@@ -744,7 +802,10 @@ function pnpBirakmaPozu(nesne) {
   const y = sayiAlan($("#pnp-place-y"));
   const z = sayiAlan($("#pnp-place-z"));
   if (x === null || y === null || z === null) return null;
-  return [x, y, z, ...nesne.grasp.rpy_deg];
+  // +0,1 mm: MTC demo'sundaki place_surface_offset (0.0001 m) - kavrama
+  // z'siyle birakilan nesnenin alti masaya DEGMESIN (degerse zemin
+  // carpismasi sayilir; izin yalnizca kaldirmada, bkz. pickplace.py).
+  return [x, y, z + BIRAKMA_PAYI_MM, ...kavramaRpy(nesne)];
 }
 
 async function pnpBilgiYukle() {
@@ -820,10 +881,14 @@ function pnpNesneleriCiz() {
   kap.innerHTML = "";
   pnpNesneler.forEach((o, i) => kap.appendChild(pnpNesneSatiri(o, i)));
   if (!pnpNesneler.length) kap.appendChild(el("div", "note", "No objects detected yet."));
+  // Kutu plandakiyle ayni yere cizilir: z = masa + yukseklik/2 (tespitin
+  // merkez z'si ~80 mm yuksek, bkz. MASA_Z_MM); yaw vision'in kapanma
+  // yonunden (box.yaw_deg masa duzlemi cercevesinde, taban degil).
   window.sonAlgilananNesneler = pnpNesneler.map((o) => ({
-    center_mm: o.box ? o.box.center_mm : [0, 0, 0],
+    center_mm: o.box ? [...duzeltXY(o.box.center_mm), MASA_Z_MM + o.box.size_mm[2] / 2]
+                     : [0, 0, 0],
     size_mm: o.box ? o.box.size_mm : [10, 10, 10],
-    yaw_deg: o.box ? o.box.yaw_deg : 0,
+    yaw_deg: o.grasp ? o.grasp.rpy_deg[2] - 90 : (o.box ? o.box.yaw_deg : 0),
     graspable: o.graspable,
     secili: o === pnpSeciliNesne,
   }));
@@ -858,9 +923,8 @@ async function pnpAlgila() {
   }
 }
 
+// Pick & place panelinde yalnizca kisa durum; secenekler Path preview'da.
 function ppOnizlemeCiz() {
-  const kap = $("#pnp-options");
-  kap.innerHTML = "";
   const planliyor = sonDurum.job && sonDurum.job.running && sonDurum.job.kind === "preview"
     && sonDurum.job.label === "Plan pick & place chain";
   if (!ppOnizleme) {
@@ -868,40 +932,75 @@ function ppOnizlemeCiz() {
     $("#pnp-info").textContent = planliyor
       ? "Planning pick & place chains… (the robot does not move)"
       : "No plan. Select a detected object and a place slot, then press “Plan pick & place”.";
-    $("#pnp-run").disabled = true;
-    secimiBildir();
-    return;
-  }
-  const secenekler = ppOnizleme.options || [];
-  if (!secenekler.length) {
-    // IK/MTC baslama noktasinda basarisiz oldu - hic secenek yok (bkz.
-    // server.py pp_onizle "basarisiz" yardimcisi, yollari_onizle ile ayni desen).
-    ppSecenek = null;
+  } else if (!(ppOnizleme.options || []).length) {
     $("#pnp-info").textContent =
       `No usable plan: ${ppOnizleme.reason || "rejected"}` +
       (ppOnizleme.details ? " — " + ppOnizleme.details : "");
-    $("#pnp-run").disabled = true;
-    secimiBildir();
-    return;
+  } else {
+    $("#pnp-info").textContent = "Plan ready — see Path preview above.";
   }
+  onizlemeCiz();
+}
+
+// Pick & place secenekleri Path preview panelinde (#pv-*), yol onizlemesiyle
+// ayni kartlarla.
+function ppPanelCiz() {
+  const kap = $("#pv-options");
+  kap.innerHTML = "";
+  const secenekler = ppOnizleme.options || [];
   // Sunucu secenekleri EN KISA YOL basta olacak sekilde siralar (toplam
-  // eklem donusu; bkz. server.py pp_onizle). Ilk cizimde ya da secenek
-  // listesi degistiginde en kisa calistirilabilir olan secili gelir.
+  // eklem donusu; bkz. server.py pp_onizle).
   if (!ppSecenek || !secenekler.includes(ppSecenek)) {
-    ppSecenek = secenekler.find((s) => s.ok) || secenekler[0];
+    ppSecenek = secenekler.find((s) => s.ok) || secenekler[0] || null;
   }
   const s = ppSecenek;
-  const satirlar = [`${secenekler.length} option(s) planned — shortest total joint travel first. ` +
-                    "Pick one to see it in the 3D view."];
-  if (s.stages && s.stages.length) {
-    satirlar.push(...s.stages.filter((a) => a.tip !== "sahne")
+  const bilgi = [`Pick & place — ${secenekler.length} option(s), shortest total joint travel first`];
+  if (ppOnizleme.speed_pct != null) {
+    bilgi.push(`planned at speed ${ppOnizleme.speed_pct}% · acceleration ${ppOnizleme.accel_pct}%`);
+  }
+  const h = ppOnizleme.target_tcp;
+  if (h) {
+    bilgi.push(`grasp TCP x=${h.x.toFixed(1)} y=${h.y.toFixed(1)} z=${h.z.toFixed(1)}  ` +
+      `rx=${h.rx.toFixed(1)} ry=${h.ry.toFixed(1)} rz=${h.rz.toFixed(1)}`);
+  }
+  if (!secenekler.length) {
+    bilgi.push(`No usable plan: ${ppOnizleme.reason || "rejected"}` +
+      (ppOnizleme.details ? " — " + ppOnizleme.details : ""));
+  }
+  if (s && s.stages && s.stages.length) {
+    bilgi.push(...s.stages.filter((a) => a.tip !== "sahne")
       .map((a) => `  ${a.t0}–${a.t1}s  ${a.tip === "gripper" ? "[gripper]" : a.ad}`));
   }
-  $("#pnp-info").textContent = satirlar.join("\n");
+  $("#pv-info").textContent = bilgi.join("\n");
   secenekler.forEach((o) => kap.appendChild(secenekSatiri(
-    o, ppSecenek, () => { ppSecenek = o; ppOnizlemeCiz(); })));
-  $("#pnp-run").disabled = !s.ok;
+    o, ppSecenek, () => { ppSecenek = o; ppPanelCiz(); })));
+  if (!secenekler.length) kap.appendChild(el("div", "note", "No options."));
+  $("#pv-run").disabled = !(s && s.ok);
+  $("#pv-clear").disabled = false;
   secimiBildir();
+}
+
+async function ppCalistir() {
+  if (!ppOnizleme || !ppSecenek || !ppSecenek.ok) return;
+  const s = ppSecenek;
+  const ok = await onayla("Run pick & place",
+    `The robot will follow plan ${s.index} (${s.label}) as shown: approach → grip → lift → ` +
+    "transfer → lower → release → retreat.\n" +
+    (s.total_deg !== undefined && s.total_deg !== null
+      ? `Total joint travel: ${s.total_deg}°.\n` : "") +
+    (s.max_joint && s.max_deg !== null ? `Largest joint rotation: ${s.max_joint} ${s.max_deg}°.\n` : "") +
+    "Keep the emergency stop within reach.",
+    $("#pv-run"));
+  if (!ok) return;
+  onizlemeHata("");
+  try {
+    await api("/api/pickplace/preview/run",
+              { method: "POST", body: { id: ppOnizleme.id, option: s.index } });
+    yaz("Run pick & place: sent");
+  } catch (e) {
+    onizlemeHata("Run rejected: " + e.message);
+    yaz("Run pick & place REJECTED: " + e.message, "err");
+  }
 }
 
 async function ppOnizlemeYukle(beklenenId) {
@@ -926,15 +1025,6 @@ function kurNesneAlBirak() {
   $("#pnp-detect").onclick = pnpAlgila;
   $("#pnp-slot").onchange = () => { pnpSlotSecildi = true; pnpSlotDegisti(); };
   pnpSlotDegisti();
-
-  $("#pnp-discard").onclick = async () => {
-    try {
-      await api("/api/pickplace/preview", { method: "DELETE" });
-      pnpHata("");
-      yaz("Pick & place plan discarded");
-      ppOnizlemeYukle(null);
-    } catch (e) { pnpHata("Could not discard: " + e.message); }
-  };
 
   $("#pnp-plan").onclick = async () => {
     pnpHata("");
@@ -964,18 +1054,28 @@ function kurNesneAlBirak() {
               `height ${yukseklik.toFixed(0)} mm.`);
       return;
     }
-    // Kavrama noktasi: tespitin kendi x,y'si; z ise OLCULEN UST YUZUN
-    // (center_z + yukseklik/2 - bkz. valiz-olcum-robot src/cell.py:223,
-    // ground_z = center_z - H/2) girilen kadar altinda. Vision'in kendi
-    // z'si nesne yuksekliginin ortasi (GRASP_HEIGHT_FRACTION=0.5), bizim
-    // kuralimiz degil (bkz. GUNCEL_DURUM §5 Gripper).
-    const ustZ = kutu.center_mm[2] + yukseklik / 2;
+    // Iki alan da PARMAK UCLARINA gore (kullanici karari, 24 Eylul):
+    //   Grasp depth: parmak uclari ust yuzun bu kadar altina iner.
+    //   Approach:    inise parmak uclari ust yuzun bu kadar ustundeyken
+    //                baslanir; kaldirma ayni noktaya geri cikar.
+    // Robota giden poz TCP'dir; parmak uclari TCP'nin PARMAK_UCU_MM altinda.
+    // Ust yuz = center_z + yukseklik/2 (bkz. valiz-olcum-robot src/cell.py:223).
+    if (derinlik <= PARMAK_UCU_MM) {
+      pnpHata(`Grasp depth must be greater than ${PARMAK_UCU_MM} mm ` +
+              `(finger tips are ${PARMAK_UCU_MM} mm below the TCP).`);
+      return;
+    }
+    const inis = approach + derinlik;   // TCP'nin duz inis/kalkis mesafesi
+    if (inis > 200) {
+      pnpHata(`Approach + grasp depth (${inis} mm) must be at most 200 mm.`);
+      return;
+    }
+    const ustZ = MASA_Z_MM + yukseklik;   // bkz. MASA_Z_MM
     const govde = {
-      grasp_point: [pnpSeciliNesne.grasp.point_mm[0], pnpSeciliNesne.grasp.point_mm[1],
-                    ustZ - derinlik],
-      grasp_rpy: pnpSeciliNesne.grasp.rpy_deg,
+      grasp_point: [...duzeltXY(pnpSeciliNesne.grasp.point_mm), ustZ - derinlik + PARMAK_UCU_MM],
+      grasp_rpy: kavramaRpy(pnpSeciliNesne),
       place_pose: slot,
-      approach_mm: approach,
+      approach_mm: inis,
       grip_speed: parseInt($("#pnp-gspeed").value, 10) || 50,
       grip_force: parseInt($("#pnp-gforce").value, 10) || 5,
       object_w_mm: boyut[1] || null,   // kapanma yonundeki kalinlik - TAHMIN (bkz. panel notu)
@@ -983,7 +1083,8 @@ function kurNesneAlBirak() {
       object_h_mm: yukseklik,
       // Carpisma kutusu bu degere gore TCP'nin ALTINA yerlestirilir
       // (kutu TCP'de ortalanirsa nesne oldugundan yukarida modellenir).
-      grasp_depth_mm: derinlik,
+      // TCP'nin (parmak ucunun degil) ust yuzden derinligi.
+      grasp_depth_mm: derinlik - PARMAK_UCU_MM,
       // Kac farkli kol yolu planlansin (sunucu en kisadan uzuna siralar).
       max_options: parseInt($("#pnp-nopts").value, 10) || 3,
     };
@@ -993,29 +1094,6 @@ function kurNesneAlBirak() {
     } catch (e) {
       pnpHata("Plan rejected: " + e.message);
       yaz("Pick & place plan REJECTED: " + e.message, "err");
-    }
-  };
-
-  $("#pnp-run").onclick = async () => {
-    if (!ppOnizleme || !ppSecenek || !ppSecenek.ok) return;
-    const s = ppSecenek;
-    const ok = await onayla("Run pick & place",
-      `The robot will follow plan ${s.index} (${s.label}) as shown: approach → grip → lift → ` +
-      "transfer → lower → release → retreat.\n" +
-      (s.total_deg !== undefined && s.total_deg !== null
-        ? `Total joint travel: ${s.total_deg}°.\n` : "") +
-      (s.max_joint && s.max_deg !== null ? `Largest joint rotation: ${s.max_joint} ${s.max_deg}°.\n` : "") +
-      "Keep the emergency stop within reach.",
-      $("#pnp-run"));
-    if (!ok) return;
-    pnpHata("");
-    try {
-      await api("/api/pickplace/preview/run",
-                { method: "POST", body: { id: ppOnizleme.id, option: s.index } });
-      yaz("Run pick & place: sent");
-    } catch (e) {
-      pnpHata("Run rejected: " + e.message);
-      yaz("Run pick & place REJECTED: " + e.message, "err");
     }
   };
 
@@ -1114,6 +1192,11 @@ async function gripperDurum() {
     kutu(kap, "fault", g.fault);
     kutu(kap, "position", g.position_pct, " %");
     kutu(kap, "speed", g.speed_pct, " %");
+    // 3D gorunumdeki parmak acikligi gripper'in okudugu konumdan (viewer.js).
+    if (Number.isFinite(g.position_pct)) {
+      window.sonGripperKonumu = g.position_pct;
+      window.dispatchEvent(new CustomEvent("gripper-durumu", { detail: g.position_pct }));
+    }
   } catch (_) { /* gripper okunamadi - arayuz kararmasin */ }
 }
 

@@ -359,13 +359,38 @@ class PickPlace:
         # floor". Zemin kontrolu KOLUN asagi inmesi icin var, taban icin
         # degil. Sadece bu tek cift serbest.
         ms.allowCollisions("floor", ["base_link"], True)
+        # Nesne masada duruyor: kavrama aninda alt yuzu zemine degiyor
+        # ("nesneyi ilistir (0/1): floor colliding with grasped_object", 24
+        # Eylul). MTC demo'su gibi (pick_place_task.cpp "allow collision
+        # (object,support)") yalnizca KALDIRMA suresince izin verilir;
+        # kaldirmadan sonra _zemin_iznini_kaldir geri alir.
+        ms.allowCollisions("grasped_object", ["floor"], True)
+        t.add(ms)
+
+    def _zemin_iznini_kaldir(self, t):
+        """MTC demo'sundaki "forbid collision (object,surface)": kaldirmadan
+        sonra tasinan nesne yine zeminle carpisma sayilir."""
+        ms = self.stages.ModifyPlanningScene("nesne-zemin iznini kaldir")
+        ms.allowCollisions("grasped_object", ["floor"], False)
         t.add(ms)
 
     def _nesneyi_ayir(self, t):
+        # Ayrilan nesne silinmez, gripper'in icinde DUNYA nesnesine donusur
+        # (bkz. GUNCEL_DURUM §7) ve gripper kutusu TCP'nin ~30 mm altina
+        # uzandigi icin ona degiyordu: "nesneyi ayir (0/1): grasped_object
+        # colliding with jodell_gripper" (24 Eylul canli log). Ayni stage'de
+        # removeObject detach'tan ONCE uygulaniyordu ("Tried to remove world
+        # object 'grasped_object', but it does not exist"), nesne kaliyordu.
+        # Cozum (kullanici onayi, 24 Eylul): ayirirken nesne <-> gripper
+        # temasina izin ver, nesneyi AYRI stage'de sil, izni geri al.
         ms = self.stages.ModifyPlanningScene("nesneyi ayir")
+        ms.allowCollisions("grasped_object", [self.tip, "jodell_gripper"], True)
         ms.detachObject("grasped_object", self.tip)
-        ms.removeObject("grasped_object")
         t.add(ms)
+        sil = self.stages.ModifyPlanningScene("nesneyi sil")
+        sil.removeObject("grasped_object")
+        sil.allowCollisions("grasped_object", ["jodell_gripper"], False)
+        t.add(sil)
 
     # ------------------------------------------------------------------
     # Asamalar (her biri TEK PARCA calisan bir MTC gorevi)
@@ -393,6 +418,7 @@ class PickPlace:
         t = self._task("tasi")
         self._nesneyi_ilistir(t, boyut_mm, tcp_offset_m, kavrama_derinligi_mm)
         self._move_relative_z(t, "nesneyi kaldir", -kaldirma_mm / 1000.0)
+        self._zemin_iznini_kaldir(t)
         # place_joints_deg burada BIRAKMA ON-POZU (bkz. alma_pozuna_yaklas):
         # once guvenli mesafeye gidilir, sonra duz cizgi inilir.
         self._move_to(t, "birakma on-pozuna git", place_joints_deg)
@@ -421,6 +447,123 @@ class PickPlace:
         self._move_to(t, "on-poza git", pre_pick_joints_deg)
         self._move_relative_z(t, "duz yaklas", +yaklasma_mm / 1000.0)
         return self._sadece_planla(t, "Alma on-planlama")
+
+    # ------------------------------------------------------------------
+    # STANDART MTC SECIMI (24 Eylul, kullanici istegi: "MTC normalde nasil
+    # yapiyorsa oyle")
+    # ------------------------------------------------------------------
+    # moveit_task_constructor demo/src/pick_place_task.cpp gibi: TEK gorev,
+    # kavrama/birakma pozlari uretilir (GeneratePose), her biri icin MoveIt IK
+    # birden fazla kol durusu verir (ComputeIK, max 8), aralari Connect ile
+    # planlanir, task.plan() TUM cozumleri uretir ve MTC onlari MALIYETE
+    # (varsayilan: yol uzunlugu) gore sirali tutar (storage.h "order solutions
+    # by their cost"). En ucuz cozumlerin kol duruslari alinir.
+    #
+    # Gripper MTC'nin DISINDA (Fairino SDK) oldugu icin calisan yol yine
+    # zinciri_onceden_planla'nin 3 gorevi: ayni on-poz eklem hedefleriyle,
+    # ayni deterministik planlayicilarla (JointInterpolation + CartesianPath)
+    # kurulur, onizlenen ve calistirilan yol o zincirdir.
+    def _hedef_ik(self, ad, xyz_mm, rz_deg, ik_frame, izlenen):
+        from geometry_msgs.msg import PoseStamped
+
+        from fairino_cobot.tcp_cercevesi import fairino_rpy_quat
+        gen = self.stages.GeneratePose(ad + " pozu")
+        gen.setMonitoredStage(izlenen)
+        ps = PoseStamped()
+        ps.header.frame_id = "base_link"   # taban (zemin kutusuyla ayni cerceve)
+        ps.pose.position.x, ps.pose.position.y, ps.pose.position.z = (v / 1000.0 for v in xyz_mm)
+        (ps.pose.orientation.x, ps.pose.orientation.y,
+         ps.pose.orientation.z, ps.pose.orientation.w) = fairino_rpy_quat(180.0, 0.0, rz_deg)
+        gen.pose = ps
+        ik = self.stages.ComputeIK(ad + " IK", gen)
+        ik.group = self.group
+        ik.ik_frame = ik_frame
+        ik.max_ik_solutions = 8          # demo: setMaxIKSolutions(8)
+        ik.min_solution_distance = 1.0   # demo: setMinSolutionDistance(1.0)
+        ik.properties.configureInitFrom(
+            self.core.Stage.PropertyInitializerSource.INTERFACE, ["target_pose"])
+        return ik
+
+    def standart_ciftleri_bul(self, kavrama_mm, birakma_mm, rz_listesi, yaklasma_mm,
+                              boyut_mm, tcp_cercevesi, kavrama_derinligi_mm=None,
+                              en_fazla=3):
+        """Tek MTC gorevini planlar (robot HAREKET ETMEZ) ve en ucuz cozumlerin
+        (pre_pick, pre_place) eklem hedeflerini (derece, joint_names
+        sirasinda) MALIYET sirasiyla doner: [(pre_pick, pre_place, maliyet)].
+
+        kavrama_mm / birakma_mm: TCP'nin kavrama ve birakma noktasi (x,y,z;
+        taban). rz_listesi: denenecek gripper yonleri (paralel gripper icin
+        rz ve rz+180). tcp_cercevesi: (oteleme_m, quaternion) - bkz.
+        CobotArm.tcp_ik_cercevesi."""
+        from geometry_msgs.msg import PoseStamped
+
+        ofset, q = tcp_cercevesi
+        ik_frame = PoseStamped()
+        ik_frame.header.frame_id = self.tip
+        ik_frame.pose.position.x, ik_frame.pose.position.y, ik_frame.pose.position.z = ofset
+        (ik_frame.pose.orientation.x, ik_frame.pose.orientation.y,
+         ik_frame.pose.orientation.z, ik_frame.pose.orientation.w) = q
+
+        t = self.core.Task()
+        t.name = "standart pick&place"
+        t.setRobotModel(self.robot_model)
+        t.add(self.stages.CurrentState("mevcut durum"))
+        # t.add() Python nesnesinin sahipligini MTC'ye devrediyor ("Python
+        # instance was disowned"); asamaya gorev uzerinden erisilir (demo:
+        # task["current state"]).
+        mevcut = t["mevcut durum"]
+
+        t.add(self.stages.Connect("alma pozuna git", [(self.group, self.jip)]))
+        self._move_relative_z(t, "duz yaklas", +yaklasma_mm / 1000.0)
+        alma = self.core.Alternatives("kavrama yonu")
+        for rz in rz_listesi:
+            alma.insert(self._hedef_ik(f"kavrama rz {rz:.1f}", kavrama_mm, rz, ik_frame, mevcut))
+        t.add(alma)
+        self._nesneyi_ilistir(t, boyut_mm, ofset, kavrama_derinligi_mm)
+        self._move_relative_z(t, "nesneyi kaldir", -yaklasma_mm / 1000.0)
+        izin = self.stages.ModifyPlanningScene("nesne-zemin iznini kaldir")
+        izin.allowCollisions("grasped_object", ["floor"], False)
+        t.add(izin)
+        izin = t["nesne-zemin iznini kaldir"]
+
+        t.add(self.stages.Connect("birakma pozuna git", [(self.group, self.jip)]))
+        self._move_relative_z(t, "duz in", +yaklasma_mm / 1000.0)
+        birak = self.core.Alternatives("birakma yonu")
+        for rz in rz_listesi:
+            birak.insert(self._hedef_ik(f"birakma rz {rz:.1f}", birakma_mm, rz, ik_frame, izin))
+        t.add(birak)
+        self._nesneyi_ayir(t)
+        self._move_relative_z(t, "geri cekil", -yaklasma_mm / 1000.0)
+
+        try:
+            t.plan()
+        except Exception as e:
+            print(f"  standart MTC planlama hatasi ({type(e).__name__}: {e})")
+            return []
+        print(f"  standart MTC: {len(t.solutions)} cozum")
+
+        sonuc, gorulen = [], set()
+        for cozum in t.solutions:   # MTC maliyete gore sirali tutuyor
+            hareketler = [a for a in self.cozum_asamalari(cozum) if a["noktalar"]]
+            # Hareketli asamalar: git, yaklas, kaldir, git, in, geri cekil.
+            if len(hareketler) != 6:
+                continue
+            pre_pick = self._son_nokta_deg(hareketler[0])
+            pre_place = self._son_nokta_deg(hareketler[3])
+            anahtar = tuple(round(v, 1) for v in pre_pick + pre_place)
+            if anahtar in gorulen:
+                continue
+            gorulen.add(anahtar)
+            sonuc.append((pre_pick, pre_place, float(cozum.cost)))
+            if len(sonuc) >= en_fazla:
+                break
+        return sonuc
+
+    def _son_nokta_deg(self, asama):
+        adlar = asama["joint_names"]
+        rad, _ = asama["noktalar"][-1]
+        eslem = dict(zip(adlar, rad))
+        return [math.degrees(eslem[j]) for j in self.joint_names]
 
     def zinciri_onceden_planla(self, pre_pick_joints_deg, pre_place_joints_deg,
                                yaklasma_mm, boyut_mm, tcp_offset_m,
@@ -457,6 +600,7 @@ class PickPlace:
         t2 = self._gorev_sabit_baslangicla("tasi-onplan", sol1.end.scene)
         self._nesneyi_ilistir(t2, boyut_mm, tcp_offset_m, kavrama_derinligi_mm)
         self._move_relative_z(t2, "nesneyi kaldir", -yaklasma_mm / 1000.0)
+        self._zemin_iznini_kaldir(t2)
         self._move_to(t2, "birakma on-pozuna git", pre_place_joints_deg)
         self._move_relative_z(t2, "duz in", +yaklasma_mm / 1000.0)
         sol2 = self._planla(t2, "2/3 tasima on-planlama")

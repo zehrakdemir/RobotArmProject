@@ -412,6 +412,7 @@ def apply_config_patches(config_target: Path):
     print(f"  ros2_controllers.yaml : {mod.patch_controllers(config_target, False)}")
     print(f"  joint_limits.yaml     : {mod.patch_joint_limits(config_target, False)}")
     print(f"  j3 pozisyon limiti    : {mod.patch_j3_position_limit(config_target, False)}")
+    print(f"  jodell gripper modeli : {mod.patch_gripper_model(config_target, False)}")
 
 
 def sync_shared_package(pkg_name: str, src: Path):

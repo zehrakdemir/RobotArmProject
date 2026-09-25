@@ -109,7 +109,6 @@
           <div style="height:8px"></div>
           <div class="row">
             <button id="pnp-detect" class="primary">Detect</button>
-            <button id="pnp-discard">Discard plan</button>
           </div>
           <div id="pnp-vision-err" class="note warn" role="alert" hidden></div>
           <div id="pnp-objects" role="listbox" aria-label="Detected objects"></div>
@@ -154,14 +153,13 @@
           <div style="height:8px"></div>
           <div class="row">
             <button id="pnp-plan">Plan pick &amp; place</button>
-            <button id="pnp-run" class="primary" disabled>Run this plan</button>
           </div>
           <div id="pnp-info" class="note" style="white-space:pre-wrap"></div>
-          <div id="pnp-options" role="listbox" aria-label="Pick and place path options"></div>
           <div id="pnp-err" class="note warn" role="alert" hidden></div>
           <div class="note">
             The chain (approach → grip → lift → transfer → lower → release → retreat) is
-            planned and shown in the 3D view above before anything moves. Collision check
+            planned and listed in Path preview above; pick an option there and run it. It
+            uses the speed and acceleration from the Settings window. Collision check
             covers the robot, gripper and floor only — real objects on the table are not
             in the model.
           </div>

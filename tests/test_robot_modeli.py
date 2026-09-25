@@ -1,5 +1,7 @@
 """3D gorunum icin robot modeli. Robot, ROS2 ve SDK GEREKTIRMEZ."""
 
+import pytest
+
 from fairino_cobot.robot_modeli import model_paketi, paket_ici_dosya, paket_uri_coz, urdf_ozeti
 
 URDF = """<?xml version="1.0"?>
@@ -81,3 +83,33 @@ def test_paket_bulunamazsa_mesh_yok():
 
     assert dosyalar == []
     assert all(link["mesh"] is None for link in ozet["links"])
+
+
+def test_gripper_parmak_limiti_ve_mimic_okunuyor():
+    """Prismatic parmak eklemi: 3D gorunum acikligi limit + mimic'ten hesaplar."""
+    urdf = """<robot name="r">
+      <link name="a"/><link name="b"/><link name="c"/>
+      <joint name="parmak" type="prismatic"><parent link="a"/><child link="b"/>
+        <axis xyz="0 0 1"/><limit lower="0" upper="0.02" effort="50" velocity="0"/></joint>
+      <joint name="parmak2" type="prismatic"><parent link="a"/><child link="c"/>
+        <axis xyz="0 0 1"/><limit lower="0" upper="0.02" effort="50" velocity="0"/>
+        <mimic joint="parmak" multiplier="1" offset="0"/></joint>
+    </robot>"""
+    e = {j["name"]: j for j in urdf_ozeti(urdf)["joints"]}
+    assert e["parmak"]["limit"] == {"lower": 0.0, "upper": 0.02}
+    assert e["parmak"]["mimic"] is None
+    assert e["parmak2"]["mimic"] == {"joint": "parmak", "multiplier": 1.0, "offset": 0.0}
+
+
+def test_parmak_acikligi_konumdan():
+    """position 0 = tam acik (limit ustu), 100 = tam kapali (limit alti)."""
+    from fairino_cobot.robot_modeli import parmak_acikligi_m
+    urdf = """<robot name="r"><link name="a"/><link name="b"/>
+      <joint name="parmak" type="prismatic"><parent link="a"/><child link="b"/>
+        <axis xyz="0 0 1"/><limit lower="0" upper="0.02" effort="50" velocity="0"/></joint>
+    </robot>"""
+    assert parmak_acikligi_m(urdf, "parmak", 0) == pytest.approx(0.02)
+    assert parmak_acikligi_m(urdf, "parmak", 100) == pytest.approx(0.0)
+    assert parmak_acikligi_m(urdf, "parmak", 25) == pytest.approx(0.015)
+    assert parmak_acikligi_m(urdf, "parmak", 150) == pytest.approx(0.0)   # kirpilir
+    assert parmak_acikligi_m(urdf, "yok", 50) is None

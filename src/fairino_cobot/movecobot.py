@@ -70,6 +70,10 @@ JOINT_NAMES = ["j1", "j2", "j3", "j4", "j5", "j6"]
 TIP_LINK = "wrist3_link"
 ALL_LINKS = ["shoulder_link", "upperarm_link", "forearm_link", "wrist1_link", "wrist2_link", "wrist3_link"]
 FLOOR_Z_M = 0.0
+# Gripper parmak eklemi (tools/apply_ros2_patches.py patch_gripper_model) ve
+# /joint_states yayin hizi (bkz. CobotArm._parmak_yayinini_baslat).
+PARMAK_EKLEMI = "jodell_finger_joint"
+PARMAK_YAYIN_HZ = 50.0
 
 # Jodell EPG40-050 gripper'in collision kutusu icin boyutlar. Bu gripper
 # fairino_description'daki URDF'de HIC modellenmemis (wrist3_link son link,
@@ -92,9 +96,13 @@ FLOOR_Z_M = 0.0
 # MARGIN_M ile).
 GRIPPER_WIDTH_M = 0.095
 GRIPPER_DEPTH_M = 0.06
-# Flanstan itibaren korunan TOPLAM mesafe 120mm + kullanicinin istedigi
-# +1cm ekstra pay (bkz. yukaridaki not - canli carpma sonrasi eklendi).
-GRIPPER_LENGTH_MARGIN_M = 0.01
+# Uzunluk ucundaki ek pay. 25 Eylul'e kadar +1cm idi (canli carpma sonrasi);
+# kullanici karariyla (25 Eylul, "guvenlik kutusunun z tarafi gripper'in
+# siniri olsun") 0: kutunun ucu = parmak ucu. Fairino'nun EPG40-050 CAD'inde
+# (fairino.support EPG40-050.zip, adaptor yok) parmak ucu flanstan 120,0 mm =
+# GRIPPER_LENGTH_FLOOR_M. 6 mm link/attached padding (LINK_PADDING_M) yine
+# uygulanir. XY genislik/derinlik payi DEGISMEDI.
+GRIPPER_LENGTH_MARGIN_M = 0.0
 # Gripper uzunlugu icin guvenlik tabani. TCP offset (GetTCPOffset(), canli
 # testte 100mm) collision boyutu icin GUVENILIR bir kaynak DEGIL - TCP bir
 # kinematik/kontrol referans noktasi (cogu paralel gripper'da cenelerin
@@ -812,6 +820,7 @@ class CobotArm:
         # Gripper carpisma kutusunun olculeri; _add_gripper_collision dolduruyor
         # (kutu sahneye eklenmezse None kalir ve gorunumde de cizilmez).
         self.gripper_kutusu = None
+        self._parmak_yayinini_baslat()
         _tlog("MoveItPy baslatiliyor (planlama pipeline'lari + robot modeli yukleniyor, "
               "bu genelde en uzun suren asama)...")
         self._moveit = MoveItPy(node_name=f"{node_name}_core", config_dict=_cfg)
@@ -2036,6 +2045,66 @@ class CobotArm:
                                 f"again - robot did not move.")}
         return self._yurut_ve_dogrula(plan_result)
 
+    def _parmak_yayinini_baslat(self):
+        """Gripper parmak eklemini (jodell_finger_joint, apply_ros2_patches)
+        /joint_states'e yayinlar - gripper'in ROS surucusu yok, standart
+        yolda bu isi surucu yapar.
+
+        NEDEN SART: eklem prismatic (aktif) oldugu icin MoveIt hareketten
+        once onun da guncel durumunu bekliyor; gelmezse HICBIR hareket
+        calismaz ("couldn't receive full current joint state",
+        trajectory_execution_manager.cpp:1010; passive_joint bunu
+        degistirmiyor, aktif eklemlerden yalniz mimic cikariliyor,
+        robot_model.cpp:268). Deger gripper'in OKUDUGU konum
+        (parmak_konumunu_guncelle); okuma gelene kadar 0 (kapali).
+        MoveItPy'den ONCE baslatilir ki acilista durum eksik kalmasin.
+        URDF'te eklem yoksa (baska model / gripper'siz) hicbir sey yapmaz."""
+        self.parmak_acikligi_m = 0.0
+        self._parmak_pub = None
+        if not self.robot_description_urdf or PARMAK_EKLEMI not in self.robot_description_urdf:
+            return
+        from sensor_msgs.msg import JointState
+
+        self._parmak_pub = self._node.create_publisher(JointState, "/joint_states", 10)
+
+        def yayinla():
+            m = JointState()
+            m.header.stamp = self._node.get_clock().now().to_msg()
+            m.name = [PARMAK_EKLEMI]
+            m.position = [float(self.parmak_acikligi_m)]
+            self._parmak_pub.publish(m)
+
+        # 50 Hz: MoveIt her dogrulamada "su andan sonraki" durumu bekliyor;
+        # yavas yayin her harekete o kadar gecikme ekler.
+        self._parmak_zamanlayici = self._node.create_timer(1.0 / PARMAK_YAYIN_HZ, yayinla)
+        print(f"Gripper parmak eklemi /joint_states'e yayinlaniyor ({PARMAK_EKLEMI}, "
+              f"{PARMAK_YAYIN_HZ:g} Hz).")
+
+    def parmak_konumunu_guncelle(self, konum_yuzde):
+        """Gripper'in okudugu konum (0 acik - 100 kapali) -> parmak eklemi."""
+        from fairino_cobot.robot_modeli import parmak_acikligi_m
+        if self._parmak_pub is None or konum_yuzde is None:
+            return
+        deger = parmak_acikligi_m(self.robot_description_urdf, PARMAK_EKLEMI, konum_yuzde)
+        if deger is not None:
+            self.parmak_acikligi_m = deger
+
+    def tcp_ik_cercevesi(self):
+        """MTC ComputeIK'nin ik_frame'i icin wrist3_link -> TCP donusumu:
+        (oteleme_m, quaternion xyzw). Oteleme acilista olculen tcp_offset_m;
+        donus SDK'nin su anki TCP RX/RY/RZ'si ile ayni andaki wrist3_link
+        yoneliminden (bkz. tcp_cercevesi.tcp_donusu). Robot HAREKET ETMEZ."""
+        from moveit.core.robot_state import RobotState
+
+        from fairino_cobot.tcp_cercevesi import tcp_donusu
+        durum = self.get_current_state()
+        s = RobotState(self.robot_model)
+        s.set_joint_group_positions(self.group_name, [math.radians(v) for v in durum["joints_deg"]])
+        s.update()
+        q = s.get_pose(TIP_LINK).orientation
+        t = durum["tcp_pose"]
+        return self.tcp_offset_m, tcp_donusu((q.x, q.y, q.z, q.w), (t["rx"], t["ry"], t["rz"]))
+
     def mtc_yolunu_denetle(self, noktalar_deg, nesne=None):
         """MTC zincirinin (onizleme icin birlestirilmis) TUM noktalarini,
         tek-tek hareketlerin gectigi AYNI iki kontrolden (zemin +
@@ -2098,10 +2167,18 @@ class CobotArm:
                                        f"Z={worst[2] * 1000:.1f}mm"}
 
                 if nesne_boyut_m is not None:
+                    # Nesne yalnizca TASINIRKEN gripper'da: kavramadan once
+                    # masada, biraktiktan sonra yine masada. Kaldirma
+                    # boyunca masaya degmesine izin var (MTC demo'su "allow
+                    # collision (object,support)", bkz. pickplace.py).
+                    # tasima_araligi = (kaldirmanin sonu, birakmanin basi).
+                    bas, son = nesne.get("tasima_araligi") or (0, len(durumlar) - 1)
                     ihlal = check_trajectory_for_carried_object_floor(
-                        durumlar, TIP_LINK, nesne_merkez_m, nesne_boyut_m, FLOOR_Z_M)
+                        durumlar[bas:son + 1], TIP_LINK, nesne_merkez_m, nesne_boyut_m,
+                        FLOOR_Z_M)
                     if ihlal:
                         adim, z = ihlal
+                        adim += bas
                         return {"success": False, "reason": "floor_collision",
                                 "details": f"step {adim}, carried object, "
                                            f"Z={z * 1000:.1f}mm"}

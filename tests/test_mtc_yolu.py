@@ -8,6 +8,7 @@ from fairino_cobot.mtc_yolu import (
     EKLEM_ADLARI,
     MtcYoluHatasi,
     asamalari_birlestir,
+    tasima_araligi,
     toplam_eklem_yolu_deg,
 )
 
@@ -151,3 +152,28 @@ def test_toplam_yol_gercek_olmayan_deger_sonsuz():
 
 def test_toplam_yol_uzunluk_tutmuyorsa_sonsuz():
     assert toplam_eklem_yolu_deg([[0] * 6, [0] * 5]) == math.inf
+
+
+def _hat(ad, *acilar):
+    return _stage(ad, list(EKLEM_ADLARI),
+                  [([a, 0, 0, 0, 0, 0], float(i)) for i, a in enumerate(acilar)])
+
+
+def test_tasima_araligi_kaldirmanin_sonundan_birakmaya():
+    """Nesne-zemin kontrolu kaldirma bitince baslar, birakmada biter."""
+    gorevler = [
+        [_hat("on-poza git", 0, 1), _hat("duz yaklas", 1, 2)],
+        [{"ad": "nesneyi ilistir", "joint_names": [], "noktalar": []},
+         _hat("nesneyi kaldir", 2, 3), _hat("birakma on-pozuna git", 3, 4, 5),
+         _hat("duz in", 5, 6)],
+        [_hat("geri cekil", 6, 7)],
+    ]
+    noktalar, _, bilgi = asamalari_birlestir(gorevler, bosluk_s=0.8)
+    bas, son = tasima_araligi(bilgi)
+    assert noktalar[bas][0] == pytest.approx(3)   # kaldirmanin son noktasi
+    assert noktalar[son][0] == pytest.approx(6)   # birakma noktasi (duz in sonu)
+
+
+def test_tasima_araligi_beklenmeyen_zincirde_none():
+    _, _, bilgi = asamalari_birlestir([[_hat("tek", 0, 1)]], bosluk_s=0.8)
+    assert tasima_araligi(bilgi) is None

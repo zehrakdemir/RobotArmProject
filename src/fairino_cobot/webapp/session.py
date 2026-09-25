@@ -332,9 +332,14 @@ class RobotSession:
         if self.gripper is None:
             return {"error": "no gripper"}
         try:
-            return self.gripper.status()
+            durum = self.gripper.status()
         except Exception as e:
             return {"error": str(e)}
+        # Parmak eklemi (/joint_states, 3D model) gripper'in okudugu konumu izler.
+        guncelle = getattr(self.arm, "parmak_konumunu_guncelle", None)
+        if guncelle is not None:
+            guncelle(durum.get("position_pct"))
+        return durum
 
     # -- isler -------------------------------------------------------------
 

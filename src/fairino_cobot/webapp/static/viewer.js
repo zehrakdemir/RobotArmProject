@@ -176,6 +176,7 @@ function kur() {
     }
     // Her eklem: ust link -> sabit donusum (origin) -> eklem ekseninde donen grup -> alt link.
     const eklemler = {};
+    const kayarlar = [];
     const cocuklar = new Set();
     for (const j of m.joints) {
       const ust = linkler[j.parent];
@@ -191,6 +192,10 @@ function kur() {
       cocuklar.add(j.child);
       if (j.type === "revolute" || j.type === "continuous") {
         eklemler[j.name] = { grup: donen, eksen: new THREE.Vector3().fromArray(j.axis).normalize() };
+      } else if (j.type === "prismatic") {
+        // Gripper parmaklari: kol eklemi degil, degeri gripper durumundan gelir.
+        kayarlar.push({ ad: j.name, grup: donen, eksen: new THREE.Vector3().fromArray(j.axis).normalize(),
+                        limit: j.limit, mimic: j.mimic });
       }
     }
     const kok = new THREE.Group();
@@ -215,7 +220,24 @@ function kur() {
       kutu.position.fromArray(k.xyz);
       linkler[k.link].add(kutu);
     }
-    return { kok, eklemler, tcp };
+    return { kok, eklemler, kayarlar, tcp };
+  }
+
+  // Gripper acikligi: position 0 = tam acik, 100 = tam kapali (gripper_controller).
+  // Surucu olan eklem (mimic'siz) limitin ustune gore orantilanir, mimic'ler ona baglanir.
+  function parmaklariUygula(robot, konumYuzde) {
+    if (!robot || !Number.isFinite(konumYuzde)) return;
+    const degerler = {};
+    for (const k of robot.kayarlar) {
+      if (k.mimic || !k.limit) continue;
+      const oran = Math.min(Math.max((100 - konumYuzde) / 100, 0), 1);
+      degerler[k.ad] = k.limit.lower + oran * (k.limit.upper - k.limit.lower);
+    }
+    for (const k of robot.kayarlar) {
+      const v = k.mimic ? k.mimic.multiplier * (degerler[k.mimic.joint] ?? 0) + k.mimic.offset
+                        : degerler[k.ad];
+      if (Number.isFinite(v)) k.grup.position.copy(k.eksen).multiplyScalar(v);
+    }
   }
 
   function acilariUygula(robot, derece) {
@@ -251,6 +273,10 @@ function kur() {
       sahne.add(canli.kok, hayalet.kok);
       mesaj(Object.keys(geometriler).length ? "" : "Robot meshes were not found; only the path line is shown.");
       if (sonAcilar) acilariUygula(canli, sonAcilar);
+      if (window.sonGripperKonumu != null) {
+        parmaklariUygula(canli, window.sonGripperKonumu);
+        parmaklariUygula(hayalet, window.sonGripperKonumu);
+      }
       secimiCiz();
     } catch (e) {
       mesaj("Could not load the robot model: " + e.message + " (retrying)");
@@ -354,6 +380,12 @@ function kur() {
     sonAcilar = e.detail;
     if (!model) { modeliYukle(); return; }
     acilariUygula(canli, sonAcilar);
+  });
+  // Gripper'in OKUDUGU konum (app.js gripperDurum). Okuma guvenilmez olabilir
+  // (GUNCEL_DURUM 9-6) - gorunum ne okunduysa onu gosterir.
+  window.addEventListener("gripper-durumu", (e) => {
+    parmaklariUygula(canli, e.detail);
+    parmaklariUygula(hayalet, e.detail);
   });
   const secimAl = (d) => { onizleme = d.onizleme; secenek = d.secenek; secimiCiz(); };
   window.addEventListener("onizleme-secimi", (e) => secimAl(e.detail));

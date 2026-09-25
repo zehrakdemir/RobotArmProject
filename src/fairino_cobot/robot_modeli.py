@@ -52,7 +52,17 @@ def urdf_ozeti(urdf_metni: str) -> dict:
     for eklem in kok.findall("joint"):
         origin = eklem.find("origin")
         eksen = eklem.find("axis")
+        # Gripper parmaklari (prismatic + mimic): 3D gorunum acikligi limitten
+        # ve mimic iliskisinden hesaplar.
+        limit = eklem.find("limit")
+        mimic = eklem.find("mimic")
         eklemler.append({
+            "limit": None if limit is None else {
+                "lower": float(limit.get("lower", 0.0)), "upper": float(limit.get("upper", 0.0))},
+            "mimic": None if mimic is None else {
+                "joint": mimic.get("joint"),
+                "multiplier": float(mimic.get("multiplier", 1.0)),
+                "offset": float(mimic.get("offset", 0.0))},
             "name": eklem.get("name"),
             "type": eklem.get("type"),
             "parent": eklem.find("parent").get("link"),
@@ -62,6 +72,18 @@ def urdf_ozeti(urdf_metni: str) -> dict:
             "axis": _sayilar(eksen.get("xyz") if eksen is not None else None, [1.0, 0.0, 0.0]),
         })
     return {"name": kok.get("name"), "links": linkler, "joints": eklemler}
+
+
+def parmak_acikligi_m(urdf_metni: str, eklem: str, konum_yuzde: float) -> float | None:
+    """Gripper'in okudugu konumdan (0 = tam acik, 100 = tam kapali;
+    gripper_controller.move) parmak ekleminin degeri (m). Eklem URDF'te yoksa
+    ya da limiti yoksa None. Deger limit araligina kirpilir."""
+    for j in urdf_ozeti(urdf_metni)["joints"]:
+        if j["name"] == eklem and j["limit"]:
+            alt, ust = j["limit"]["lower"], j["limit"]["upper"]
+            oran = min(max((100.0 - float(konum_yuzde)) / 100.0, 0.0), 1.0)
+            return alt + oran * (ust - alt)
+    return None
 
 
 def paket_uri_coz(uri: str | None) -> tuple[str, str] | None:

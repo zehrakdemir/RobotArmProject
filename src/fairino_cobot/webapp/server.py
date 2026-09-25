@@ -238,6 +238,11 @@ def _is_baslat(kind: str, label: str, fn) -> dict[str, Any]:
     return job.as_dict()
 
 
+def _aci_norm(a: float) -> float:
+    """Aciyi [-180, 180) araligina getirir."""
+    return (a + 180.0) % 360.0 - 180.0
+
+
 def _kol_hizi() -> tuple[float, float]:
     """Ayarlar penceresindeki kol hiz/ivmesi. Istek aninda okunur; suren
     bir hareketi degistirmez."""
@@ -771,7 +776,10 @@ def pp_pozda_calistir(istek: PPPozdaCalistir) -> dict[str, Any]:
         if pp is None:
             return {"success": False, "reason": "mtc_init_failed",
                     "details": "MTC was not initialized at startup (see server log)."}
-        pp.hizlari_guncelle(arm.speed_pct, arm.accel_pct)
+        # Hiz/ivme = Ayarlar penceresi (ust cubuk), diger hareketlerle ayni.
+        # arm.speed_pct acilis varsayilanidir, pencere onu degistirmez.
+        hiz, ivme = _kol_hizi()
+        pp.hizlari_guncelle(hiz, ivme)
 
         # Tum zincir (yaklas, kaldir, tasi, in, geri cekil) robot HAREKET
         # ETMEDEN ve gripper kapanmadan ONCE planlanir. Eskiden bastan sona
@@ -881,9 +889,8 @@ def pp_onizle(istek: PPOnizleme) -> dict[str, Any]:
     siralanir - 1. secenek EN KISA yoldur, arayuz onu secili getirir. Diger
     secenekler listede durur, kullanici baskasini secebilir.
     """
-    from fairino_cobot.ik_secimi import uygun_ciftleri_bul
     from fairino_cobot.movecobot import GRIPPER_STROKE_M
-    from fairino_cobot.mtc_yolu import asamalari_birlestir, toplam_eklem_yolu_deg
+    from fairino_cobot.mtc_yolu import asamalari_birlestir, tasima_araligi, toplam_eklem_yolu_deg
     from fairino_cobot.yol_onizleme import secenek_ozeti
 
     def calistir(job):
@@ -898,24 +905,6 @@ def pp_onizle(istek: PPOnizleme) -> dict[str, Any]:
                 [], None)
             return {"success": False, "reason": reason, "details": details}
 
-        pick_approach = [*istek.grasp_point[:2], istek.grasp_point[2] + istek.approach_mm,
-                         *istek.grasp_rpy]
-        place_approach = [*istek.place_pose[:2], istek.place_pose[2] + istek.approach_mm,
-                          *istek.place_pose[3:]]
-
-        kol_baslangici, sirali_pick, red_pick = arm._ik_adaylari(*pick_approach)
-        if red_pick is not None or not sirali_pick:
-            return basarisiz("pick_ik_failed",
-                             red_pick.get("details") if red_pick else "no candidates")
-        _, sirali_place, red_place = arm._ik_adaylari(*place_approach)
-        if red_place is not None or not sirali_place:
-            return basarisiz("place_ik_failed",
-                             red_place.get("details") if red_place else "no candidates")
-
-        pick_adaylari = [a for a, _ in sirali_pick]
-        place_adaylari = [a for a, _ in sirali_place]
-        job.log.append(f"IK candidates: {len(pick_adaylari)} pick, {len(place_adaylari)} place")
-
         obj_w = istek.object_w_mm if istek.object_w_mm else GRIPPER_STROKE_M * 1000
         boyut = [obj_w, istek.object_d_mm, istek.object_h_mm]
 
@@ -928,7 +917,10 @@ def pp_onizle(istek: PPOnizleme) -> dict[str, Any]:
         pp = oturum.pp
         if pp is None:
             return basarisiz("mtc_init_failed", "MTC was not initialized at startup (see server log).")
-        pp.hizlari_guncelle(arm.speed_pct, arm.accel_pct)
+        # Hiz/ivme = Ayarlar penceresi (ust cubuk), diger hareketlerle ayni.
+        # arm.speed_pct acilis varsayilanidir, pencere onu degistirmez.
+        hiz, ivme = _kol_hizi()
+        pp.hizlari_guncelle(hiz, ivme)
 
         # Her uygun cift bulundugunda O ANIN zinciri saklanir: pp.son_zincir
         # bir sonraki planlamada UZERINE YAZILIR, sonradan okunamaz.
@@ -941,32 +933,45 @@ def pp_onizle(istek: PPOnizleme) -> dict[str, Any]:
             zincirler.append(list(pp.son_zincir))
             return True
 
-        ciftler, deneme = uygun_ciftleri_bul(
-            pick_adaylari, place_adaylari,
-            lambda p: pp.alma_planla(p, istek.approach_mm),
-            zincir_planla,
-            en_fazla=istek.max_options,
-            # Zincir planlamasi pahali; adaylar cok oldugunda onizleme
-            # dakikalarca surmesin. Secenek basina ~4 deneme.
-            en_fazla_zincir_denemesi=4 * istek.max_options,
-        )
-        job.log.append(f"pre-planning: {deneme['alma']} approach + {deneme['zincir']} chain plans "
-                       f"-> {len(ciftler)} option(s)")
+        # STANDART MTC SECIMI (24 Eylul, kullanici istegi): kol duruslarini
+        # robotun SDK IK'sindan toplayip ciftlemek yerine MTC'nin kendi
+        # yontemi - tek gorev, iki gripper yonu (paralel gripper rz ve
+        # rz+180 ayni kavrama) x MoveIt IK cozumleri, Connect ile planlama,
+        # maliyete (yol uzunlugu) gore sirali cozumler. Bkz.
+        # pickplace.standart_ciftleri_bul. Birakma yonu kavramayla ayni
+        # iki yonden secilir (nesne kavrandigi yonelimle birakilir).
+        rz = istek.grasp_rpy[2]
+        rz_listesi = [_aci_norm(rz), _aci_norm(rz + 180.0)]
+        kol_baslangici = arm.get_current_state()["joints_deg"]
+        adaylar_std = pp.standart_ciftleri_bul(
+            istek.grasp_point, istek.place_pose[:3], rz_listesi, istek.approach_mm, boyut,
+            arm.tcp_ik_cercevesi(), istek.grasp_depth_mm, en_fazla=istek.max_options)
+        job.log.append(f"standard MTC: {len(adaylar_std)} cheapest arm configuration pair(s) "
+                       f"(gripper rz {rz_listesi[0]:.1f} / {rz_listesi[1]:.1f})")
+        ciftler: list[tuple[list[float], list[float]]] = []
+        cift_rz: list[float | None] = []
+        for pre_pick, pre_place, maliyet in adaylar_std:
+            job.log.append(f"  MTC cost {maliyet:.3f}: pre_pick j1={pre_pick[0]:.1f}, "
+                           f"pre_place j1={pre_place[0]:.1f}")
+            if zincir_planla(pre_pick, pre_place):
+                ciftler.append((pre_pick, pre_place))
+                cift_rz.append(None)
         if not ciftler:
             return basarisiz("no_feasible_pick_place_pair",
-                             "no pick/place arm configuration pair could be planned end to "
-                             "end. Robot did not move.")
+                             "MTC found no pick & place solution for this object and place "
+                             "pose. Robot did not move.")
 
         # (maliyet, ozet, zincir) - maliyet = yolun toplam eklem donusu.
         adaylar: list[tuple[float, dict[str, Any], list[Any]]] = []
-        for (pre_pick, pre_place), zincir in zip(ciftler, zincirler):
+        for (pre_pick, pre_place), zincir, rz_al in zip(ciftler, zincirler, cift_rz):
             asamalar = [pp.cozum_asamalari(cozum) for _, cozum in zincir]
             noktalar, zamanlar, bilgi = asamalari_birlestir(asamalar, bosluk_s=0.8)
             # Tasinan nesne de kontrole giriyor (zemin + self-collision):
             # kutu, kavrama derinligine gore TCP'nin ALTINA yerlestirilir.
             problem = arm.mtc_yolunu_denetle(
                 noktalar, {"boyut_mm": boyut,
-                           "kavrama_derinligi_mm": istek.grasp_depth_mm}) if noktalar else None
+                           "kavrama_derinligi_mm": istek.grasp_depth_mm,
+                           "tasima_araligi": tasima_araligi(bilgi)}) if noktalar else None
             # Yolun GERCEK baslangici: zincirin ilk gorevi CurrentState'ten
             # (kolun plan anindaki durusu) basliyor - pre_pick "on-poza git"
             # asamasinin HEDEFI. Eskiden buraya pre_pick veriliyordu; hem
@@ -982,6 +987,7 @@ def pp_onizle(istek: PPOnizleme) -> dict[str, Any]:
             ozet["pre_pick_joints"] = [round(float(v), 2) for v in pre_pick]
             ozet["pre_place_joints"] = [round(float(v), 2) for v in pre_place]
             ozet["total_deg"] = None if not math.isfinite(maliyet) else round(maliyet, 1)
+            ozet["grasp_rz"] = None if rz_al is None else round(rz_al, 1)
             adaylar.append((maliyet, ozet, zincir))
 
         # EN KISA YOL BASA: once calistirilabilir olanlar (reddedilen bir yol
@@ -1003,7 +1009,7 @@ def pp_onizle(istek: PPOnizleme) -> dict[str, Any]:
              "target_tcp": dict(zip(("x", "y", "z", "rx", "ry", "rz"),
                                     [*istek.grasp_point, *istek.grasp_rpy])),
              "options": secenekler, "grip_speed": istek.grip_speed,
-             "grip_force": istek.grip_force},
+             "grip_force": istek.grip_force, "speed_pct": hiz, "accel_pct": ivme},
             [z for _, _, z in adaylar], pp)
         job.log.append(f"stored as preview #{no}")
         return {"success": True}

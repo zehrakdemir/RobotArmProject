@@ -357,6 +357,157 @@ def patch_j3_position_limit(pkg: Path, dry: bool) -> str:
     return f"yazildi (j3 +-{J3_SOFT_LIMIT_DEG:.0f} derece = +-{limit_rad:.4f} rad)"
 
 
+# ---------------------------------------------------------------------------
+# JODELL EPG40-050 GRIPPER MODELI (yalnizca FR3)
+# ---------------------------------------------------------------------------
+# NEDEN (24 Eylul, kullanici istegi): MTC'nin GeneratePlacePose gibi asamalari
+# SRDF'te bir end_effector (gripper grubu) ister; gripper ROS'ta hic yoktu.
+# Burada gripper SABIT linkler olarak eklenir (gripper yine SDK'dan surulur,
+# eklem/controller yok) ve 3D gorunumde gercek sekliyle gorunur.
+#
+# CARPISMA GEOMETRISI EKLENMEZ, yalnizca <visual>: planlamadaki gripper
+# guvenlik kutusu (movecobot.py, 95x60x130 mm, attached body) oldugu gibi
+# kalir. CAD sekli kutudan ince; carpismaya koymak guvenlik payini azaltirdi.
+#
+# MESH KAYNAGI: Fairino destek sitesi EPG40-050.zip (fairino.support/download,
+# 7 Temmuz 2025) icindeki STEP'ler, gmsh ile STL'ye cevrildi (mm).
+# Govde STL cercevesi: montaj yuzu y=-72, ceneler y=+15 (tirnaklar 2 mm),
+# kapanma ekseni x, x=0/z=0 eksenine simetrik. Parmak STL: boy y 0..35,
+# genislik x -11..0, kalinlik z (uc 5 mm), taban blogu y 0..8.
+#
+# YERLESIM (olcumler ve kaynaklari):
+#   - Flans wrist3_link'te z = 99,43 mm (acilista olculen flange_offset_m).
+#   - Fairino TCP cercevesi = wrist3_link yonelimi, oteleme z = 199,4 mm (FK +
+#     SDK TCP ile olculdu, 24 Eylul). jodell_tcp linki orada.
+#   - Kapanma ekseni wrist3 X'inden -46,37 derece: rz = kapanma yonu - 46,37
+#     (Zehra README YAW_CORRECTION_DEG, kullanici 21 Eylul gozle dogruladi) ve
+#     TCP = wrist3 yonelimi oldugundan.
+#   - Montaj adaptoru dosyada YOK; kalinligi 0 alindi. Parmaklar cene
+#     tirnagina oturur (taban y_mesh=13): parmak ucu flanstan 120 mm, TCP'nin
+#     ~20 mm altinda. Masadan olculen deger 19 mm (masa z=0 varsayimiyla) -
+#     tutarli, dogrulanmadi.
+#   - PARMAKLAR (kullanici karari 24 Eylul, standart paralel gripper modeli):
+#     sag parmak prismatic eklem (jodell_finger_joint), sol parmak ona mimic.
+#     Aralik parmak basina 0..20 mm = uretici stroku 40 mm / 2 (Jodell
+#     EPG40-050 verisi). 0 = tam kapali: parmak ic yuzleri arasi 8 mm
+#     (kullanici olcumu 16 Eylul). Deger gripper'in OKUDUGU konumdan gelir
+#     (web 3D gorunumu: (100 - position) / 100 * 20 mm). Bu gripper'in ROS
+#     surucusu yok, /joint_states'e yayin yapilmiyor -> SRDF'te passive_joint:
+#     MoveIt bu eklem icin durum beklemez. Konum okumasi daha once guvenilmez
+#     cikti (GUNCEL_DURUM 9-6); kullanici "simdilik boyle, sonra kontrol" dedi.
+#     Surulmedigi icin <limit velocity="0">.
+GRIPPER_PAKETLERI = ("fairino3_v6_moveit2_config",)
+GRIPPER_MESH_DIR = "jodell_epg40"
+GRIPPER_ISARET = "JODELL EPG40-050 v2 (tools/apply_ros2_patches.py)"
+PARMAK_STROK_M = 0.020      # parmak basina (40 mm / 2)
+PARMAK_KAPALI_YARIM_M = 0.004   # kapaliyken ic yuz eksenden 4 mm (8 mm bosluk)
+PARMAK_KUVVET_N = 50.0      # uretici: parmak basina en cok 50 N
+FLANS_Z_M = 0.0994
+TCP_Z_M = 0.1994
+
+
+def gripper_urdf_blogu(paket: str) -> str:
+    kok = f"package://{paket}/config/{GRIPPER_MESH_DIR}"
+    return f"""
+    <!-- {GRIPPER_ISARET}: yalnizca gorsel, carpisma yok (gerekce yama aracinda) -->
+    <link name="jodell_epg40_base">
+      <visual>
+        <origin xyz="0 0.072 0" rpy="0 0 0"/>
+        <geometry><mesh filename="{kok}/epg40_050_govde.stl" scale="0.001 0.001 0.001"/></geometry>
+        <material name="jodell_gri"><color rgba="0.62 0.66 0.72 1"/></material>
+      </visual>
+    </link>
+    <joint name="jodell_epg40_mount" type="fixed">
+      <parent link="wrist3_link"/>
+      <child link="jodell_epg40_base"/>
+      <origin xyz="0 0 {FLANS_Z_M}" rpy="1.570796 0 -0.809309"/>
+    </joint>
+    <link name="jodell_finger_right">
+      <visual>
+        <geometry><mesh filename="{kok}/epg40_parmak.stl" scale="0.001 0.001 0.001"/></geometry>
+        <material name="jodell_koyu"><color rgba="0.25 0.27 0.30 1"/></material>
+      </visual>
+    </link>
+    <!-- Parmak STL'inde ic yuz z=4 mm; eklem 0'da ic yuz eksenden PARMAK_KAPALI_YARIM_M -->
+    <joint name="jodell_finger_joint" type="prismatic">
+      <parent link="jodell_epg40_base"/>
+      <child link="jodell_finger_right"/>
+      <origin xyz="{PARMAK_KAPALI_YARIM_M - 0.004:.4f} 0.085 -0.0055" rpy="0 1.570796 0"/>
+      <axis xyz="0 0 1"/>
+      <limit lower="0" upper="{PARMAK_STROK_M}" effort="{PARMAK_KUVVET_N}" velocity="0"/>
+    </joint>
+    <link name="jodell_finger_left">
+      <visual>
+        <geometry><mesh filename="{kok}/epg40_parmak.stl" scale="0.001 0.001 0.001"/></geometry>
+        <material name="jodell_koyu"><color rgba="0.25 0.27 0.30 1"/></material>
+      </visual>
+    </link>
+    <joint name="jodell_finger_left_joint" type="prismatic">
+      <parent link="jodell_epg40_base"/>
+      <child link="jodell_finger_left"/>
+      <origin xyz="{-(PARMAK_KAPALI_YARIM_M - 0.004):.4f} 0.085 0.0055" rpy="0 -1.570796 0"/>
+      <axis xyz="0 0 1"/>
+      <limit lower="0" upper="{PARMAK_STROK_M}" effort="{PARMAK_KUVVET_N}" velocity="0"/>
+      <mimic joint="jodell_finger_joint" multiplier="1" offset="0"/>
+    </joint>
+    <link name="jodell_tcp"/>
+    <joint name="jodell_tcp_joint" type="fixed">
+      <parent link="wrist3_link"/>
+      <child link="jodell_tcp"/>
+      <origin xyz="0 0 {TCP_Z_M}" rpy="0 0 0"/>
+    </joint>
+"""
+
+
+def gripper_srdf_blogu(kol_grubu: str) -> str:
+    return f"""    <!-- {GRIPPER_ISARET}: MTC end-effector tanimi -->
+    <group name="jodell_hand">
+        <link name="jodell_epg40_base"/>
+        <link name="jodell_finger_left"/>
+        <link name="jodell_finger_right"/>
+        <link name="jodell_tcp"/>
+    </group>
+    <end_effector name="jodell" parent_link="wrist3_link" group="jodell_hand" parent_group="{kol_grubu}"/>
+    <passive_joint name="jodell_finger_joint"/>
+"""
+
+
+def patch_gripper_model(pkg: Path, dry: bool) -> str:
+    if pkg.name not in GRIPPER_PAKETLERI:
+        return "atlandi (bu modelde Jodell EPG40 takili degil)"
+    xacrolar = sorted(pkg.glob("config/*_robot.urdf.xacro"))
+    srdfler = sorted(pkg.glob("config/*.srdf"))
+    kaynak = PATCH_DIR / GRIPPER_MESH_DIR
+    if len(xacrolar) != 1 or len(srdfler) != 1:
+        return "ATLANDI (urdf.xacro / srdf tek degil - elle bak)"
+    if not kaynak.is_dir():
+        return f"ATLANDI ({kaynak} yok)"
+    grup = srdf_group_name(pkg)
+    if not grup:
+        return "ATLANDI (SRDF'te grup adi yok)"
+
+    xacro, srdf = xacrolar[0], srdfler[0]
+    xt, st = xacro.read_text(encoding="utf-8"), srdf.read_text(encoding="utf-8")
+    if GRIPPER_ISARET in xt and GRIPPER_ISARET in st:
+        return "zaten var"
+    if "JODELL EPG40-050" in xt or "JODELL EPG40-050" in st:
+        return "ATLANDI (eski surum gripper blogu var - paketi aynadan yeniden kopyala)"
+    if xt.count("</robot>") != 1 or st.count("</robot>") != 1:
+        return "ATLANDI (</robot> etiketi tek degil - elle bak)"
+    if not dry:
+        hedef = pkg / "config" / GRIPPER_MESH_DIR
+        hedef.mkdir(exist_ok=True)
+        for stl in sorted(kaynak.glob("*.stl")):
+            shutil.copy2(stl, hedef / stl.name)
+        if GRIPPER_ISARET not in xt:
+            xacro.write_text(xt.replace("</robot>", gripper_urdf_blogu(pkg.name) + "</robot>"),
+                             encoding="utf-8")
+        if GRIPPER_ISARET not in st:
+            srdf.write_text(st.replace("</robot>", gripper_srdf_blogu(grup) + "</robot>"),
+                            encoding="utf-8")
+    return f"yazildi (gorsel linkler + jodell_hand/end_effector, parent_group={grup})"
+
+
 def patch_hardware(frcobot: Path, dry: bool) -> str:
     """fairino_hardware_interface.cpp yamasi (UDP servo kanali, olculen cmdT,
     hiz sinirlayici, bosta servo modundan cikis)."""
@@ -411,6 +562,7 @@ def main() -> int:
         print(f"  ros2_controllers.yaml : {patch_controllers(pkg, args.dry_run)}")
         print(f"  joint_limits.yaml     : {patch_joint_limits(pkg, args.dry_run)}")
         print(f"  j3 pozisyon limiti    : {patch_j3_position_limit(pkg, args.dry_run)}")
+        print(f"  jodell gripper modeli : {patch_gripper_model(pkg, args.dry_run)}")
 
     print()
     print(f"{len(pkgler)} paket islendi. Simdi yeniden derle:")

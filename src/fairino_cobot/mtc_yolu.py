@@ -77,6 +77,26 @@ def _stage_noktalarini_deg_cevir(stage: dict, eklem_adlari: tuple[str, ...]) -> 
     return [([math.degrees(pos[i]) for i in idx], float(t)) for pos, t in noktalar]
 
 
+def tasima_araligi(asama_bilgisi: list[dict]) -> tuple[int, int] | None:
+    """Nesnenin gripper'da TASINDIGI ve masaya DEGMEMESI gereken yol
+    noktasi araligi: kaldirmanin sonundan (1. gripper'dan sonraki ilk kol
+    asamasinin son noktasi) birakmanin basina (2. gripper) kadar.
+
+    Kaldirma boyunca nesne masaya degebilir (MTC demo'su "allow collision
+    (object,support)" -> "lift object" -> "forbid collision"). Zincir
+    beklenen bicimde degilse None: cagiran tum yolu kontrol eder (temkinli).
+    """
+    gripperlar = [i for i, a in enumerate(asama_bilgisi) if a.get("tip") == "gripper"]
+    if len(gripperlar) < 2:
+        return None
+    g1, g2 = gripperlar[0], gripperlar[1]
+    kaldirma = next((a for a in asama_bilgisi[g1 + 1:g2] if a.get("tip") == "kol"), None)
+    if kaldirma is None:
+        return None
+    bas, son = kaldirma["son"], asama_bilgisi[g2]["ilk"]
+    return (bas, son) if bas <= son else None
+
+
 def asamalari_birlestir(
     gorevler: list[list[dict]],
     eklem_adlari: tuple[str, ...] = EKLEM_ADLARI,
