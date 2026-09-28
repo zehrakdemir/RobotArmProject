@@ -130,7 +130,7 @@
           <label class="field"><span>Place slot</span><select id="pnp-slot">
             <option value="custom">Custom (enter X/Y/Z)</option>
           </select></label>
-          <div id="pnp-place-xyz" hidden>
+          <div id="pnp-place-xyz">
             <div style="height:8px"></div>
             <div class="row">
               <label class="field"><span>Place X (mm)</span>
@@ -142,7 +142,13 @@
             </div>
             <div class="note">Base frame, in millimetres. X/Y: where the object is set
               down. Z: height of the surface it is set down on (0 = table). The release
-              orientation is the same RX/RY/RZ as the grasp.</div>
+              orientation is the same RX/RY/RZ as the grasp. Planning uses the values
+              shown here.</div>
+            <div class="row">
+              <button id="pnp-slot-save" hidden>Save slot</button>
+              <button id="pnp-slot-add">Save as new slot</button>
+            </div>
+            <div id="pnp-slot-err" class="note warn" role="alert" hidden></div>
           </div>
           <div style="height:8px"></div>
           <div class="row">

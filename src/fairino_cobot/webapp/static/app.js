@@ -783,23 +783,36 @@ function pnpKameralar() {
   $("#pnp-camR").src = acik ? `${taban}/stream/R` : "";
 }
 
-// "Custom" secilince X/Y/Z alanlari gorunur: X/Y = nesnenin birakilacagi
-// yer, Z = uzerine konacagi yuzeyin yuksekligi (zemin 0; nesne yuksekligi
-// ve birakma payi sunucuda eklenir). Birakma yonelimi (RX/RY/RZ) girilmez,
-// kavramanin yonelimi aynen kullanilir (bkz. pnpBirakmaPozu).
+// Slot listesi: /api/place_slots'ta kaydedilmis liste varsa o (kalici,
+// /state volume'u), yoksa vision API'sinin PLACE_SLOTS'u. Her slot
+// [x, y, z]; yonelim saklanmaz, birakma yonelimi her planda kavramanin
+// yonelimi (bkz. pnpBirakmaPozu). Vision slotlarinin rx/ry/rz'si atilir.
+let pnpSlotlar = [];
+
+function pnpSlotHata(mesaj) {
+  $("#pnp-slot-err").textContent = mesaj || "";
+  $("#pnp-slot-err").hidden = !mesaj;
+}
+
+// X/Y/Z alanlari her zaman gorunur: X/Y = nesnenin birakilacagi yer, Z =
+// uzerine konacagi yuzeyin yuksekligi (zemin 0; nesne yuksekligi ve birakma
+// payi sunucuda eklenir). Slot secilince alanlar slotun degerleriyle dolar,
+// duzenlenip "Save slot" ile kalici kaydedilebilir. Planlama HER ZAMAN
+// alanlardaki degerleri kullanir (kaydedilmemis duzenleme dahil).
 function pnpSlotDegisti() {
-  $("#pnp-place-xyz").hidden = $("#pnp-slot").value !== "custom";
+  const secim = $("#pnp-slot").value;
+  const slot = secim === "custom" ? null : pnpSlotlar[parseInt(secim, 10)];
+  $("#pnp-slot-save").hidden = !slot;
+  pnpSlotHata("");
+  if (!slot) return;
+  $("#pnp-place-x").value = slot[0];
+  $("#pnp-place-y").value = slot[1];
+  $("#pnp-place-z").value = slot[2];
 }
 
 // Secili birakma pozu: [x, y, z, rx, ry, rz]. Gecersiz girdide null doner
 // (sayiAlan alanin yaninda uyariyi kendisi gosterir).
 function pnpBirakmaPozu(nesne) {
-  const secim = $("#pnp-slot").value;
-  if (secim !== "custom") {
-    const slot = (pnpVizyonBilgi && pnpVizyonBilgi.slots || [])[parseInt(secim, 10)];
-    if (!slot) { pnpHata("No place slot available (check the vision API)."); return null; }
-    return slot;
-  }
   const x = sayiAlan($("#pnp-place-x"));
   const y = sayiAlan($("#pnp-place-y"));
   const z = sayiAlan($("#pnp-place-z"));
@@ -807,28 +820,68 @@ function pnpBirakmaPozu(nesne) {
   return [x, y, z, ...kavramaRpy(nesne)];
 }
 
+function pnpSlotListesiCiz() {
+  // "Custom" secenegi HTML'de sabit duruyor (slot yoksa da kalsin) - slotlar
+  // onun ONUNE eklenir.
+  const sec = $("#pnp-slot");
+  const onceki = sec.value;
+  const ozel = sec.querySelector('option[value="custom"]');
+  sec.querySelectorAll('option:not([value="custom"])').forEach((o) => o.remove());
+  pnpSlotlar.forEach((s, i) => {
+    const o = document.createElement("option");
+    o.value = String(i);
+    o.textContent = `Slot ${i + 1} — x=${s[0].toFixed(0)} y=${s[1].toFixed(0)} z=${s[2].toFixed(0)}`;
+    sec.insertBefore(o, ozel);
+  });
+  if (pnpSlotSecildi && [...sec.options].some((o) => o.value === onceki)) sec.value = onceki;
+  else if (sec.options.length > 1) sec.selectedIndex = 0;
+}
+
+// yeniSlot=false: secili slotu alanlardaki X/Y/Z ile gunceller.
+// yeniSlot=true: alanlardaki X/Y/Z'yi listenin sonuna yeni slot olarak ekler.
+async function pnpSlotKaydet(yeniSlot) {
+  pnpSlotHata("");
+  const i = yeniSlot ? pnpSlotlar.length : parseInt($("#pnp-slot").value, 10);
+  if (!yeniSlot && !(i >= 0 && i < pnpSlotlar.length)) return;
+  const x = sayiAlan($("#pnp-place-x"));
+  const y = sayiAlan($("#pnp-place-y"));
+  const z = sayiAlan($("#pnp-place-z"));
+  if (x === null || y === null || z === null) return;
+  const yeni = pnpSlotlar.map((s) => [...s]);
+  yeni[i] = [x, y, z];
+  try {
+    const r = await api("/api/place_slots", { method: "PUT", body: { slots: yeni } });
+    pnpSlotlar = r.slots;
+  } catch (e) {
+    pnpSlotHata("Could not save: " + e.message);
+    return;
+  }
+  pnpSlotSecildi = true;
+  pnpSlotListesiCiz();
+  $("#pnp-slot").value = String(i);
+  pnpSlotDegisti();
+  yaz(`Slot ${i + 1} ${yeniSlot ? "added" : "saved"}: x=${x} y=${y} z=${z}`, "ok");
+}
+
 async function pnpBilgiYukle() {
+  let kayitli = null;
+  try {
+    kayitli = (await api("/api/place_slots")).slots;
+  } catch (e) {
+    pnpSlotHata("Could not read saved slots: " + e.message);
+  }
   try {
     pnpVizyonBilgi = await api("/api/vision/info");
     pnpVizyonHata(pnpVizyonBilgi.handeye ? ""
       : "Hand-eye calibration missing or invalid - object positions may be wrong.");
-    // "Custom" secenegi HTML'de sabit duruyor (vision API'ye ulasilamasa da
-    // kalsin) - slotlar onun ONUNE eklenir.
-    const sec = $("#pnp-slot");
-    const ozel = sec.querySelector('option[value="custom"]');
-    sec.querySelectorAll('option:not([value="custom"])').forEach((o) => o.remove());
-    (pnpVizyonBilgi.slots || []).forEach((s, i) => {
-      const o = document.createElement("option");
-      o.value = String(i);
-      o.textContent = `Slot ${i + 1} — x=${s[0].toFixed(0)} y=${s[1].toFixed(0)} z=${s[2].toFixed(0)}`;
-      sec.insertBefore(o, ozel);
-    });
-    if (!pnpSlotSecildi && sec.options.length > 1) sec.selectedIndex = 0;
-    pnpSlotDegisti();
     pnpKameralar();
   } catch (e) {
     pnpVizyonHata("Vision API not reachable: " + e.message);
   }
+  pnpSlotlar = (kayitli || (pnpVizyonBilgi && pnpVizyonBilgi.slots) || [])
+    .map((s) => s.slice(0, 3));
+  pnpSlotListesiCiz();
+  pnpSlotDegisti();
 }
 
 function pnpNesneSatiri(o, i) {
@@ -1066,6 +1119,8 @@ function kurNesneAlBirak() {
   $("#pnp-cams").onchange = pnpKameralar;
   $("#pnp-detect").onclick = pnpAlgila;
   $("#pnp-slot").onchange = () => { pnpSlotSecildi = true; pnpSlotDegisti(); };
+  $("#pnp-slot-save").onclick = () => pnpSlotKaydet(false);
+  $("#pnp-slot-add").onclick = () => pnpSlotKaydet(true);
   pnpSlotDegisti();
 
   $("#pnp-plan").onclick = async () => {

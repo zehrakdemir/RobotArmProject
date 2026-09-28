@@ -184,6 +184,12 @@ def state_cache_file() -> Path:
     return _with_legacy_migration("movecobot_state_cache.json", ".movecobot_state_cache.json")
 
 
+def place_slots_file() -> Path:
+    """Web arayuzunde duzenlenip kaydedilen birakma slotlari. Dosya yoksa
+    vision API'sinin slotlari (PLACE_SLOTS) kullanilir."""
+    return state_dir() / "place_slots.json"
+
+
 def draft_file() -> Path:
     """Yarim kalmis hareket kaydi taslagi."""
     return _with_legacy_migration("movecobot_record_draft.json", ".movecobot_record_draft.json")

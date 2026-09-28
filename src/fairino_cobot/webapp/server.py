@@ -208,6 +208,16 @@ class PPOnizleme(BaseModel):
     max_options: int = Field(3, ge=1, le=6)
 
 
+class BirakmaSlotlari(BaseModel):
+    """Kaydedilecek birakma slotlarinin TAMAMI: her slot [x, y, z] (taban, mm;
+    z = nesnenin konacagi yuzey). Yonelim saklanmaz: birakma yonelimi her
+    planda kavramanin yonelimi (bkz. PPOnizleme.place_pose). Yalnizca kayit -
+    robotu hareket ettirmez; slot kullanildiginda zincir yine onizleme +
+    zemin/self-collision kontrolunden gecer."""
+
+    slots: list[list[float]] = Field(..., max_length=50)
+
+
 class PPOnizlemeCalistir(BaseModel):
     """Onizlenen pick & place zincirini calistirma istegi. option 1'den
     baslar (OnizlemeCalistir ile ayni sozlesme); verilmezse en kisa yol
@@ -932,6 +942,34 @@ def vizyon_bilgi() -> dict[str, Any]:
         return vizyon.bilgi()
     except vizyon.VizyonHatasi as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
+
+
+@app.get("/api/place_slots")
+def birakma_slotlari() -> dict[str, Any]:
+    """Kaydedilmis birakma slotlari; hic kaydedilmediyse slots=None (arayuz
+    o zaman vision API'sinin slotlarini kullanir). Robota dokunmaz."""
+    dosya = paths.place_slots_file()
+    if not dosya.exists():
+        return {"slots": None}
+    try:
+        return {"slots": json.loads(dosya.read_text(encoding="utf-8"))["slots"]}
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        raise HTTPException(status_code=500, detail=f"Could not read {dosya}: {e}") from e
+
+
+@app.put("/api/place_slots")
+def birakma_slotlarini_kaydet(istek: BirakmaSlotlari) -> dict[str, Any]:
+    """Slot listesini kalici yazar (/state volume'u, container silinse de
+    kalir). Robota dokunmaz."""
+    for i, s in enumerate(istek.slots, 1):
+        if len(s) != 3 or not all(math.isfinite(v) for v in s):
+            raise HTTPException(status_code=422,
+                                detail=f"Slot {i}: X, Y and Z must be finite numbers.")
+    dosya = paths.place_slots_file()
+    gecici = dosya.with_suffix(".tmp")
+    gecici.write_text(json.dumps({"slots": istek.slots}, indent=2), encoding="utf-8")
+    gecici.replace(dosya)
+    return {"slots": istek.slots}
 
 
 @app.post("/api/vision/detect")
